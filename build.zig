@@ -62,17 +62,14 @@ pub fn build(b: *std.Build) void {
 
         // Add all files names in the editor dist folder to `files`
         const editorDirectory = "editor";
-        const vscodeDistPath = editorDirectory ++ "/node_modules/vscode-web/dist";
-
-        const exclude = .{ "\\.md", "LICENSE", "README" };
-        var dir = std.fs.cwd().openIterableDir(vscodeDistPath, .{}) catch unreachable;
-        var it = dir.iterateAssumeFirstIteration();
-        const basePath = std.fs.cwd().realpathAlloc(b.allocator, ".") catch unreachable;
-        appendFilesRecursive(b, deshaderLib, &files, basePath, &it, exclude) catch unreachable;
-        appendFiles(deshaderLib, &files, .{
-            editorDirectory ++ "/index.html",
-            editorDirectory ++ "/product.json",
-        }) catch unreachable;
+        const editorFiles = std.fs.cwd().readFileAlloc(b.allocator, editorDirectory ++ "/required.txt", 1024 * 1024) catch undefined;
+        var editorFilesLines = std.mem.splitScalar(u8, editorFiles, '\n');
+        editorFilesLines.reset();
+        while (editorFilesLines.next()) |line| {
+            appendFiles(deshaderLib, &files, .{
+                std.fmt.allocPrint(b.allocator, "{s}/{s}", .{ editorDirectory, line }) catch unreachable,
+            }) catch unreachable;
+        }
 
         // Add the file names as an option to the exe, making it available
         // as a string array at comptime in main.zig
