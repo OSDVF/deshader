@@ -1,0 +1,17 @@
+.{
+    .name = "deshader",
+    .version = "0.0.1",
+    .paths = .{
+        "src",
+        "libs",
+        "editor",
+        "build.zig",
+        "build.zig.zon",
+    },
+    .dependencies = .{
+        .mach_glfw = .{
+            .url = "https://github.com/osdvf/mach-glfw/tarball/master",
+            .hash = "12208c1cd28861354cebb548e20a0309592af78842435d4c24b71364fcfd8fbe78ee",
+        },
+    },
+}

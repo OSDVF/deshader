@@ -1,0 +1,15 @@
+[submodule "backend/libs/glsl_analyzer"]
+	path = libs/glsl_analyzer
+	url = git@github.com:osdvf/glsl_analyzer.git
+[submodule "backend/libs/positron"]
+	path = libs/positron
+	url = git@github.com:ziglibs/positron.git
+[submodule "libs/zig-opengl"]
+	path = libs/zig-opengl
+	url = https://github.com/MasterQ32/zig-opengl.git
+[submodule "libs/ctregex"]
+	path = libs/ctregex
+	url = git@github.com:alexnask/ctregex.zig.git
+[submodule "libs/zig-header-gen"]
+	path = libs/zig-header-gen
+	url = git@github.com:suirad/zig-header-gen.git

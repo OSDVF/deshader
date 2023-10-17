@@ -1,0 +1,64 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Generate Stubs",
+            "type": "gdb",
+            "request": "launch",
+            "cwd": "${workspaceRoot}",
+            "target": "./zig-out/bin/generate_stubs",
+            "preLaunchTask": "Build Generate Stubs",
+        },
+        {
+            "type": "gdb",
+            "request": "launch",
+            "name": "Example",
+            "target": "./zig-out/bin/example",
+            "cwd": "${workspaceRoot}",
+            "valuesFormatting": "parseText",
+            "preLaunchTask": "Build Example",
+            "env": {
+                "WEBKIT_DISABLE_COMPOSITING_MODE" : 1
+            }
+        },
+        {
+            "type": "gdb",
+            "request": "launch",
+            "name": "Generate Header",
+            "target": "./zig-out/bin/generate_header",
+            "cwd": "${workspaceRoot}",
+            "valuesFormatting": "parseText",
+            "preLaunchTask": "Build Headers Generator"
+        },
+        {
+            "type": "gdb",
+            "request": "launch",
+            "name": "Positron Demo",
+            "target": "./libs/positron/zig-out/bin/positron-demo",
+            "cwd": "${workspaceRoot}",
+            "valuesFormatting": "parseText",
+            "preLaunchTask": "Build Positron",
+        },
+        {
+            "name": "(gdb) Deshader",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "./zig-out/bin/deshader",
+            "args": [],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}",
+            "environment": [],
+            "externalConsole": false,
+            "MIMode": "gdb",
+            "preLaunchTask": "Build",
+            "setupCommands": [
+                {
+                    "description": "Enable pretty-printing for gdb",
+                    "text": "-enable-pretty-printing",
+                    "ignoreFailures": true
+                }
+            ]
+        },
+        
+    ]
+}

@@ -1,0 +1,113 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Build Library",
+            "command" : "zig",
+            "args": ["build", "deshader"],
+            "problemMatcher": "$zig",
+            "group": "build",
+            "presentation": {
+                "echo": false,
+                "reveal": "silent",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": true,
+                "clear": true
+            }
+        },
+        {
+            "label": "Build Example",
+            "command" : "zig",
+            "args": ["build","example"],
+            "problemMatcher": "$zig",
+            "group": "build",
+            "presentation": {
+                "echo": false,
+                "reveal": "silent",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": true,
+                "clear": true
+            }
+        },
+        {
+            "label": "Build Headers Generator",
+            "command" : "zig",
+            "args": ["build","generate_header"],
+            "problemMatcher": "$zig",
+            "group": "build",
+            "presentation": {
+                "echo": false,
+                "reveal": "silent",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": true,
+                "clear": true
+            }
+        },
+        {
+            "label": "Generate Stubs",
+            "command" : "zig",
+            "args": ["build", "generate_stubs"],
+            "problemMatcher": "$zig",
+            "group": "build",
+            "presentation": {
+                "echo": false,
+                "reveal": "silent",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": true,
+                "clear": true
+            }
+        },
+        {
+            "label": "Build Generate Stubs",
+            "command" : "zig",
+            "args": ["build", "generate_stubs", "-DemitExe=true"],
+            "problemMatcher": "$zig",
+            "group": "build",
+            "presentation": {
+                "echo": false,
+                "reveal": "silent",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": true,
+                "clear": true
+            }
+        },
+        {
+            "label": "Build Dependencies",
+            "command" : "zig",
+            "args": ["build","dependencies"],
+            "problemMatcher": "$zig",
+            "group": "build",
+            "presentation": {
+                "echo": false,
+                "reveal": "silent",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": true,
+                "clear": true
+            }
+        },
+        {
+            "label": "Build Positron",
+            "command": "zig",
+            "args": ["build"],
+            "problemMatcher":"$zig",
+            "group": "build",
+            "options": {
+                "cwd": "${workspaceFolder}/libs/positron",
+            },
+            "presentation": {
+                "echo": false,
+                "reveal": "silent",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": true,
+                "clear": true
+            }
+        }
+    ]
+}
