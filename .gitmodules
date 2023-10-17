@@ -3,7 +3,7 @@
 	url = git@github.com:osdvf/glsl_analyzer.git
 [submodule "backend/libs/positron"]
 	path = libs/positron
-	url = git@github.com:ziglibs/positron.git
+	url = git@github.com:osdvf/positron.git
 [submodule "libs/zig-opengl"]
 	path = libs/zig-opengl
 	url = https://github.com/MasterQ32/zig-opengl.git
