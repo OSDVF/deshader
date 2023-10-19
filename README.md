@@ -1,24 +1,35 @@
-# Deshader
-Shaders are often shiny bud also shady, fishy and stinky!
+# Deshader 🔦
+Shaders are often shiny but sometimes also shady, fishy and stinky!
 > What if I could just step-debug that shader as I do with my CPU programs?
 
 Now you can!
+Deshader intercepts OpenGL calls and adds instrumentation code to your shaders so you don't need to create your own debug visualizations to output shader execution process.
 You can also:
 # Features
 - Track variable values for different output primitives and pixels
 - Incrementally visualise primitive and pixel output (so you can fix that weird vertex!)
-- Linux and Windows support
+- Use inbuilt editor (VSCode for Web in an embedded window or at `http://localhost:8080/index.html` by default)
+- Run it on Linux and Windows
 
-## Goals
-- Be better than GLIntercept
+# Goals
+- Compatibility between OpenGL vendor implementations (ICDs)
+- Being better than GLIntercept
 
 ## Non-goals
-- Debugging other languages than GLSL
+- Debugging other languages than GLSL (feel free to fork and add your own language)
+- Using vendor-specific GPU APIs and instructions
+- Assembly level debugging
+- Profiling
+- Mac OS CGL Support
+
+Feel free to fork and add your own goals or even better, break the non-goals!
+
+Deshader aims to assist researchers who want to leverage the edge features of graphical APIs to explore and create new software technologies. There is no development effort given into features like debugging of third party applications. If Deshader saved some of your time, you can leave a comment in the [discussions](https://github.com/OSDVF/deshader/discussions) or [star](https://github.com/OSDVF/deshader/star) the repo.
 
 # Build
 ## Components
 
-Deshader consists of several components that require different dev stacks and frameworks. Some of them are installed as git submodules or as Zig dependencies.
+Deshader consists of several (mostly third party; mostly forked) components that require different dev stacks and frameworks. Some of them are installed as git submodules or as Zig dependencies.
 
 - Deshader library
     - [/src/](/src/)
@@ -42,9 +53,14 @@ Deshader consists of several components that require different dev stacks and fr
 - Zig [Installation](https://github.com/ziglang/zig#installation) (developed against 0.12.0-dev.899+027aabf49)
 - Bun 1.0.6 [Install](https://github.com/oven-sh/bun#install)
 - Dotnet
+- C libraries
+    - Linux
+        - gtk-3 and webkit2gtk
+    - Windows
+        - [Edge Dev Channel](https://www.microsoftedgeinsider.com/download)
 
 ## How to
-After you install all the required frameworks, you can
+After you install all the required frameworks, you can create a debug build by
 ```sh
 zig build dependencies
 ```
@@ -60,14 +76,32 @@ for you. If there weren't any errors, then you can
 ```sh
 zig build deshader
 ```
+## Options
+Specify options as `-Doption=value` to `zig build deshader` commands. See also `zig build --help`
+Name           | Values                        | Description
+---------------|-------------------------------|-----------------------------------------------------------------------------------------------------------------------------
+`linkage`      | `Static`, `Dynamic` (default) | Select type of for deshader library
+`GlAdditionalLoader` | any string                    | Specify a single additional function name that will be exported and intercepted by Deshader.
+`VKAdditionalLoader` | any string                    | Same as `GlAdditionalLoader` but for Vulkan
+ 
+### Production build
+- Add `-Doptimize` to `zig build` commands
+    - `-Doptimize=ReleaseSmall` will disable debug and info meassages
+    - `-Doptimize=ReleaseSafe` will will enable info meassages
+    - `-Doptimize=Debug` (default) will include debug, info, warning and error meassages
+
 ## Frequently Seen Errors
 - Cannot compile
     - Something with `struct_XSTAT` inside WolfSSL
         - fix by `./fix_wolfssl.sh`  
         **CAUTION**: The script searches the whole `zls` global cache and deletes lines with `struct_XSTAT` so be careful.
 - Editor window is blank
-    - Set environment variable `WEBKIT_DISABLE_COMPOSITING_MODE=1`
-    - This is an issue with WebKit2Gtk
+    - This is a known issue between WebKit and vendor GL drivers
+    - Disable GPU acceleration
+        - Set environment variable `WEBKIT_DISABLE_COMPOSITING_MODE=1`
+    - Or select a different GPU
+        - by setting `__GLX_VENDOR_LIBRARY_NAME=nvidia __NV_PRIME_RENDER_OFFLOAD=1 __VK_LAYER_NV_optimus=NVIDIA_only`
+        - or `DRI_PRIME=1`
     
 and finally get your Deshader library files from `./zig-out/`:
 
@@ -80,8 +114,17 @@ and finally get your Deshader library files from `./zig-out/`:
 
 The files inside `include/` are bindings for your application.
 
-### Example
+# Example
 ```sh
 zig build example # Builds example application
 ./zig-out/bin/example # Runs example application
 ```
+
+# Settings
+## Environment variables
+All names start with DESHADER_ prefix e.g. `DESHADER_PORT`
+Name             | Default                                    | Description
+-----------------|--------------------------------------------|-------------------------------------------------------------------------------------
+PORT             | 8080                                       | Port for the web editor at `http://localhost:DESHADER_PORT/index.html`
+GL_LIBRARY       | `libGL.so` / `opengl32.dll`/ `libGL.dylib` | Path to OpenGL library
+GL_CUSTOM_LOADER | none                                       | Specify custom real/original lodader function that will be called to retrieve GL function pointers

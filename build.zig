@@ -8,6 +8,7 @@ const Linkage = enum {
     Static,
     Dynamic,
 };
+const String = []const u8;
 
 pub fn build(b: *std.Build) void {
     // Standard target options allows the person running `zig build` to choose
@@ -20,21 +21,32 @@ pub fn build(b: *std.Build) void {
     // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall. Here we do not
     // set a preferred release mode, allowing the user to decide how to optimize.
     const optimize = b.standardOptimizeOption(.{});
-    const deshaderOptions = .{
+    const deshaderCompileOptions = .{
         .name = "deshader",
-        // In this case the main source file is merely a path, however, in more
-        // complicated build scripts, this could be a generated file.
         .root_source_file = .{ .path = "src/main.zig" },
         .main_mod_path = .{ .path = "src" },
         .target = target,
         .optimize = optimize,
     };
-    const selectedLinkage = b.option(Linkage, "linkage", "Select linkage type for deshader library (Static, Dynamic - default)") orelse Linkage.Dynamic;
-    const deshaderLib: *std.build.Step.Compile = if (selectedLinkage == .Static) b.addStaticLibrary(deshaderOptions) else b.addSharedLibrary(deshaderOptions);
-    const wolfssl = ZigServe.createWolfSSL(b, target);
+    const optionLinkage = b.option(Linkage, "linkage", "Select linkage type for deshader library") orelse Linkage.Dynamic;
+    const deshaderLib: *std.build.Step.Compile = if (optionLinkage == .Static) b.addStaticLibrary(deshaderCompileOptions) else b.addSharedLibrary(deshaderCompileOptions);
+    const optionWolfSSL = b.option(bool, "wolfSSL", "Link against WolfSSL available on this system (produces smaller binaries)") orelse false;
+    var wolfssl: *std.build.Step.Compile = undefined;
+    if (optionWolfSSL) {
+        deshaderLib.linkSystemLibrary("wolfssl");
+        deshaderLib.addIncludePath(.{ .path = ZigServe.sdkPath("/vendor/wolfssl/") });
+    } else {
+        wolfssl = ZigServe.createWolfSSL(b, target);
+        deshaderLib.linkLibrary(wolfssl);
+    }
     const glModule = openGlModule(b);
     deshaderLib.addModule("gl", glModule);
-    deshaderLib.linkLibrary(wolfssl);
+
+    const options = b.addOptions();
+    const optionGLAdditionalLoader = b.option(String, "GlAdditionalLoader", "Name of the loader function that will be called to retrieve GL fucntion pointers");
+    const optionVkAdditionalLoader = b.option(String, "VkAdditionalLoader", "Name of the loader function that will be called to retrieve Vulkan fucntion pointers");
+    options.addOption(?String, "GlAdditionalLoader", optionGLAdditionalLoader);
+    options.addOption(?String, "VkAdditionalLoader", optionVkAdditionalLoader);
 
     const positron = PositronSdk.getPackage(b, "positron");
     deshaderLib.addModule("positron", positron);
@@ -56,9 +68,8 @@ pub fn build(b: *std.Build) void {
         //
         // Embed the created dependencies
         //
-        var files = std.ArrayList([]const u8).init(b.allocator);
+        var files = std.ArrayList(String).init(b.allocator);
         defer files.deinit();
-        var options = b.addOptions();
 
         // Add all files names in the editor dist folder to `files`
         const editorDirectory = "editor";
@@ -73,8 +84,8 @@ pub fn build(b: *std.Build) void {
 
         // Add the file names as an option to the exe, making it available
         // as a string array at comptime in main.zig
-        options.addOption([]const []const u8, "files", files.items);
-        options.addOption([]const u8, "editorDir", editorDirectory);
+        options.addOption([]const String, "files", files.items);
+        options.addOption(String, "editorDir", editorDirectory);
         deshaderLib.addOptions("options", options);
 
         const deshaderLibCmd = b.step("deshader", "Install deshader library");
@@ -96,14 +107,21 @@ pub fn build(b: *std.Build) void {
         });
         headerGenExe.addModule("positron", positron);
         headerGenExe.addModule("gl", glModule);
-        headerGenExe.linkLibrary(wolfssl);
+        if (optionWolfSSL) {
+            headerGenExe.linkSystemLibrary("wolfssl");
+        } else {
+            headerGenExe.linkLibrary(wolfssl);
+        }
+
         var headerGenOptions = b.addOptions();
-        headerGenOptions.addOption([]const []const u8, "files", &[_][]const u8{});
+        headerGenOptions.addOption([]const String, "files", &[_]String{});
         headerGenOptions.addOption(
-            []const u8,
+            String,
             "emitHDir",
-            std.fs.path.join(b.allocator, &[_][]const u8{ b.install_path, "include" }) catch unreachable,
+            std.fs.path.join(b.allocator, &[_]String{ b.install_path, "include" }) catch unreachable,
         );
+        headerGenOptions.addOption(?String, "GlAdditionalLoader", optionGLAdditionalLoader);
+        headerGenOptions.addOption(?String, "VkAdditionalLoader", optionVkAdditionalLoader);
         headerGenExe.addOptions("options", headerGenOptions);
         PositronSdk.linkPositron(headerGenExe, null);
         const headerGenInstall = b.addInstallArtifact(headerGenExe, .{});
@@ -131,7 +149,7 @@ pub fn build(b: *std.Build) void {
             stubGen.* = stubGenSrc.GenerateStubsStep.init(
                 b,
                 std.fs.createFileAbsolute(
-                    std.fs.path.join(b.allocator, &[_][]const u8{ b.install_path, "include", "deshader.zig" }) catch unreachable,
+                    std.fs.path.join(b.allocator, &[_]String{ b.install_path, "include", "deshader.zig" }) catch unreachable,
                     .{},
                 ) catch unreachable,
             );
@@ -192,11 +210,7 @@ pub fn build(b: *std.Build) void {
 // This scans the environment for the `DESHADER_GL_VERSION` variable and
 // returns a module that exports the OpenGL bindings for that version.
 fn openGlModule(b: *std.build.Builder) *std.build.Module {
-    const env_map = b.allocator.create(std.process.EnvMap) catch unreachable;
-    env_map.* = std.process.getEnvMap(b.allocator) catch unreachable;
-    defer env_map.deinit(); // technically unnecessary when using ArenaAllocator
-
-    const glVersion = env_map.get("DESHADER_GL_VERSION") orelse "4v6";
+    const glVersion = b.option(String, "glSuffix", "Suffix to libs/zig-opengl/exports/gl_X.zig that will be imported") orelse "4v6";
     const glFormat = "libs/zig-opengl/exports/gl_{s}.zig";
 
     return b.addModule("gl", .{
@@ -223,7 +237,7 @@ const DependenciesStep = struct {
         );
     }
 
-    pub fn initSubprocess(self: *DependenciesStep, argv: []const []const u8, cwd: []const u8, env_map: ?*std.process.EnvMap) std.process.Child {
+    pub fn initSubprocess(self: *DependenciesStep, argv: []const String, cwd: String, env_map: ?*std.process.EnvMap) std.process.Child {
         return .{
             .id = undefined,
             .allocator = self.step.owner.allocator,
@@ -257,8 +271,8 @@ const DependenciesStep = struct {
         var oglProcess = self.initSubprocess(&.{ "make", "all" }, "./libs/zig-opengl", env_map);
         try oglProcess.spawn();
 
-        const bunInstallCmd = [_][]const u8{ "bun", "install", "--frozen-lockfile" };
-        var bunProcess1 = self.initSubprocess((&bunInstallCmd ++ &[_][]const u8{"--production"}), "editor", null);
+        const bunInstallCmd = [_]String{ "bun", "install", "--frozen-lockfile" };
+        var bunProcess1 = self.initSubprocess((&bunInstallCmd ++ &[_]String{"--production"}), "editor", null);
         try bunProcess1.spawn();
 
         const deshaderVsCodeExt = "editor/deshader-vscode";
@@ -287,7 +301,7 @@ const DependenciesStep = struct {
     }
 };
 
-fn appendFiles(step: *std.build.Step.Compile, files: *std.ArrayList([]const u8), toAdd: anytype) !void {
+fn appendFiles(step: *std.build.Step.Compile, files: *std.ArrayList(String), toAdd: anytype) !void {
     inline for (toAdd) |addThis| {
         step.addAnonymousModule(addThis, .{
             .source_file = std.build.FileSource.relative(addThis),
@@ -299,8 +313,8 @@ fn appendFiles(step: *std.build.Step.Compile, files: *std.ArrayList([]const u8),
 fn appendFilesRecursive(
     b: *std.Build,
     step: *std.build.Step.Compile,
-    files: *std.ArrayList([]const u8),
-    absolutePasePath: []const u8,
+    files: *std.ArrayList(String),
+    absolutePasePath: String,
     it: *std.fs.IterableDir.Iterator,
     exclude: anytype,
 ) !void {
