@@ -13,3 +13,6 @@
 [submodule "libs/zig-header-gen"]
 	path = libs/zig-header-gen
 	url = git@github.com:suirad/zig-header-gen.git
+[submodule "libs/Vulkan-Docs"]
+	path = libs/Vulkan-Docs
+	url = git@github.com:KhronosGroup/Vulkan-Docs.git

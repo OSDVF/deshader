@@ -4,7 +4,7 @@
         {
             "label": "Build Library",
             "command" : "zig",
-            "args": ["build", "deshader", "-DwolfSSL=true"],
+            "args": ["build", "deshader", "-DwolfSSL=true", "-freference-trace"],
             "problemMatcher": "$zig",
             "group": "build",
             "presentation": {
@@ -19,7 +19,7 @@
         {
             "label": "Build Example",
             "command" : "zig",
-            "args": ["build","example", "-DwolfSSL=true"],
+            "args": ["build","example", "-DwolfSSL=true", "-freference-trace"],
             "problemMatcher": "$zig",
             "group": "build",
             "presentation": {

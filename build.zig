@@ -41,12 +41,20 @@ pub fn build(b: *std.Build) void {
     }
     const glModule = openGlModule(b);
     deshaderLib.addModule("gl", glModule);
+    const vulkanXmlInput = b.build_root.join(b.allocator, &[_]String{"libs/Vulkan-Docs/xml/vk.xml"}) catch unreachable;
+    const vkzig_dep = b.dependency("vulkan_zig", .{
+        .registry = @as(String, vulkanXmlInput),
+    });
+    const vkzigBindings = vkzig_dep.module("vulkan-zig");
+    deshaderLib.addModule("vulkan-zig", vkzigBindings);
 
     const options = b.addOptions();
-    const optionGLAdditionalLoader = b.option(String, "GlAdditionalLoader", "Name of the loader function that will be called to retrieve GL fucntion pointers");
-    const optionVkAdditionalLoader = b.option(String, "VkAdditionalLoader", "Name of the loader function that will be called to retrieve Vulkan fucntion pointers");
-    options.addOption(?String, "GlAdditionalLoader", optionGLAdditionalLoader);
-    options.addOption(?String, "VkAdditionalLoader", optionVkAdditionalLoader);
+    const optionGLAdditionalLoader = b.option(String, "GlAddLoader", "Name of additional exposed function which will call GL function loader");
+    const optionVkAddInstanceLoader = b.option(String, "VkAddInstanceLoader", "Name of additional exposed function which will call Vulkan instance function loader");
+    const optionVkAddDeviceLoader = b.option(String, "VkAddDeviceLoader", "Name of additional exposed function which will call Vulkan device function loader");
+    options.addOption(?String, "GlAddLoader", optionGLAdditionalLoader);
+    options.addOption(?String, "VkAddDeviceLoader", optionVkAddDeviceLoader);
+    options.addOption(?String, "VkAddInstanceLoader", optionVkAddInstanceLoader);
 
     const positron = PositronSdk.getPackage(b, "positron");
     deshaderLib.addModule("positron", positron);
@@ -120,8 +128,9 @@ pub fn build(b: *std.Build) void {
             "emitHDir",
             std.fs.path.join(b.allocator, &[_]String{ b.install_path, "include" }) catch unreachable,
         );
-        headerGenOptions.addOption(?String, "GlAdditionalLoader", optionGLAdditionalLoader);
-        headerGenOptions.addOption(?String, "VkAdditionalLoader", optionVkAdditionalLoader);
+        headerGenOptions.addOption(?String, "GlAddLoader", optionGLAdditionalLoader);
+        headerGenOptions.addOption(?String, "VkAddInstanceLoader", optionVkAddInstanceLoader);
+        headerGenOptions.addOption(?String, "VkAddDeviceLoader", optionVkAddDeviceLoader);
         headerGenExe.addOptions("options", headerGenOptions);
         PositronSdk.linkPositron(headerGenExe, null);
         const headerGenInstall = b.addInstallArtifact(headerGenExe, .{});
@@ -346,3 +355,26 @@ fn appendFilesRecursive(
         }
     }
 }
+
+const PrintStep = struct {
+    step: std.build.Step,
+    message: String,
+
+    fn init(b: *std.build.Builder, name: String, message: String) @This() {
+        return .{
+            .step = std.build.Step.init(.{
+                .owner = b,
+                .id = .custom,
+                .name = name,
+                .makeFn = @This().makeFn,
+            }),
+            .message = message,
+        };
+    }
+
+    fn makeFn(step: *std.build.Step, progressNode: *std.Progress.Node) anyerror!void {
+        _ = progressNode;
+        const self = @fieldParentPtr(PrintStep, "step", step);
+        std.log.err("{s}", .{self.message});
+    }
+};

@@ -16,11 +16,13 @@ You can also:
 - Being better than GLIntercept
 
 ## Non-goals
+And also some dead ends that have been encountered.
 - Debugging other languages than GLSL (feel free to fork and add your own language)
 - Using vendor-specific GPU APIs and instructions
 - Assembly level debugging
 - Profiling
 - Mac OS CGL Support
+- [Custom WebView profile data directory](https://github.com/webview/webview/issues/719)
 
 Feel free to fork and add your own goals or even better, break the non-goals!
 
@@ -60,8 +62,10 @@ Deshader consists of several (mostly third party; mostly forked) components that
         - [Edge Dev Channel](https://www.microsoftedgeinsider.com/download)
 
 ## How to
-After you install all the required frameworks, you can create a debug build by
+After you install all the required frameworks, clone this repository with submodules, open terminal in its folder and create a debug build by
 ```sh
+git clone  --recurse-submmodules https://github.com/OSDVF/deshader
+cd deshader
 zig build dependencies
 ```
 If that does not output any errors, it will autmatically
@@ -76,13 +80,15 @@ for you. If there weren't any errors, then you can
 ```sh
 zig build deshader
 ```
+Btw. `zig build` just downloads dependencies in `build.zig.zon`.
 ## Options
 Specify options as `-Doption=value` to `zig build deshader` commands. See also `zig build --help`
-Name           | Values                        | Description
----------------|-------------------------------|-----------------------------------------------------------------------------------------------------------------------------
-`linkage`      | `Static`, `Dynamic` (default) | Select type of for deshader library
-`GlAdditionalLoader` | any string                    | Specify a single additional function name that will be exported and intercepted by Deshader.
-`VKAdditionalLoader` | any string                    | Same as `GlAdditionalLoader` but for Vulkan
+Name                         | Values                        | Description
+-----------------------------|-------------------------------|---------------------------------------------------------------------------------------------------
+`linkage`                    | `Static`, `Dynamic` (default) | Select type of for deshader library
+`GlAddLoader`         | any string                    | Specify a single additional function name that will be exported and intercepted by Deshader.
+`VkAddDeviceLoader`   | any string                    | Export additional function that will be intercepted and will call device procedure addresss loader
+`VkAddInstanceLoader` | any string                    | Same as `VkAddDeviceLoader` but for instance procedure addresses
  
 ### Production build
 - Add `-Doptimize` to `zig build` commands
@@ -123,8 +129,11 @@ zig build example # Builds example application
 # Settings
 ## Environment variables
 All names start with DESHADER_ prefix e.g. `DESHADER_PORT`
-Name             | Default                                    | Description
------------------|--------------------------------------------|-------------------------------------------------------------------------------------
-PORT             | 8080                                       | Port for the web editor at `http://localhost:DESHADER_PORT/index.html`
-GL_LIBRARY       | `libGL.so` / `opengl32.dll`/ `libGL.dylib` | Path to OpenGL library
-GL_CUSTOM_LOADER | none                                       | Specify custom real/original lodader function that will be called to retrieve GL function pointers
+Name                | Default                                            | Description
+--------------------|----------------------------------------------------|---------------------------------------------------------------------------------------------------
+PORT                | 8080                                               | Port for the web editor at `http://localhost:DESHADER_PORT/index.html`
+GL_LIBRARY          | `libGL.so` / `opengl32.dll`/ `libGL.dylib`         | Path to OpenGL library
+GL_PROC_LOADER      | none                                               | Specify custom real/original lodader function that will be called to retrieve GL function pointers
+VK_LIBRARY          | `libvulkan.so` / `vulkan-1.dll`/ `libvulkan.dylib` | Path to Vulkan library
+VK_DEV_PROC_LOADER  | none                                               | Specify original device procedure address loader function for Vulkan
+VK_INST_PROC_LOADER | none                                               | Specify original instance procedure address loader function for Vulkan
