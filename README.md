@@ -13,7 +13,7 @@ You can also:
 
 # Goals
 - Compatibility between OpenGL vendor implementations (ICDs)
-- Being better than GLIntercept
+- Broader API support than [GLIntercept](https://github.com/dtrebilco/glintercept), different features than [ApiTrace](https://github.com/apitrace/apitrace)
 
 ## Non-goals
 And also some dead ends that have been encountered.
@@ -33,14 +33,16 @@ Deshader aims to assist researchers who want to leverage the edge features of gr
 
 Deshader consists of several (mostly third party; mostly forked) components that require different dev stacks and frameworks. Some of them are installed as git submodules or as Zig dependencies.
 
+- Deshader runner
+    - [/src/tools/run.zig](/src/tools/run.zig)
 - Deshader library
     - [/src/](/src/)
     - Written in **Zig**
     - [Graphical API bindings](https://github.com/MasterQ32/zig-opengl)
         - Code generator written in **C#** [/libs/zig-opengl/](/libs/zig-opengl/)
     - [Web View (WebKit2Gtk)](https://github.com/ziglibs/positron) [/libs/positron/](/libs/positron/)
-    - Example application
-        - [/example/](/example/)
+    - Example applications
+        - [/examples/](/examples/)
     - [GLSL Analyzer](https://github.com/nolanderc/glsl_analyzer) [/libs/positron/](/libs/positron/)
 - [Visual Studio Code for Web distribution](https://github.com/Felx-B/vscode-web)
     - [/editor/](/editor/)
@@ -64,7 +66,7 @@ Deshader consists of several (mostly third party; mostly forked) components that
 ## How to
 After you install all the required frameworks, clone this repository with submodules, open terminal in its folder and create a debug build by
 ```sh
-git clone  --recurse-submmodules https://github.com/OSDVF/deshader
+git clone --recurse-submmodules https://github.com/OSDVF/deshader
 cd deshader
 zig build dependencies
 ```
@@ -76,19 +78,69 @@ If that does not output any errors, it will autmatically
 - Compile Deshader VSCode Extension
     - `bun compile-web` inside `/editor/deshader-vscode/`
 
-for you. If there weren't any errors, then you can
+for you. If there weren't any errors, then you can then
 ```sh
-zig build deshader
+# Build
+zig build runner
+
+# Use Runner wrapper
+DESHADER_LIB_ROOT=zig-out/lib ./zig-out/bin/deshader-run your_application
+
+# Or run & build the provided examples sequentially
+zig build examples-run -DwolfSSL=true -DlogIntercept=true  # -DwolfSSL=true only if you have WolfSSL installed
 ```
-Btw. `zig build` just downloads dependencies in `build.zig.zon`.
-## Options
+btw. `zig build` only downloads dependencies specified in `build.zig.zon`.
+
+Output files will be placed at `./zig-out/`:
+- `bin/`
+    - `deshader-run`
+    - (internal tools)
+        - `generate_header`
+        - `generate_stubs`
+        - `symbol_enumerator`
+    - `example/`
+        - `glfw`
+        - `editor`
+    - `examples`
+- `lib/`
+    - (lib)deshader.[a|so|dll|lib|dylib]
+- `include/`
+    - `deshader.h`
+    - `deshader.hpp`
+    - `deshader.zig`
+
+The files inside `include/` are bindings for your application.
+
+### Without runner
+#### Linux
+```sh
+DESHADER_LIB_ROOT=zig-out/lib DESHADER_REPLACE_ROOT=/your/app/dir ./zig-out/bin/deshader-run # Symlinks Deshader as libGLX.so, libEGL.so... etc. into DESHADER_REPLACE_ROOT
+LD_LIBRARY_PATH=/your/app/dir /your/app/dir/app
+```
+#### Windows
+```bat
+set DESHADER_REPLACE_ROOT=your\app\dir
+set DESHADER_LIB_ROOT=zig-out\lib
+rem Symlink Deshader as opengl32.dll, vulkan-1.dll... etc. into DESHADER_REPLACE_ROOT
+zig-out\bin\deshader-run.exe
+your\app\dir\app.exe
+```
+
+#### Mac OS
+```sh
+DYLD_INSERT_LIBRARIES=./zig-out/lib/libdeshader.dylib your_application
+```
+
+## Build Options
 Specify options as `-Doption=value` to `zig build deshader` commands. See also `zig build --help`
-Name                         | Values                        | Description
------------------------------|-------------------------------|---------------------------------------------------------------------------------------------------
-`linkage`                    | `Static`, `Dynamic` (default) | Select type of for deshader library
-`GlAddLoader`         | any string                    | Specify a single additional function name that will be exported and intercepted by Deshader.
-`VkAddDeviceLoader`   | any string                    | Export additional function that will be intercepted and will call device procedure addresss loader
-`VkAddInstanceLoader` | any string                    | Same as `VkAddDeviceLoader` but for instance procedure addresses
+Name                  | Values                        | Description
+----------------------|-------------------------------|---------------------------------------------------------------------------------------
+`linkage`             | `Static`, `Dynamic` (default) | Select type of for Deshader library
+`wolfSSL`             | `true`, `false` (default)     | Link with system-provided WolfSSL instead of deshader included one
+`logIntercept`        | `true`, `false` (default)     | Enable logging of intercepted VK ang GL (not on Mac) procedure requests 
+`glAddLoader`         | any string                    | Specify a single additional function name that will be exported and intercepted
+`vkAddDeviceLoader`   | any string                    | Export additional intercepted function that will call device procedure addresss loader
+`vkAddInstanceLoader` | any string                    | Same as `vkAddDeviceLoader` but for instance procedure addresses
  
 ### Production build
 - Add `-Doptimize` to `zig build` commands
@@ -108,32 +160,30 @@ Name                         | Values                        | Description
     - Or select a different GPU
         - by setting `__GLX_VENDOR_LIBRARY_NAME=nvidia __NV_PRIME_RENDER_OFFLOAD=1 __VK_LAYER_NV_optimus=NVIDIA_only`
         - or `DRI_PRIME=1`
-    
-and finally get your Deshader library files from `./zig-out/`:
 
-- lib
-    - (lib)deshader.[a|so|dll|lib|dylib]
-- include
-    - deshader.h
-    - deshader.hpp
-    - deshader.zig
-
-The files inside `include/` are bindings for your application.
-
-# Example
-```sh
-zig build example # Builds example application
-./zig-out/bin/example # Runs example application
-```
 
 # Settings
 ## Environment variables
+Runtime settings can be specified by environment variables.
 All names start with DESHADER_ prefix e.g. `DESHADER_PORT`
+### Deshader runner
+Name         | Default                                                             | Description
+-------------|---------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------
+LIB_ROOT     | `/usr/lib` / `C:\Windows\System32`                                  | Override the default path to the folder where the original libraries are located
+REPLACE_ROOT | current working directory                                           | Location for Deshader replacement libraries (should be the working directory of debugged app)
+HOOK_LIBS    | `opengl32.dll, vulkan-1.dll, libvulkan.dylib, libGLX.so, libEGL.so` | Comma separated list of **additional** library files that will be replaced with Deshader library (defaults will be always included)
+### Deshader library
 Name                | Default                                            | Description
---------------------|----------------------------------------------------|---------------------------------------------------------------------------------------------------
+--------------------|----------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------
+LIB_ROOT            | `/usr/lib` / `C:\Windows\System32`                 | **REQUIRED** and automatically set by the Runner. Path to the folder where the original libraries are located
 PORT                | 8080                                               | Port for the web editor at `http://localhost:DESHADER_PORT/index.html`
-GL_LIBRARY          | `libGL.so` / `opengl32.dll`/ `libGL.dylib`         | Path to OpenGL library
-GL_PROC_LOADER      | none                                               | Specify custom real/original lodader function that will be called to retrieve GL function pointers
-VK_LIBRARY          | `libvulkan.so` / `vulkan-1.dll`/ `libvulkan.dylib` | Path to Vulkan library
+SHOW                | none                                               | Pass `true` or `1` to show the editor window on startup
+GL_LIBS             | `libGLX.so, libEGL.so` / `opengl32.dll`            | Path to libraries from which the original GL functions will be loaded
+GL_PROC_LOADERS     | none                                               | Specify additional lodader functions that will be called to retrieve GL function pointers[^1]
+SUBSTITUTE_LOADER   | `false`                                            | Specify `1`, `yes` or `true` for calling `DESHADER_GL_PROC_LOADERS` instead of standard GL loader functions internally[^2]
+VK_LIB              | `libvulkan.so` / `vulkan-1.dll`/ `libvulkan.dylib` | Path to library from which the original Vulkan functions will be loaded
 VK_DEV_PROC_LOADER  | none                                               | Specify original device procedure address loader function for Vulkan
 VK_INST_PROC_LOADER | none                                               | Specify original instance procedure address loader function for Vulkan
+
+[^1]: Should be a comma separated list. The first found function will be used.
+[^2]: In this case `DESHADER_GL_PROC_LOADERS` must be a single function. Does not work on Mac OS.

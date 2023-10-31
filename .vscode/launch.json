@@ -2,6 +2,19 @@
     "version": "0.2.0",
     "configurations": [
         {
+            "name": "Runner",
+            "type": "gdb",
+            "request": "launch",
+            "cwd": "${workspaceRoot}",
+            "target": "./zig-out/bin/deshader-run",
+            "preLaunchTask": "Build Runner",
+            "arguments": "zig-out/bin/example < zig-out/yes.txt",
+            "env": {
+                "DESHADER_REPLACE_ROOT": "zig-out/lib",
+                "DESHADER_LIB_ROOT": "/usr/lib/",
+            },
+        },
+        {
             "name": "Generate Stubs",
             "type": "gdb",
             "request": "launch",
@@ -13,7 +26,7 @@
             "type": "gdb",
             "request": "launch",
             "name": "Example",
-            "target": "./zig-out/bin/example",
+            "target": "./zig-out/bin/examples",
             "cwd": "${workspaceRoot}",
             "valuesFormatting": "parseText",
             "preLaunchTask": "Build Example",
@@ -21,6 +34,8 @@
                 "__GLX_VENDOR_LIBRARY_NAME": "nvidia",
                 "__NV_PRIME_RENDER_OFFLOAD": "1",
                 "__VK_LAYER_NV_optimus": "NVIDIA_only",
+                "LD_LIBRARY_PATH": "${workspaceRoot}/zig-out/lib",
+                "DESHADER_LIB_ROOT": "/usr/lib/",
             }
         },
         {
@@ -40,26 +55,6 @@
             "cwd": "${workspaceRoot}",
             "valuesFormatting": "parseText",
             "preLaunchTask": "Build Positron",
-        },
-        {
-            "name": "(gdb) Deshader",
-            "type": "cppdbg",
-            "request": "launch",
-            "program": "./zig-out/bin/deshader",
-            "args": [],
-            "stopAtEntry": false,
-            "cwd": "${workspaceFolder}",
-            "environment": [],
-            "externalConsole": false,
-            "MIMode": "gdb",
-            "preLaunchTask": "Build",
-            "setupCommands": [
-                {
-                    "description": "Enable pretty-printing for gdb",
-                    "text": "-enable-pretty-printing",
-                    "ignoreFailures": true
-                }
-            ]
-        },
+        }
     ]
 }

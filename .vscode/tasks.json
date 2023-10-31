@@ -3,8 +3,17 @@
     "tasks": [
         {
             "label": "Build Library",
-            "command" : "zig",
-            "args": ["build", "deshader", "-DwolfSSL=true", "-freference-trace"],
+            "command": "zig",
+            "args": [
+                "build",
+                "deshader",
+                "-DwolfSSL=true",
+                "-DlogIntercept=true",
+                "-freference-trace",
+                "--summary",
+                "none",
+                "--prominent-compile-errors",
+            ],
             "problemMatcher": "$zig",
             "group": "build",
             "presentation": {
@@ -17,9 +26,70 @@
             }
         },
         {
+            "label": "Build Runner",
+            "command": "zig",
+            "args": [
+                "build",
+                "runner",
+                "-DwolfSSL=true",
+                "--prominent-compile-errors",
+                "-freference-trace"
+            ],
+            "problemMatcher": "$zig",
+            "group": "build",
+            "presentation": {
+                "echo": false,
+                "reveal": "silent",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": true,
+                "clear": true
+            }
+        },
+        {
+            "label": "Symlink Libraries",
+            "command": "zig-out/bin/deshader-run",
+            "options": {
+                "cwd": "${workspaceFolder}",
+                "env": {
+                    "DESHADER_REPLACE_ROOT": "zig-out/lib"
+                }
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Run Example",
+            "command": "zig",
+            "args": [
+                "build",
+                "examples-run",
+                "-DwolfSSL=true",
+                "--prominent-compile-errors",
+                "-freference-trace"
+            ],
+            "problemMatcher": "$zig",
+            "presentation": {
+                "echo": false,
+                "reveal": "silent",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": true,
+                "clear": true
+            }
+        },
+        {
             "label": "Build Example",
-            "command" : "zig",
-            "args": ["build","example", "-DwolfSSL=true", "-freference-trace"],
+            "command": "zig",
+            "args": [
+                "build",
+                "example",
+                "-DwolfSSL=true",
+                "--prominent-compile-errors",
+                "-freference-trace",
+                "--summary",
+                "none"
+
+            ],
             "problemMatcher": "$zig",
             "group": "build",
             "presentation": {
@@ -33,8 +103,11 @@
         },
         {
             "label": "Build Headers Generator",
-            "command" : "zig",
-            "args": ["build","generate_header"],
+            "command": "zig",
+            "args": [
+                "build",
+                "generate_header"
+            ],
             "problemMatcher": "$zig",
             "group": "build",
             "presentation": {
@@ -48,23 +121,11 @@
         },
         {
             "label": "Generate Stubs",
-            "command" : "zig",
-            "args": ["build", "generate_stubs"],
-            "problemMatcher": "$zig",
-            "group": "build",
-            "presentation": {
-                "echo": false,
-                "reveal": "silent",
-                "focus": false,
-                "panel": "shared",
-                "showReuseMessage": true,
-                "clear": true
-            }
-        },
-        {
-            "label": "Build Generate Stubs",
-            "command" : "zig",
-            "args": ["build", "generate_stubs", "-DemitExe=true"],
+            "command": "zig",
+            "args": [
+                "build",
+                "generate_stubs"
+            ],
             "problemMatcher": "$zig",
             "group": "build",
             "presentation": {
@@ -78,28 +139,13 @@
         },
         {
             "label": "Build Dependencies",
-            "command" : "zig",
-            "args": ["build","dependencies"],
+            "command": "zig",
+            "args": [
+                "build",
+                "dependencies"
+            ],
             "problemMatcher": "$zig",
             "group": "build",
-            "presentation": {
-                "echo": false,
-                "reveal": "silent",
-                "focus": false,
-                "panel": "shared",
-                "showReuseMessage": true,
-                "clear": true
-            }
-        },
-        {
-            "label": "Build Positron",
-            "command": "zig",
-            "args": ["build"],
-            "problemMatcher":"$zig",
-            "group": "build",
-            "options": {
-                "cwd": "${workspaceFolder}/libs/positron",
-            },
             "presentation": {
                 "echo": false,
                 "reveal": "silent",

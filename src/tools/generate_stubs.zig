@@ -57,12 +57,14 @@ pub fn generateStubs(allocator: std.mem.Allocator, output: std.fs.File) !void {
             .fn_decl => {
                 const protoStart = tree.tokens.get(tree.nodes.get(declNode.data.lhs).main_token).start;
                 var protoEnd = tree.tokens.get(tree.nodes.get(declNode.data.rhs).main_token).start - 1;
-                try output.writeAll("pub extern ");
                 while (tree.source[protoEnd - 1] == ' ') {
                     protoEnd -= 1;
                 }
-                try output.writeAll(tree.source[protoStart..protoEnd]);
-                try output.writeAll(";\n");
+                if (std.mem.indexOf(u8, tree.source[protoStart - 7 .. protoStart], "export") != null) {
+                    try output.writeAll("pub extern ");
+                    try output.writeAll(tree.source[protoStart..protoEnd]);
+                    try output.writeAll(";\n");
+                }
             },
             else => {},
         }

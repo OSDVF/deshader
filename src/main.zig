@@ -5,6 +5,38 @@ const wv = @import("positron");
 const shrink = @import("tools/shrink.zig");
 const gl = @import("gl");
 const vulkan = @import("vulkan");
+const DeshaderLog = @import("log.zig").DeshaderLog;
+const common = @import("common.zig");
+
+const loaders = @import("interceptors/loaders.zig");
+const transitive = @import("interceptors/transitive.zig");
+
+// Run these functions at Deshader shared library load
+export const init_array linksection(".init_array") = &wrapErrorRunOnLoad;
+
+fn runOnLoad() !void {
+    try common.init();
+    const showAtStartup = std.os.getenv("DESHADER_SHOW") orelse "0";
+    const l = try std.ascii.allocLowerString(common.allocator, showAtStartup);
+    const showOpts = enum { yes, no, @"1", @"0", true, false, unknown };
+    switch (std.meta.stringToEnum(showOpts, l) orelse .unknown) {
+        .yes, .@"1", .true => {
+            _ = showEditorWindow();
+        },
+        .no, .@"0", .false => {},
+        .unknown => {
+            DeshaderLog.warn("Invalid value for DESHADER_SHOW: {s}", .{showAtStartup});
+        },
+    }
+    try loaders.loadGlLib();
+    try loaders.loadVkLib();
+    try transitive.TransitiveSymbols.loadOriginal();
+}
+fn wrapErrorRunOnLoad() callconv(.C) void {
+    runOnLoad() catch |err| {
+        DeshaderLog.err("Initialization error: {any}", .{err});
+    };
+}
 
 const AppState = struct {
     arena: std.heap.ArenaAllocator,
@@ -17,7 +49,6 @@ const AppState = struct {
         return app.view;
     }
 };
-const DeshaderLog = std.log.scoped(.Deshader);
 
 pub export fn showEditorWindow() u8 {
     var port: u16 = undefined;
@@ -32,12 +63,11 @@ pub export fn showEditorWindow() u8 {
         DeshaderLog.warn("DESHADER_PORT not set, using default port 8080", .{});
         port = 8080;
     }
-
-    const provider = wv.Provider.create(std.heap.c_allocator, port) catch return 1;
+    const provider = wv.Provider.create(common.allocator, port) catch return 1;
     defer provider.destroy();
     const view = wv.View.create((@import("builtin").mode == .Debug), null) catch return 2;
     defer view.destroy();
-    const arena = comptime std.heap.ArenaAllocator.init(std.heap.c_allocator);
+    const arena = std.heap.ArenaAllocator.init(common.allocator);
     var app = AppState{
         .arena = arena,
         .provider = provider,
@@ -75,101 +105,4 @@ pub export fn showEditorWindow() u8 {
     @atomicStore(u32, &app.shutdown_thread, 1, .SeqCst);
 
     return 0;
-}
-
-var originalGlLib: ?std.DynLib = null;
-var originalVkLib: ?std.DynLib = null;
-
-pub export fn loadGlLib() callconv(.C) void {
-    const libName = std.os.getenv("DESHADER_GL_LIBRARY") orelse switch (builtin.os.tag) {
-        .windows => "openGL32.dll",
-        .linux => "libGL.so",
-        .macos => "libGL.dylib",
-        else => {
-            DeshaderLog.err("Unsupported OS: {s}", .{builtin.os.name});
-        },
-    };
-    if (std.DynLib.open(libName)) |openedLib| {
-        originalGlLib = openedLib;
-        DeshaderLog.debug("Loaded {s}", .{libName});
-        if (options.GlAddLoader) |name| {
-            DeshaderLog.debug("This Deshader build exports additional GL function loader: {s}", .{name});
-        }
-    } else |err| {
-        DeshaderLog.err("Failed to open {s}: {any}", .{ libName, err });
-    }
-}
-
-pub export fn loadVkLib() callconv(.C) void {
-    const libName = std.os.getenv("DESHADER_VK_LIBRARY") orelse switch (builtin.os.tag) {
-        .windows => "vulkan-1.dll",
-        .linux => "libvulkan.so",
-        .macos => "libvulkan.dylib",
-        else => {
-            DeshaderLog.err("Unsupported OS: {s}", .{builtin.os.name});
-        },
-    };
-    if (std.DynLib.open(libName)) |openedLib| {
-        originalVkLib = openedLib;
-        DeshaderLog.debug("Loaded {s}", .{libName});
-        if (options.VkAddDeviceLoader) |name| {
-            DeshaderLog.debug("This Deshader build exports additional VK device function loader: {s}", .{name});
-        }
-        if (options.VkAddInstanceLoader) |name| {
-            DeshaderLog.debug("This Deshader build exports additional VK instance function loader: {s}", .{name});
-        }
-    } else |err| {
-        DeshaderLog.err("Failed to open {s}: {any}", .{ libName, err });
-    }
-}
-const runOnLoad = [_]*const @TypeOf(loadGlLib){
-    &loadGlLib,
-    &loadVkLib,
-};
-
-// Run these functions at Deshader shared library load
-export const init_array linksection(".init_array") = runOnLoad;
-
-/// Interceptors for OpenGL functions
-pub fn deshaderGetGlProcAddress(procedure: [*:0]const u8) callconv(.C) *align(@alignOf(fn (u32) callconv(.C) u32)) const anyopaque {
-    if (originalGlLib == null) {
-        return undefined;
-    }
-    return originalGlLib.?.lookup(gl.FunctionPointer, std.mem.span(procedure)) orelse undefined;
-}
-
-/// Interceptors for Vulkan functions
-pub fn deshaderGetVkInstanceProcAddr(procedure: [*:0]const u8) callconv(.C) *align(@alignOf(fn (u32) callconv(.C) u32)) const anyopaque {
-    if (originalVkLib == null) {
-        return undefined;
-    }
-    return originalVkLib.?.lookup(gl.FunctionPointer, std.mem.span(procedure)) orelse undefined;
-}
-pub fn deshaderGetVkDeviceProcAddr(procedure: [*:0]const u8) callconv(.C) *align(@alignOf(fn (u32) callconv(.C) u32)) const anyopaque {
-    if (originalVkLib == null) {
-        return undefined;
-    }
-    return originalVkLib.?.lookup(gl.FunctionPointer, std.mem.span(procedure)) orelse undefined;
-}
-
-comptime {
-    var glTrampolineNames = [_]?[]const u8{ "wglGetProcAddress", "glXGetProcAddressARB", "glXGetProcAddress", "eglGetProcAddress", options.GlAddLoader };
-    inline for (glTrampolineNames) |trampolineNameMaybe| {
-        if (trampolineNameMaybe) |trampolineName| @export(deshaderGetGlProcAddress, .{ .name = trampolineName, .linkage = .Strong });
-    }
-
-    var vkDeviceLoaders = [_]?[]const u8{ "vkGetDeviceProcAddr", options.VkAddDeviceLoader };
-    inline for (vkDeviceLoaders) |trampolineNameMaybe| {
-        if (trampolineNameMaybe) |trampolineName| @export(deshaderGetVkDeviceProcAddr, .{ .name = trampolineName, .linkage = .Strong });
-    }
-    var vkInstanceLoaders = [_]?[]const u8{ "vkGetInstanceProcAddr", options.VkAddInstanceLoader };
-    inline for (vkInstanceLoaders) |trampolineNameMaybe| {
-        if (trampolineNameMaybe) |trampolineName| @export(deshaderGetVkInstanceProcAddr, .{ .name = trampolineName, .linkage = .Strong });
-    }
-}
-
-test "declarations" {
-    std.testing.expect(@TypeOf(deshaderGetGlProcAddress).ReturnType == gl.FunctionPointer);
-    std.testing.expect(@TypeOf(deshaderGetVkInstanceProcAddr).ReturnType == gl.FunctionPointer);
-    std.testing.expect(@TypeOf(deshaderGetVkDeviceProcAddr).ReturnType == gl.FunctionPointer);
 }

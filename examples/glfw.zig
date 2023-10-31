@@ -1,7 +1,6 @@
 const std = @import("std");
 const glfw = @import("mach-glfw");
 const gl = @import("gl");
-const deshader = @import("deshader");
 
 const log = std.log.scoped(.Engine);
 
@@ -12,14 +11,15 @@ fn glGetProcAddress(p: glfw.GLProc, proc: [:0]const u8) ?gl.FunctionPointer {
 
 /// Default GLFW error handling callback
 fn errorCallback(error_code: glfw.ErrorCode, description: [:0]const u8) void {
-    std.log.err("glfw: {}: {s}\n", .{ error_code, description });
+    log.err("glfw: {}: {s}\n", .{ error_code, description });
 }
 
 pub fn main() !void {
-    _ = deshader.showEditorWindow();
+    log.info("Showing a window with GLFW and OpenGL");
+    // Initialize GLFW
     glfw.setErrorCallback(errorCallback);
     if (!glfw.init(.{})) {
-        std.log.err("failed to initialize GLFW: {?s}", .{glfw.getErrorString()});
+        log.err("failed to initialize GLFW: {?s}", .{glfw.getErrorString()});
         std.process.exit(1);
     }
     defer glfw.terminate();
@@ -30,7 +30,7 @@ pub fn main() !void {
         .context_version_major = 4,
         .context_version_minor = 0,
     }) orelse {
-        std.log.err("failed to create GLFW window: {?s}", .{glfw.getErrorString()});
+        log.err("failed to create GLFW window: {?s}", .{glfw.getErrorString()});
         std.process.exit(1);
     };
     defer window.destroy();
