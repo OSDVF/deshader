@@ -40,10 +40,10 @@ Deshader consists of several (mostly third party; mostly forked) components that
     - Written in **Zig**
     - [Graphical API bindings](https://github.com/MasterQ32/zig-opengl)
         - Code generator written in **C#** [/libs/zig-opengl/](/libs/zig-opengl/)
-    - [Web View (WebKit2Gtk)](https://github.com/ziglibs/positron) [/libs/positron/](/libs/positron/)
+    - [Web View (WebKit2Gtk)](https://github.com/ziglibs/positron) at [/libs/positron/](/libs/positron/)
     - Example applications
         - [/examples/](/examples/)
-    - [GLSL Analyzer](https://github.com/nolanderc/glsl_analyzer) [/libs/positron/](/libs/positron/)
+    - [GLSL Analyzer](https://github.com/nolanderc/glsl_analyzer) at [/libs/glsl_analyzer/](/libs/glsl_analyzer/)
 - [Visual Studio Code for Web distribution](https://github.com/Felx-B/vscode-web)
     - [/editor/](/editor/)
     - With node.js packages

@@ -51,6 +51,11 @@ const AppState = struct {
 };
 
 pub export fn showEditorWindow() u8 {
+    if (!options.embedEditor) {
+        DeshaderLog.err("Editor not embedded in this Deshader distribution. Cannot show it.", .{});
+        return 1;
+    }
+
     var port: u16 = undefined;
     if (std.os.getenv("DESHADER_PORT")) |portString| {
         if (std.fmt.parseInt(u16, portString, 10)) |parsedPort| {
@@ -67,7 +72,8 @@ pub export fn showEditorWindow() u8 {
     defer provider.destroy();
     const view = wv.View.create((@import("builtin").mode == .Debug), null) catch return 2;
     defer view.destroy();
-    const arena = std.heap.ArenaAllocator.init(common.allocator);
+    var arena = std.heap.ArenaAllocator.init(common.allocator);
+    defer arena.deinit();
     var app = AppState{
         .arena = arena,
         .provider = provider,
@@ -89,7 +95,11 @@ pub export fn showEditorWindow() u8 {
             .other => "text/plain",
         };
         // assume all paths start with `options.editorDir`
-        app.provider.addContent(file[options.editorDir.len..], mimeType, @embedFile(file)) catch return 4;
+
+        app.provider.addContentDeflated(file[options.editorDir.len..], mimeType, @embedFile(file)) catch |err| {
+            DeshaderLog.err("Failed to route file {s}: {any}", .{ file, err });
+            return 5;
+        };
     }
 
     const provide_thread = std.Thread.spawn(.{}, wv.Provider.run, .{app.provider}) catch return 5;

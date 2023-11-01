@@ -15,7 +15,7 @@ fn errorCallback(error_code: glfw.ErrorCode, description: [:0]const u8) void {
 }
 
 pub fn main() !void {
-    log.info("Showing a window with GLFW and OpenGL");
+    log.info("Showing a window with GLFW and OpenGL", .{});
     // Initialize GLFW
     glfw.setErrorCallback(errorCallback);
     if (!glfw.init(.{})) {

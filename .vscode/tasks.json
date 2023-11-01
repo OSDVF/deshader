@@ -12,7 +12,6 @@
                 "-freference-trace",
                 "--summary",
                 "none",
-                "--prominent-compile-errors",
             ],
             "problemMatcher": "$zig",
             "group": "build",
@@ -32,7 +31,6 @@
                 "build",
                 "runner",
                 "-DwolfSSL=true",
-                "--prominent-compile-errors",
                 "-freference-trace"
             ],
             "problemMatcher": "$zig",
@@ -64,7 +62,6 @@
                 "build",
                 "examples-run",
                 "-DwolfSSL=true",
-                "--prominent-compile-errors",
                 "-freference-trace"
             ],
             "problemMatcher": "$zig",
@@ -84,11 +81,9 @@
                 "build",
                 "example",
                 "-DwolfSSL=true",
-                "--prominent-compile-errors",
                 "-freference-trace",
                 "--summary",
                 "none"
-
             ],
             "problemMatcher": "$zig",
             "group": "build",

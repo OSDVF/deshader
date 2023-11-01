@@ -25,8 +25,24 @@
         {
             "type": "gdb",
             "request": "launch",
-            "name": "Example",
+            "name": "Examples",
             "target": "./zig-out/bin/examples",
+            "cwd": "${workspaceRoot}",
+            "valuesFormatting": "parseText",
+            "preLaunchTask": "Build Example",
+            "env": {
+                "__GLX_VENDOR_LIBRARY_NAME": "nvidia",
+                "__NV_PRIME_RENDER_OFFLOAD": "1",
+                "__VK_LAYER_NV_optimus": "NVIDIA_only",
+                "LD_LIBRARY_PATH": "${workspaceRoot}/zig-out/lib",
+                "DESHADER_LIB_ROOT": "/usr/lib/",
+            }
+        },
+        {
+            "type": "gdb",
+            "request": "launch",
+            "name": "Editor",
+            "target": "./zig-out/bin/example/editor",
             "cwd": "${workspaceRoot}",
             "valuesFormatting": "parseText",
             "preLaunchTask": "Build Example",

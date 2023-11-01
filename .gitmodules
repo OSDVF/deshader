@@ -1,6 +1,6 @@
 [submodule "backend/libs/glsl_analyzer"]
 	path = libs/glsl_analyzer
-	url = git@github.com:osdvf/glsl_analyzer.git
+	url = git@github.com:nolanderc/glsl_analyzer.git
 [submodule "backend/libs/positron"]
 	path = libs/positron
 	url = git@github.com:osdvf/positron.git
@@ -16,3 +16,6 @@
 [submodule "libs/Vulkan-Docs"]
 	path = libs/Vulkan-Docs
 	url = git@github.com:KhronosGroup/Vulkan-Docs.git
+[submodule "editor/deshader-vscode"]
+	path = editor/deshader-vscode
+	url = git@github.com:OSDVF/deshader-vscode.git

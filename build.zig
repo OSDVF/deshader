@@ -40,27 +40,28 @@ pub fn build(b: *std.Build) void {
     // Compile options
     const optionLinkage = b.option(Linkage, "linkage", "Select linkage type for deshader library") orelse Linkage.Dynamic;
     const optionWolfSSL = b.option(bool, "wolfSSL", "Link against WolfSSL available on this system (produces smaller binaries)") orelse false;
+    const option_embed_editor = b.option(bool, "embedEditor", "Embed VSCode editor into the library (default yes)") orelse true;
     const optionAdditionalLibraries = b.option([]const String, "customLibrary", "Names of additional libraroes to intercept");
     const optionInterceptionLog = b.option(bool, "logIntercept", "Log intercepted GL and VK procedure list to stdout") orelse false;
 
-    const deshaderLib: *std.build.Step.Compile = if (optionLinkage == .Static) b.addStaticLibrary(deshaderCompileOptions) else b.addSharedLibrary(deshaderCompileOptions);
+    const deshader_lib: *std.build.Step.Compile = if (optionLinkage == .Static) b.addStaticLibrary(deshaderCompileOptions) else b.addSharedLibrary(deshaderCompileOptions);
     const deshaderLibCmd = b.step("deshader", "Install deshader library");
-    const deshaderLibInstall = b.addInstallArtifact(deshaderLib, .{});
+    const deshaderLibInstall = b.addInstallArtifact(deshader_lib, .{});
     deshaderLibCmd.dependOn(&deshaderLibInstall.step);
 
     // WolfSSL
     var wolfssl: *std.build.Step.Compile = undefined;
     if (optionWolfSSL) {
-        deshaderLib.linkSystemLibrary("wolfssl");
-        deshaderLib.addIncludePath(.{ .path = ZigServe.sdkPath("/vendor/wolfssl/") });
+        deshader_lib.linkSystemLibrary("wolfssl");
+        deshader_lib.addIncludePath(.{ .path = ZigServe.sdkPath("/vendor/wolfssl/") });
     } else {
         wolfssl = ZigServe.createWolfSSL(b, target);
-        deshaderLib.linkLibrary(wolfssl);
+        deshader_lib.linkLibrary(wolfssl);
     }
 
     // OpenGL
     const glModule = openGlModule(b);
-    deshaderLib.addModule("gl", glModule);
+    deshader_lib.addModule("gl", glModule);
 
     // Vulkan
     const vulkanXmlInput = b.build_root.join(b.allocator, &[_]String{"libs/Vulkan-Docs/xml/vk.xml"}) catch unreachable;
@@ -68,7 +69,7 @@ pub fn build(b: *std.Build) void {
         .registry = @as(String, vulkanXmlInput),
     });
     const vkzigBindings = vkzig_dep.module("vulkan-zig");
-    deshaderLib.addModule("vulkan-zig", vkzigBindings);
+    deshader_lib.addModule("vulkan-zig", vkzigBindings);
 
     // Deshader internal library options
     const options = b.addOptions();
@@ -79,7 +80,7 @@ pub fn build(b: *std.Build) void {
     options.addOption(?String, "vkAddDeviceLoader", optionvkAddDeviceLoader);
     options.addOption(?String, "vkAddInstanceLoader", optionvkAddInstanceLoader);
     options.addOption(bool, "logIntercept", optionInterceptionLog);
-    const deshaderLibName = std.fs.path.basename(deshaderLib.out_filename);
+    const deshaderLibName = std.fs.path.basename(deshader_lib.out_filename);
     options.addOption(String, "deshaderLibName", deshaderLibName);
 
     // Symbol Enumerator
@@ -116,14 +117,22 @@ pub fn build(b: *std.Build) void {
     }
     var addGlProcsStep = AddGlProcsStep.init(b, "add_gl_procs", allLibraries.items, GlSymbolPrefixes, runSymbolEnum.captureStdOut());
     addGlProcsStep.step.dependOn(&runSymbolEnum.step);
-    deshaderLib.step.dependOn(&addGlProcsStep.step);
+    deshader_lib.step.dependOn(&addGlProcsStep.step);
     const recursiveExports = b.createModule(.{ .source_file = .{ .generated = &addGlProcsStep.generatedFile } });
-    deshaderLib.addModule("recursive_exports", recursiveExports);
+    deshader_lib.addModule("recursive_exports", recursiveExports);
 
     // Positron
-    const positron = PositronSdk.getPackage(b, "positron");
-    deshaderLib.addModule("positron", positron);
-    PositronSdk.linkPositron(deshaderLib, null);
+    var positron: *std.build.Module = undefined;
+    var serve: *std.build.Module = undefined;
+    if (option_embed_editor) {
+        positron = PositronSdk.getPackage(b, "positron");
+        deshader_lib.addModule("positron", positron);
+        PositronSdk.linkPositron(deshader_lib, null);
+    } else {
+        // The serve module itself is normally included in positron
+        serve = PositronSdk.getServeModule(b);
+        deshader_lib.addModule("serve", serve);
+    }
     //
     // Steps for building generated and embedded files
     //
@@ -148,21 +157,24 @@ pub fn build(b: *std.Build) void {
         defer files.deinit();
 
         // Add all files names in the editor dist folder to `files`
-        const editorDirectory = "editor";
-        const editorFiles = std.fs.cwd().readFileAlloc(b.allocator, editorDirectory ++ "/required.txt", 1024 * 1024) catch undefined;
-        var editorFilesLines = std.mem.splitScalar(u8, editorFiles, '\n');
-        editorFilesLines.reset();
-        while (editorFilesLines.next()) |line| {
-            appendFiles(deshaderLib, &files, .{
-                std.fmt.allocPrint(b.allocator, "{s}/{s}", .{ editorDirectory, line }) catch unreachable,
-            }) catch unreachable;
+        const editor_directory = "editor";
+        if (option_embed_editor) {
+            const editor_files = std.fs.cwd().readFileAlloc(b.allocator, editor_directory ++ "/required.txt", 1024 * 1024) catch undefined;
+            var editor_files_lines = std.mem.splitScalar(u8, editor_files, '\n');
+            editor_files_lines.reset();
+            while (editor_files_lines.next()) |line| {
+                appendFiles(deshader_lib, &files, .{
+                    std.fmt.allocPrint(b.allocator, "{s}/{s}", .{ editor_directory, line }) catch unreachable,
+                }) catch unreachable;
+            }
         }
 
         // Add the file names as an option to the exe, making it available
         // as a string array at comptime in main.zig
         options.addOption([]const String, "files", files.items);
-        options.addOption(String, "editorDir", editorDirectory);
-        deshaderLib.addOptions("options", options);
+        options.addOption(String, "editorDir", editor_directory);
+        options.addOption(bool, "embedEditor", option_embed_editor);
+        deshader_lib.addOptions("options", options);
 
         //
         // Emit .zig file with function stubs
@@ -195,7 +207,11 @@ pub fn build(b: *std.Build) void {
         headerGenExe.addAnonymousModule("header_gen", .{
             .source_file = .{ .path = "libs/zig-header-gen/src/header_gen.zig" },
         });
-        headerGenExe.addModule("positron", positron);
+        if (option_embed_editor) {
+            headerGenExe.addModule("positron", positron);
+        } else {
+            headerGenExe.addModule("serve", serve);
+        }
         headerGenExe.addModule("gl", glModule);
         if (optionWolfSSL) {
             headerGenExe.linkSystemLibrary("wolfssl");
@@ -279,7 +295,7 @@ pub fn build(b: *std.Build) void {
 
             // Editor
             const example_editor = exampleSubProgram(example_bootstraper, "editor", "examples/" ++ sub_examples.editor ++ ".zig", exampleModules);
-            example_editor.linkLibrary(deshaderLib);
+            example_editor.linkLibrary(deshader_lib);
         }
         examplesStep.dependOn(stubGenCmd);
         const exampleInstall = b.addInstallArtifact(example_bootstraper, .{});
@@ -417,12 +433,105 @@ const DependenciesStep = struct {
         progressNode.end();
     }
 };
+const CompressStep = struct {
+    step: std.build.Step,
+    source: std.build.LazyPath,
+    generatedFile: std.Build.GeneratedFile,
+
+    pub fn init(b: *std.build.Builder, source: std.build.LazyPath) *@This() {
+        var self = b.allocator.create(@This()) catch unreachable;
+        self.* = .{
+            .source = source,
+            .step = std.build.Step.init(.{ .id = .custom, .makeFn = make, .name = "compress", .owner = b }),
+            .generatedFile = undefined,
+        };
+        self.generatedFile = .{ .step = &self.step };
+        return self;
+    }
+
+    fn make(step: *std.build.Step, progressNode: *std.Progress.Node) anyerror!void {
+        const self = @fieldParentPtr(@This(), "step", step);
+        progressNode.activate();
+        defer progressNode.end();
+        const source = self.source.getPath(step.owner);
+        const dest = try step.owner.cache_root.join(step.owner.allocator, &.{ "c", "compressed", source });
+        self.generatedFile.path = dest;
+        const buffer = try step.owner.allocator.alloc(u8, 10 * 1024 * 1024);
+        defer step.owner.allocator.free(buffer);
+        if (step.owner.cache_root.handle.access(dest, .{})) |_| {
+            // This is the hot path, success.
+            step.result_cached = true;
+            return;
+        } else |outer_err| switch (outer_err) {
+            error.FileNotFound => {
+                const dest_dirname = std.fs.path.dirname(dest).?;
+                step.owner.cache_root.handle.makePath(dest_dirname) catch |err| {
+                    return step.fail("unable to make path '{}{s}': {s}", .{
+                        step.owner.cache_root, dest_dirname, @errorName(err),
+                    });
+                };
+
+                const rand_int = std.crypto.random.int(u64);
+                const tmp_sub_path = try std.fs.path.join(
+                    step.owner.allocator,
+                    &.{ "tmp", &std.Build.hex64(rand_int), std.fs.path.basename(dest) },
+                );
+                const tmp_sub_path_dirname = std.fs.path.dirname(tmp_sub_path).?;
+
+                step.owner.cache_root.handle.makePath(tmp_sub_path_dirname) catch |err| {
+                    return step.fail("unable to make temporary directory '{}{s}': {s}", .{
+                        step.owner.cache_root, tmp_sub_path_dirname, @errorName(err),
+                    });
+                };
+
+                const file = try step.owner.cache_root.handle.createFile(tmp_sub_path, .{});
+                var compressor = try std.compress.zlib.compressStream(step.owner.allocator, file.writer(), .{});
+                const reader = try std.fs.openFileAbsolute(source, .{});
+
+                const size = try reader.readAll(buffer);
+                const wrote_size = try compressor.write(buffer[0..size]);
+                if (wrote_size != size) {
+                    return step.fail("unable to write all bytes to compressor", .{});
+                }
+                try compressor.finish();
+                compressor.deinit();
+                file.close();
+                reader.close();
+
+                step.owner.cache_root.handle.rename(tmp_sub_path, dest) catch |err| switch (err) {
+                    error.PathAlreadyExists => {
+                        // Other process beat us to it. Clean up the temp file.
+                        step.owner.cache_root.handle.deleteFile(tmp_sub_path) catch |e| {
+                            try step.addError("warning: unable to delete temp file '{}{s}': {s}", .{
+                                step.owner.cache_root, tmp_sub_path, @errorName(e),
+                            });
+                        };
+                        step.result_cached = true;
+                        return;
+                    },
+                    else => {
+                        return step.fail("unable to rename options from '{}{s}' to '{}{s}': {s}", .{
+                            step.owner.cache_root, tmp_sub_path,
+                            step.owner.cache_root, dest,
+                            @errorName(err),
+                        });
+                    },
+                };
+            },
+            else => |e| return step.fail("unable to access options file '{}{s}': {s}", .{
+                step.owner.cache_root, dest, @errorName(e),
+            }),
+        }
+    }
+};
 
 fn appendFiles(step: *std.build.Step.Compile, files: *std.ArrayList(String), toAdd: anytype) !void {
     inline for (toAdd) |addThis| {
+        const compress = CompressStep.init(step.step.owner, std.build.FileSource.relative(addThis));
         step.addAnonymousModule(addThis, .{
-            .source_file = std.build.FileSource.relative(addThis),
+            .source_file = .{ .generated = &compress.generatedFile },
         });
+        step.step.dependOn(&compress.step);
         try files.append(addThis);
     }
 }
