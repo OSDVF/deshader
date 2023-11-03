@@ -128,6 +128,7 @@ pub fn build(b: *std.Build) void {
         positron = PositronSdk.getPackage(b, "positron");
         deshader_lib.addModule("positron", positron);
         PositronSdk.linkPositron(deshader_lib, null);
+        deshader_lib.addModule("serve", b.modules.get("serve").?);
     } else {
         // The serve module itself is normally included in positron
         serve = PositronSdk.getServeModule(b);
@@ -209,6 +210,7 @@ pub fn build(b: *std.Build) void {
         });
         if (option_embed_editor) {
             headerGenExe.addModule("positron", positron);
+            deshader_lib.addModule("serve", b.modules.get("serve").?);
         } else {
             headerGenExe.addModule("serve", serve);
         }
@@ -454,10 +456,16 @@ const CompressStep = struct {
         progressNode.activate();
         defer progressNode.end();
         const source = self.source.getPath(step.owner);
-        const dest = try step.owner.cache_root.join(step.owner.allocator, &.{ "c", "compressed", source });
+        const reader = try std.fs.openFileAbsolute(source, .{});
+        var buffer: [10 * 1024 * 1024]u8 = undefined;
+        const size = try reader.readAll(&buffer);
+        var hash = step.owner.cache.hash;
+        // Random bytes to make unique. Refresh this with new random bytes when
+        // implementation is modified in a non-backwards-compatible way.
+        hash.add(@as(u32, 0xad95e922));
+        hash.addBytes(buffer[0..size]);
+        const dest = try step.owner.cache_root.join(step.owner.allocator, &.{ "c", "compressed", &hash.final(), std.fs.path.basename(source) });
         self.generatedFile.path = dest;
-        const buffer = try step.owner.allocator.alloc(u8, 10 * 1024 * 1024);
-        defer step.owner.allocator.free(buffer);
         if (step.owner.cache_root.handle.access(dest, .{})) |_| {
             // This is the hot path, success.
             step.result_cached = true;
@@ -486,9 +494,6 @@ const CompressStep = struct {
 
                 const file = try step.owner.cache_root.handle.createFile(tmp_sub_path, .{});
                 var compressor = try std.compress.zlib.compressStream(step.owner.allocator, file.writer(), .{});
-                const reader = try std.fs.openFileAbsolute(source, .{});
-
-                const size = try reader.readAll(buffer);
                 const wrote_size = try compressor.write(buffer[0..size]);
                 if (wrote_size != size) {
                     return step.fail("unable to write all bytes to compressor", .{});

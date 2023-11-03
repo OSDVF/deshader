@@ -134,10 +134,11 @@ DYLD_INSERT_LIBRARIES=./zig-out/lib/libdeshader.dylib your_application
 ## Build Options
 Specify options as `-Doption=value` to `zig build deshader` commands. See also `zig build --help`
 Name                  | Values                        | Description
-----------------------|-------------------------------|---------------------------------------------------------------------------------------
+----------------------|-------------------------------|--------------------------------------------------------------------------------------------------
 `linkage`             | `Static`, `Dynamic` (default) | Select type of for Deshader library
 `wolfSSL`             | `true`, `false` (default)     | Link with system-provided WolfSSL instead of deshader included one
-`logIntercept`        | `true`, `false` (default)     | Enable logging of intercepted VK ang GL (not on Mac) procedure requests 
+`logIntercept`        | `true`, `false` (default)     | Enable logging of intercepted VK ang GL (not on Mac) procedure requests
+`embedEditor`         | `true` (default), `false`     | Embed VSCode into Deshader. Otherwise external editor must be used. Can save 4MB in ReleaseSmall.
 `glAddLoader`         | any string                    | Specify a single additional function name that will be exported and intercepted
 `vkAddDeviceLoader`   | any string                    | Export additional intercepted function that will call device procedure addresss loader
 `vkAddInstanceLoader` | any string                    | Same as `vkAddDeviceLoader` but for instance procedure addresses

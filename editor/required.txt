@@ -27,4 +27,5 @@ node_modules/vscode-web/dist/out/vs/workbench/services/languageDetection/browser
 node_modules/vscode-web/dist/out/vs/workbench/workbench.web.main.css
 node_modules/vscode-web/dist/out/vs/workbench/workbench.web.main.js
 node_modules/vscode-web/dist/out/vs/workbench/workbench.web.main.nls.js
-product.json
+deshader-vscode/dist/web/extension.js
+deshader-vscode/package.json
