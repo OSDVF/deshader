@@ -59,6 +59,12 @@ pub fn build(b: *std.Build) void {
         deshader_lib.linkLibrary(wolfssl);
     }
 
+    // Websocket;
+    const websocket = b.addModule("websocket", .{
+        .source_file = .{ .path = "libs/websocket/src/websocket.zig" },
+    });
+    deshader_lib.addModule("websocket", websocket);
+
     // OpenGL
     const glModule = openGlModule(b);
     deshader_lib.addModule("gl", glModule);

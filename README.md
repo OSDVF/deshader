@@ -179,6 +179,8 @@ Name                | Default                                            | Descr
 LIB_ROOT            | `/usr/lib` / `C:\Windows\System32`                 | **REQUIRED** and automatically set by the Runner. Path to the folder where the original libraries are located
 PORT                | 8080                                               | Port for the web editor at `http://localhost:DESHADER_PORT/index.html`
 SHOW                | none                                               | Pass `true` or `1` to show the editor window on startup
+COMMANDS_HTTP       | 8081                                               | Port for HTTP server listening to Deshader commands
+COMMANDS_WS         | none                                               | Port for WebSocket server listening to Deshader commands (disabled by default)
 GL_LIBS             | `libGLX.so, libEGL.so` / `opengl32.dll`            | Path to libraries from which the original GL functions will be loaded
 GL_PROC_LOADERS     | none                                               | Specify additional lodader functions that will be called to retrieve GL function pointers[^1]
 SUBSTITUTE_LOADER   | `false`                                            | Specify `1`, `yes` or `true` for calling `DESHADER_GL_PROC_LOADERS` instead of standard GL loader functions internally[^2]
@@ -188,3 +190,25 @@ VK_INST_PROC_LOADER | none                                               | Speci
 
 [^1]: Should be a comma separated list. The first found function will be used.
 [^2]: In this case `DESHADER_GL_PROC_LOADERS` must be a single function. Does not work on Mac OS.
+
+# Usage
+Deshader is controlled by commands sent using HTTP or WebSocket protocol. The commands are documented in [doc/Commands.md](doc/Commands.md).
+## HTTP Command Server
+```sh
+curl http://127.0.0.1:8081/version
+```
+Should reply with `dev`
+
+Command parameters are passed as a `?query=strig&after=the&url=path`;
+
+## Websocket Command Server
+```sh
+websocat --no-fixups ws://127.0.0.1:8082
+version
+```
+Should reply with
+```
+202: Accepted
+dev
+```
+Command parameters are passed as a URI-like query string `?appended=to&the=command&name`

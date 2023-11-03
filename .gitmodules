@@ -19,3 +19,6 @@
 [submodule "editor/deshader-vscode"]
 	path = editor/deshader-vscode
 	url = git@github.com:OSDVF/deshader-vscode.git
+[submodule "libs/websocket"]
+	path = libs/websocket
+	url = git@github.com:karlseguin/websocket.zig.git

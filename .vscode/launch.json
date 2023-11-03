@@ -52,25 +52,25 @@
                 "__VK_LAYER_NV_optimus": "NVIDIA_only",
                 "LD_LIBRARY_PATH": "${workspaceRoot}/zig-out/lib",
                 "DESHADER_LIB_ROOT": "/usr/lib/",
+                "DESHADER_COMMANDS_WS" : "8082"
             }
         },
         {
             "type": "gdb",
             "request": "launch",
-            "name": "Generate Header",
-            "target": "./zig-out/bin/generate_header",
+            "name": "Editor",
+            "target": "./zig-out/bin/example/editor",
             "cwd": "${workspaceRoot}",
             "valuesFormatting": "parseText",
-            "preLaunchTask": "Build Headers Generator"
+            "preLaunchTask": "Build Example",
+            "env": {
+                "__GLX_VENDOR_LIBRARY_NAME": "nvidia",
+                "__NV_PRIME_RENDER_OFFLOAD": "1",
+                "__VK_LAYER_NV_optimus": "NVIDIA_only",
+                "LD_LIBRARY_PATH": "${workspaceRoot}/zig-out/lib",
+                "DESHADER_LIB_ROOT": "/usr/lib/",
+                "DESHADER_COMMANDS_WS" : "8082"
+            }
         },
-        {
-            "type": "gdb",
-            "request": "launch",
-            "name": "Positron Demo",
-            "target": "./libs/positron/zig-out/bin/positron-demo",
-            "cwd": "${workspaceRoot}",
-            "valuesFormatting": "parseText",
-            "preLaunchTask": "Build Positron",
-        }
     ]
 }

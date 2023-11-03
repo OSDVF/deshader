@@ -17,17 +17,22 @@ const editor = @import("tools/editor.zig");
 export const init_array linksection(".init_array") = &wrapErrorRunOnLoad;
 
 fn runOnLoad() !void {
-    try common.init();
-    const commands_port_string = std.os.getenv("DESHADER_COMMANDS_PORT") orelse "8081";
-    const commands_port = try std.fmt.parseInt(u16, commands_port_string, 10);
-    _ = try commands.CommandListener.start(common.allocator, commands_port);
-    DeshaderLog.debug("Listening to commands on port {d}", .{commands_port});
+    try common.init(); // init allocator and env
+    const commands_port_string = common.env.get("DESHADER_COMMANDS_HTTP") orelse "8081";
+    const commands_port_string_ws = common.env.get("DESHADER_COMMANDS_WS");
+    const commands_port_http = try std.fmt.parseInt(u16, commands_port_string, 10);
+    const commands_port_ws = if (commands_port_string_ws == null) null else try std.fmt.parseInt(u16, commands_port_string_ws.?, 10);
+    _ = try commands.CommandListener.start(common.allocator, commands_port_http, commands_port_ws);
+    DeshaderLog.debug("Commands HTTP port {d}", .{commands_port_http});
+    if (commands_port_ws != null) {
+        DeshaderLog.debug("Commands WS port {d}", .{commands_port_ws.?});
+    }
 
     try loaders.loadGlLib();
     try loaders.loadVkLib();
     try transitive.TransitiveSymbols.loadOriginal();
 
-    const editor_at_startup = std.os.getenv("DESHADER_SHOW") orelse "0";
+    const editor_at_startup = common.env.get("DESHADER_SHOW") orelse "0";
     const l = try std.ascii.allocLowerString(common.allocator, editor_at_startup);
     const showOpts = enum { yes, no, @"1", @"0", true, false, unknown };
     switch (std.meta.stringToEnum(showOpts, l) orelse .unknown) {
