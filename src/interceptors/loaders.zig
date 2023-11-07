@@ -8,11 +8,14 @@ const c = @cImport({
     @cInclude("dlfcn.h");
 });
 
+const shaders = @import("../interceptors/shaders.zig");
+
 const GetProcAddressSignature = fn (name: [*:0]const u8) gl.FunctionPointer;
 const String = []const u8;
 
 pub const APIs = struct {
     const vk = struct {
+        const names = [_]String{"libvulkan.so"};
         var lib: ?std.DynLib = null;
         var device_loader: ?*const GetProcAddressSignature = null;
         var instance_loader: ?*const GetProcAddressSignature = null;
@@ -24,7 +27,7 @@ pub const APIs = struct {
             const names = [_]String{"libGLX.so"};
             pub var lib: ?std.DynLib = null;
             var loader: ?*const GetProcAddressSignature = null;
-            const default_loaders = [_]String{ "glXGetProcAddressARB", "glXGetProcAddress" };
+            const default_loaders = [_]String{ "glXGetProcAddress", "glXGetProcAddressARB" };
             var possible_loaders: []const String = &@This().default_loaders;
         };
         pub const egl = struct {
@@ -48,10 +51,96 @@ pub const APIs = struct {
             var possible_loaders: []const String = &[_]String{"customGetProcAddress"};
         };
     };
+    pub var originalDlopen: ?*const fn (name: ?[*:0]const u8, mode: c_int) callconv(.C) ?*const anyopaque = null;
 };
+
+var already_intercepted = false;
+pub var ignored = false;
+pub fn checkIgnoredProcess() void {
+    var ignored_this = false;
+    if (std.fs.selfExePathAlloc(common.allocator)) |self_path| {
+        defer common.allocator.free(self_path);
+        DeshaderLog.debug("From process {s}", .{self_path});
+
+        const ignore_process_env = common.env.get("DESHADER_IGNORE_PROCESS");
+        if (ignore_process_env != null) {
+            var it = std.mem.splitScalar(u8, ignore_process_env.?, ',');
+            while (it.next()) |p_name| {
+                if (std.mem.endsWith(u8, self_path, p_name)) {
+                    DeshaderLog.debug("Ignoring processes {s}", .{ignore_process_env.?});
+                    ignored_this = true;
+                    break;
+                }
+            }
+        }
+    } else |e| {
+        DeshaderLog.err("Failed to get self path: {any}", .{e});
+    }
+    ignored = ignored_this or common.env.get("DESHADER_DLOPENED") != null;
+}
+
+export fn dlopen(name: ?[*:0]u8, mode: c_int) callconv(.C) ?*const anyopaque {
+    // Check for initialization
+    if (APIs.originalDlopen == null) {
+        APIs.originalDlopen = @ptrCast(std.c.dlsym(c.RTLD_NEXT, "dlopen"));
+        if (APIs.originalDlopen == null) {
+            DeshaderLog.err("Failed to find original dlopen: {s}", .{c.dlerror()});
+        }
+
+        if (!common.initialized) {
+            common.init() catch |err| {
+                DeshaderLog.err("Failed to initialize: {any}", .{err});
+            };
+        }
+        checkIgnoredProcess();
+    }
+    if (name != null and !ignored) {
+        var name_span = std.mem.span(name.?);
+        if (name_span[name_span.len - 1] == '?') {
+            name_span[name_span.len - 1] = 0;
+            return APIs.originalDlopen.?(@ptrCast(name_span), mode);
+        }
+        inline for (.{ APIs.gl.glX, APIs.gl.egl, APIs.gl.wgl, APIs.vk }) |lib| {
+            inline for (lib.names) |possible_name| {
+                if (std.mem.startsWith(u8, name_span, possible_name)) {
+                    DeshaderLog.debug("Intercepting dlopen for API {s}", .{name_span});
+                    if (!already_intercepted) {
+                        already_intercepted = true;
+                        // Prevent recursive hooking
+                        common.setenv("DESHADER_DLOPENED", "1");
+                    }
+                    return APIs.originalDlopen.?(options.deshaderLibName[0..options.deshaderLibName.len :0], mode);
+                }
+            }
+        }
+    }
+    const result = APIs.originalDlopen.?(name, mode);
+    if (result == null) {
+        DeshaderLog.debug("Failed dlopen {?s}: {s}", .{ name, c.dlerror() });
+    }
+    return result;
+}
+
 const _known_gl_loaders = APIs.gl.glX.default_loaders ++ APIs.gl.egl.default_loaders ++ APIs.gl.wgl.default_loaders ++ [_]?String{options.glAddLoader};
 const _gl_ibs = .{ APIs.gl.glX, APIs.gl.egl, APIs.gl.wgl, APIs.gl.custom };
-pub const exportedNames = _known_gl_loaders ++ APIs.vk.device_loaders ++ APIs.vk.instance_loaders;
+pub const intercepted = blk: {
+    const decls = @typeInfo(shaders).Struct.decls;
+    comptime var procs: [decls.len]std.meta.Tuple(&.{ String, gl.FunctionPointer }) = undefined;
+    comptime var names2: [decls.len]?String = undefined;
+
+    inline for (decls, 0..) |proc, i| {
+        names2[i] = proc.name;
+        procs[i] = .{
+            proc.name,
+            @field(shaders, proc.name),
+        };
+    }
+    break :blk struct {
+        const names = names2;
+        const map = std.ComptimeStringMap(gl.FunctionPointer, procs);
+    };
+};
+pub const all_exported_names = _known_gl_loaders ++ APIs.vk.device_loaders ++ APIs.vk.instance_loaders ++ intercepted.names;
 
 // Container for all OpenGL function symbols
 const GlFunctions = struct {
@@ -65,7 +154,7 @@ const GlFunctions = struct {
 
 fn discardFirstParameter(p: *const anyopaque, proc: [:0]const u8) gl.FunctionPointer {
     _ = p;
-    return APIs.gl.glX.loader.?(proc[1..]);
+    return APIs.gl.glX.loader.?(proc);
 }
 
 pub fn loadGlLib() !void {
@@ -111,8 +200,9 @@ pub fn loadGlLib() !void {
 
     inline for (_gl_ibs) |gl_lib| {
         for (gl_lib.names) |lib_name| {
-            const full_lib_name = try if (specified_library_root == null) lib_name else std.fs.path.join(common.allocator, &[_]String{ specified_library_root.?, lib_name });
-            defer if (specified_library_root != null) common.allocator.free(full_lib_name);
+            // add '?' to mark this as not intercepted
+            const full_lib_name = try std.mem.concat(common.allocator, u8, if (specified_library_root == null) &.{ lib_name, "?" } else &.{ specified_library_root.?, std.fs.path.sep_str, lib_name, "?" });
+            defer common.allocator.free(full_lib_name);
             if (std.DynLib.open(full_lib_name)) |lib| {
                 gl_lib.lib = lib;
                 DeshaderLog.debug("Loaded library {s}", .{full_lib_name});
@@ -123,7 +213,6 @@ pub fn loadGlLib() !void {
                         break;
                     }
                 }
-                break;
             } else |err| {
                 if (builtin.os.tag == .linux and builtin.link_libc) {
                     const err_to_print = c.dlerror();
@@ -156,7 +245,10 @@ pub fn loadVkLib() !void {
             DeshaderLog.err("Unsupported OS: {s}", .{builtin.os.name});
         },
     };
-    if (std.DynLib.open(lib_name)) |openedLib| {
+    // Mark this by '?' as not intercepted to prevent recursive hooking
+    const with_mark = try std.mem.concat(common.allocator, u8, &.{ lib_name, "?" });
+    defer common.allocator.free(with_mark);
+    if (std.DynLib.open(with_mark)) |openedLib| {
         APIs.vk.lib = openedLib;
         DeshaderLog.debug("Loaded {s}", .{lib_name});
         const vkGetDeviceProcAddrName = common.env.get("DESHADER_VK_DEV_PROC_LOADER") orelse "vkGetDeviceProcAddr";
@@ -206,15 +298,20 @@ pub fn deshaderGetVkDeviceProcAddr(procedure: [*:0]const u8) callconv(.C) *align
 pub fn LoaderInterceptor(comptime interface: type, comptime loader: String) type {
     return struct {
         /// Generic loader interception function
-        pub fn replacement(procedure: [*:0]const u8) callconv(.C) gl.FunctionPointer {
+        pub fn loaderReplacement(procedure: [*:0]const u8) callconv(.C) gl.FunctionPointer {
             if (interface.loader == null) {
                 DeshaderLog.err("Loader" ++ loader ++ " is not available", .{});
                 return undefined;
             }
-            if (options.logIntercept) {
-                DeshaderLog.debug("Intercepting " ++ loader ++ " procedure {s}", .{procedure});
+            const original = interface.loader.?(procedure);
+            const target = intercepted.map.get(std.mem.span(procedure));
+            if (target != null) {
+                if (options.logIntercept) {
+                    DeshaderLog.debug("Intercepting " ++ loader ++ " procedure {s}", .{procedure});
+                }
+                return target.?;
             }
-            return interface.loader.?(procedure);
+            return original;
         }
     };
 }
@@ -235,7 +332,7 @@ comptime {
     inline for (.{ APIs.gl.wgl, APIs.gl.egl, APIs.gl.glX }) |lib| {
         inline for (lib.default_loaders) |gl_loader| {
             const r = LoaderInterceptor(lib, gl_loader);
-            @export(r.replacement, .{ .name = gl_loader, .section = ".text" });
+            @export(r.loaderReplacement, .{ .name = gl_loader, .section = ".text" });
         }
     }
     if (options.glAddLoader) |name| {

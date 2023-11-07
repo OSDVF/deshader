@@ -83,7 +83,7 @@ pub fn createEditorProvider() !*positron.Provider {
 pub const EditorProviderError = error{ AlreadyRunning, NotRunning };
 
 pub var global_provider: ?*positron.Provider = null;
-pub fn editorServerStart() !void {
+pub fn serverStart() !void {
     if (global_provider != null) {
         for (global_provider.?.server.bindings.items) |binding| {
             DeshaderLog.err("Editor server already running on port {d}", .{binding.port});
@@ -94,7 +94,7 @@ pub fn editorServerStart() !void {
     errdefer global_provider.?.destroy();
 }
 
-pub fn editorServerStop() EditorProviderError!void {
+pub fn serverStop() EditorProviderError!void {
     if (global_provider == null) {
         DeshaderLog.err("Editor server not running", .{});
         return error.NotRunning;
@@ -102,4 +102,76 @@ pub fn editorServerStop() EditorProviderError!void {
     global_provider.?.shutdown();
     global_provider.?.destroy();
     global_provider = null;
+}
+
+const AppState = struct {
+    arena: std.heap.ArenaAllocator,
+    provider: *positron.Provider,
+    view: *positron.View,
+
+    shutdown_thread: u32,
+
+    pub fn getWebView(app: *AppState) *positron.View {
+        _ = app;
+        return global_app.?.view;
+    }
+};
+var global_app: ?AppState = null;
+
+const EditorErrors = error{EditorNotEmbedded};
+
+pub fn windowShow() !void {
+    if (!options.embedEditor) {
+        DeshaderLog.err("Editor not embedded in this Deshader distribution. Cannot show it.", .{});
+        return error.EditorNotEmbedded;
+    }
+
+    var editor_provider: ?*positron.Provider = null;
+    if (global_provider == null) {
+        try serverStart();
+        editor_provider = global_provider;
+    }
+    defer {
+        if (editor_provider != null) {
+            serverStop() catch |err| {
+                DeshaderLog.err("Failed to stop editor server: {any}", .{err});
+            };
+        }
+    }
+    if (global_app != null) {
+        DeshaderLog.err("Editor already running", .{});
+        return error.AlreadyRunning;
+    }
+
+    const view = try positron.View.create((@import("builtin").mode == .Debug), null);
+    defer view.destroy();
+    var arena = std.heap.ArenaAllocator.init(common.allocator);
+    defer arena.deinit();
+    global_app = AppState{
+        .arena = arena,
+        .provider = editor_provider.?,
+        .view = view,
+        .shutdown_thread = 0,
+    };
+    defer global_app = null;
+
+    DeshaderLog.info("Editor URL: {s}", .{global_app.?.provider.base_url});
+
+    global_app.?.view.setTitle("Deshader Editor");
+    global_app.?.view.setSize(500, 300, .none);
+
+    global_app.?.view.navigate(global_app.?.provider.getUri("/index.html").?);
+
+    global_app.?.view.run();
+
+    @atomicStore(u32, &global_app.?.shutdown_thread, 1, .SeqCst);
+}
+
+pub fn windowTerminate() !void {
+    if (global_app != null) {
+        global_app.?.view.terminate();
+    } else {
+        DeshaderLog.err("Editor not running", .{});
+        return error.NotRunning;
+    }
 }

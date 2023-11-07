@@ -1,28 +1,48 @@
+//! Contains:
+//! Code that will be executed upon library load
+//! Public symbols for interaction with Deshader library (shader tagging etc.)
+
 const std = @import("std");
 const builtin = @import("builtin");
 const options = @import("options");
-const wv = @import("positron");
-const shrink = @import("tools/shrink.zig");
+const positron = @import("positron");
 const gl = @import("gl");
 const vulkan = @import("vulkan");
 const DeshaderLog = @import("log.zig").DeshaderLog;
 const common = @import("common.zig");
 const commands = @import("commands.zig");
+const shaders = @import("services/shaders.zig");
+const shader_decls = @import("declarations/shaders.zig");
 
 const loaders = @import("interceptors/loaders.zig");
 const transitive = @import("interceptors/transitive.zig");
 const editor = @import("tools/editor.zig");
 
-// Run these functions at Deshader shared library load
-export const init_array linksection(".init_array") = &wrapErrorRunOnLoad;
+const String = []const u8;
 
+export const init_array linksection(".init_array") = &wrapErrorRunOnLoad;
+export const fini_array linksection(".fini_array") = &wrapErrorUnload;
+var command_listener: ?*commands.CommandListener = null;
+
+/// Run this functions at Deshader shared library load
 fn runOnLoad() !void {
     try common.init(); // init allocator and env
+    if (!loaders.ignored) {
+        // maybe it was not checked yet
+        loaders.checkIgnoredProcess();
+    }
+    if (loaders.ignored) {
+        DeshaderLog.warn("This process is ignored", .{});
+        return;
+    }
+    shaders.Programs = try @TypeOf(shaders.Programs).init(common.allocator);
+    shaders.Sources = try @TypeOf(shaders.Sources).init(common.allocator);
+
     const commands_port_string = common.env.get("DESHADER_COMMANDS_HTTP") orelse "8081";
     const commands_port_string_ws = common.env.get("DESHADER_COMMANDS_WS");
     const commands_port_http = try std.fmt.parseInt(u16, commands_port_string, 10);
     const commands_port_ws = if (commands_port_string_ws == null) null else try std.fmt.parseInt(u16, commands_port_string_ws.?, 10);
-    _ = try commands.CommandListener.start(common.allocator, commands_port_http, commands_port_ws);
+    command_listener = try commands.CommandListener.start(common.allocator, commands_port_http, commands_port_ws);
     DeshaderLog.debug("Commands HTTP port {d}", .{commands_port_http});
     if (commands_port_ws != null) {
         DeshaderLog.debug("Commands WS port {d}", .{commands_port_ws.?});
@@ -34,6 +54,7 @@ fn runOnLoad() !void {
 
     const editor_at_startup = common.env.get("DESHADER_SHOW") orelse "0";
     const l = try std.ascii.allocLowerString(common.allocator, editor_at_startup);
+    defer common.allocator.free(l);
     const showOpts = enum { yes, no, @"1", @"0", true, false, unknown };
     switch (std.meta.stringToEnum(showOpts, l) orelse .unknown) {
         .yes, .@"1", .true => {
@@ -45,96 +66,69 @@ fn runOnLoad() !void {
         },
     }
 }
+
+fn finalize() !void {
+    defer common.deinit();
+    if (command_listener != null) {
+        command_listener.?.stop();
+        common.allocator.destroy(command_listener.?);
+    }
+    transitive.TransitiveSymbols.deinit();
+    shaders.Programs.deinit();
+    shaders.Sources.deinit();
+}
+
 fn wrapErrorRunOnLoad() callconv(.C) void {
     runOnLoad() catch |err| {
         DeshaderLog.err("Initialization error: {any}", .{err});
     };
 }
 
+fn wrapErrorUnload() callconv(.C) void {
+    finalize() catch |err| {
+        DeshaderLog.err("Finalization error: {any}", .{err});
+    };
+}
+/// Defines logging options for the whole library
 pub const std_options = @import("log.zig").std_options;
 
-const AppState = struct {
-    arena: std.heap.ArenaAllocator,
-    provider: *wv.Provider,
-    view: *wv.View,
-
-    shutdown_thread: u32,
-
-    pub fn getWebView(app: *AppState) *wv.View {
-        _ = app;
-        return global_app.?.view;
-    }
-};
-var global_app: ?AppState = null;
-
 pub export fn editorWindowTerminate() u8 {
-    if (global_app != null) {
-        global_app.?.view.terminate();
-        return 0;
-    } else {
-        DeshaderLog.err("Editor not running", .{});
-        return 1;
-    }
-}
-
-pub export fn editorWindowShow() u8 {
-    if (!options.embedEditor) {
-        DeshaderLog.err("Editor not embedded in this Deshader distribution. Cannot show it.", .{});
-        return 1;
-    }
-
-    var editor_provider: ?*wv.Provider = null;
-    if (editor.global_provider == null) {
-        editor.editorServerStart() catch |err| {
-            DeshaderLog.err("Failed to launch editor server: {any}", .{err});
-            return 3;
-        };
-        editor_provider = editor.global_provider;
-    }
-    defer {
-        if (editor_provider != null) {
-            editor.editorServerStop() catch |err| {
-                DeshaderLog.err("Failed to stop editor server: {any}", .{err});
-            };
-        }
-    }
-    if (global_app != null) {
-        DeshaderLog.err("Editor already running", .{});
-        return 4;
-    }
-
-    const view = wv.View.create((@import("builtin").mode == .Debug), null) catch return 2;
-    defer view.destroy();
-    var arena = std.heap.ArenaAllocator.init(common.allocator);
-    defer arena.deinit();
-    global_app = AppState{
-        .arena = arena,
-        .provider = editor_provider.?,
-        .view = view,
-        .shutdown_thread = 0,
-    };
-    defer global_app = null;
-
-    DeshaderLog.info("Editor URL: {s}", .{global_app.?.provider.base_url});
-
-    global_app.?.view.setTitle("Deshader Editor");
-    global_app.?.view.setSize(500, 300, .none);
-
-    global_app.?.view.navigate(global_app.?.provider.getUri("/index.html") orelse unreachable);
-
-    global_app.?.view.run();
-
-    @atomicStore(u32, &global_app.?.shutdown_thread, 1, .SeqCst);
-
+    editor.windowTerminate() catch |err| return @intFromError(err);
     return 0;
 }
 
-pub export fn editorServerStart() u8 {
-    editor.editorServerStart() catch return 1;
+pub export fn editorWindowShow() u32 {
+    editor.windowShow() catch |err| return @intFromError(err);
     return 0;
 }
 
-pub export fn editorServerStop() u8 {
-    editor.editorServerStop() catch return 1;
+pub export fn editorServerStart() u32 {
+    editor.serverStart() catch |err| return @intFromError(err);
+    return 0;
+}
+
+pub export fn editorServerStop() u32 {
+    editor.serverStop() catch |err| return @intFromError(err);
+    return 0;
+}
+
+pub export fn listShaders() ?[*]const [*:0]const u8 {
+    return null;
+}
+
+const SourcePayload = shader_decls.SourcePayload;
+const ProgramPayload = shader_decls.ProgramPayload;
+pub export fn deshaderAddTaggedSource(payload: SourcePayload, move: bool, overwrite_other: bool) u32 {
+    shaders.Sources.addTagged(payload, move, overwrite_other) catch |err| return @intFromError(err);
+    return 0;
+}
+
+pub export fn deshaderRemoveSourceTag(path: [*:0]const u8, dir: bool) u32 {
+    shaders.Sources.remove(std.mem.span(path), dir) catch |err| return @intFromError(err);
+    return 0;
+}
+
+pub export fn deshaderAddTaggedProgram(payload: ProgramPayload, move: bool, overwrite_other: bool) u32 {
+    shaders.Programs.addTagged(payload, move, overwrite_other) catch |err| return @intFromError(err);
     return 0;
 }

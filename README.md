@@ -84,11 +84,13 @@ for you. If there weren't any errors, then you can then
 zig build runner
 
 # Use Runner wrapper
-DESHADER_LIB_ROOT=zig-out/lib ./zig-out/bin/deshader-run your_application
+DESHADER_LIB=zig-out/lib/libdeshader.so ./zig-out/bin/deshader-run your_application
 
 # Or run & build the provided examples sequentially
 zig build examples-run -DwolfSSL=true -DlogIntercept=true  # -DwolfSSL=true only if you have WolfSSL installed
 ```
+`DESHADER_LIB` is optional if Deshader is installed system-wide or is in the same directory as `deshader-run`
+
 btw. `zig build` only downloads dependencies specified in `build.zig.zon`.
 
 Output files will be placed at `./zig-out/`:
@@ -114,15 +116,11 @@ The files inside `include/` are bindings for your application.
 ### Without runner
 #### Linux
 ```sh
-DESHADER_LIB_ROOT=zig-out/lib DESHADER_REPLACE_ROOT=/your/app/dir ./zig-out/bin/deshader-run # Symlinks Deshader as libGLX.so, libEGL.so... etc. into DESHADER_REPLACE_ROOT
-LD_LIBRARY_PATH=/your/app/dir /your/app/dir/app
+DESHADER_LIB=your/lib/dir/libdeshader.so /your/app/dir/app # Loads Deshader into your application
 ```
 #### Windows
 ```bat
-set DESHADER_REPLACE_ROOT=your\app\dir
-set DESHADER_LIB_ROOT=zig-out\lib
-rem Symlink Deshader as opengl32.dll, vulkan-1.dll... etc. into DESHADER_REPLACE_ROOT
-zig-out\bin\deshader-run.exe
+cp path\to\deshader.dll your\app\dir\opengl32.dll
 your\app\dir\app.exe
 ```
 
@@ -168,11 +166,11 @@ Name                  | Values                        | Description
 Runtime settings can be specified by environment variables.
 All names start with DESHADER_ prefix e.g. `DESHADER_PORT`
 ### Deshader runner
-Name         | Default                                                             | Description
--------------|---------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------
-LIB_ROOT     | `/usr/lib` / `C:\Windows\System32`                                  | Override the default path to the folder where the original libraries are located
-REPLACE_ROOT | current working directory                                           | Location for Deshader replacement libraries (should be the working directory of debugged app)
-HOOK_LIBS    | `opengl32.dll, vulkan-1.dll, libvulkan.dylib, libGLX.so, libEGL.so` | Comma separated list of **additional** library files that will be replaced with Deshader library (defaults will be always included)
+Name      | Default                                                                                | Description
+----------|----------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------
+LIB_ROOT  | `/usr/lib` / `C:\Windows\System32`                                                     | Override the default path to the folder where the original libraries are located
+LIB       | \[current working dir\]/`libdeshader.so` / `deshader.dll` / `deshader.dylib`           | Location/name of Deshader shared libraray
+HOOK_LIBS | `opengl32.dll, vulkan-1.dll, libvulkan.dylib, libGLX.so (+vendor variants), libEGL.so` | Set to comma separated list of **additional** libraries to be replaced with Deshader library (defaults will be always included)
 ### Deshader library
 Name                | Default                                            | Description
 --------------------|----------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------
@@ -187,6 +185,9 @@ SUBSTITUTE_LOADER   | `false`                                            | Speci
 VK_LIB              | `libvulkan.so` / `vulkan-1.dll`/ `libvulkan.dylib` | Path to library from which the original Vulkan functions will be loaded
 VK_DEV_PROC_LOADER  | none                                               | Specify original device procedure address loader function for Vulkan
 VK_INST_PROC_LOADER | none                                               | Specify original instance procedure address loader function for Vulkan
+DLOPENED            | reserved                                           | Do not set this variable. IT is used by Deshader internally
+IGNORE_PROCESS      | none                                               | Comma separated list of process name postfixes that won't be intercepted. You often need to ignore `gdb,sh,bash,zsh,code`
+PROCESS             | none                                               | Comma separated list of process name postfixes that will be intercepted. If set, `DESHADER_IGNORE_PROCESS` is ignored.
 
 [^1]: Should be a comma separated list. The first found function will be used.
 [^2]: In this case `DESHADER_GL_PROC_LOADERS` must be a single function. Does not work on Mac OS.

@@ -34,7 +34,7 @@
                 "__GLX_VENDOR_LIBRARY_NAME": "nvidia",
                 "__NV_PRIME_RENDER_OFFLOAD": "1",
                 "__VK_LAYER_NV_optimus": "NVIDIA_only",
-                "LD_LIBRARY_PATH": "${workspaceRoot}/zig-out/lib",
+                "LD_PRELOAD": "${workspaceRoot}/zig-out/lib/libdeshader.so",
                 "DESHADER_LIB_ROOT": "/usr/lib/",
             }
         },
@@ -46,30 +46,33 @@
             "cwd": "${workspaceRoot}",
             "valuesFormatting": "parseText",
             "preLaunchTask": "Build Example",
+            "autorun": [
+                "set environment LD_PRELOAD ${workspaceRoot}/zig-out/lib/libdeshader.so"
+            ],
             "env": {
                 "__GLX_VENDOR_LIBRARY_NAME": "nvidia",
                 "__NV_PRIME_RENDER_OFFLOAD": "1",
                 "__VK_LAYER_NV_optimus": "NVIDIA_only",
-                "LD_LIBRARY_PATH": "${workspaceRoot}/zig-out/lib",
                 "DESHADER_LIB_ROOT": "/usr/lib/",
-                "DESHADER_COMMANDS_WS" : "8082"
+                "DESHADER_COMMANDS_WS": "8082"
             }
         },
         {
             "type": "gdb",
             "request": "launch",
-            "name": "Editor",
-            "target": "./zig-out/bin/example/editor",
+            "name": "GLFW",
+            "target": "./zig-out/bin/example/glfw",
             "cwd": "${workspaceRoot}",
+            "arguments": "zig-out/bin/example/glfw",
             "valuesFormatting": "parseText",
             "preLaunchTask": "Build Example",
+            "autorun": [
+                "set environment LD_PRELOAD ${workspaceRoot}/zig-out/lib/libdeshader.so"
+            ],
             "env": {
-                "__GLX_VENDOR_LIBRARY_NAME": "nvidia",
-                "__NV_PRIME_RENDER_OFFLOAD": "1",
-                "__VK_LAYER_NV_optimus": "NVIDIA_only",
-                "LD_LIBRARY_PATH": "${workspaceRoot}/zig-out/lib",
+                "DESHADER_IGNORE_PROCESS": "gdb,zsh",
                 "DESHADER_LIB_ROOT": "/usr/lib/",
-                "DESHADER_COMMANDS_WS" : "8082"
+                "DESHADER_COMMANDS_WS": "8082"
             }
         },
     ]

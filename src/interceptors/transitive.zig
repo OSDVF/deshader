@@ -28,7 +28,7 @@ pub const TransitiveSymbols = struct {
                 @setEvalBranchQuota(150000); // Really a lot of functions to export
                 var i = 0;
                 eachRecursiveProc: inline while (recursive_procs.next()) |symbol_name| {
-                    inline for (loaders.exportedNames) |exported| {
+                    inline for (loaders.all_exported_names) |exported| {
                         if (exported != null and std.mem.eql(u8, exported.?, symbol_name)) {
                             continue :eachRecursiveProc;
                         }
@@ -64,7 +64,7 @@ pub const TransitiveSymbols = struct {
 
                 comptime var i = 0;
                 eachRecursiveProc: inline while (recursive_procs.next()) |symbol_name| {
-                    inline for (loaders.exportedNames) |exported| {
+                    inline for (loaders.all_exported_names) |exported| {
                         if (exported != null and std.mem.eql(u8, exported.?, symbol_name)) {
                             continue :eachRecursiveProc;
                         }
@@ -102,5 +102,9 @@ pub const TransitiveSymbols = struct {
                 DeshaderLog.err("Failed to find symbol {s}", .{symbol_name});
             }
         }
+    }
+
+    pub fn deinit() void {
+        common.allocator.free(mapping);
     }
 };

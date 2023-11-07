@@ -48,6 +48,10 @@ pub const GenerateStubsStep = struct {
 ///
 /// The function returns an error if there is an issue with parsing the main.zig file or writing to the output file.
 pub fn generateStubs(allocator: std.mem.Allocator, output: std.fs.File) !void {
+    // Struct decalrations
+    try output.writeAll(@embedFile("../declarations/shaders.zig"));
+
+    // Function declarations
     var tree = try std.zig.Ast.parse(allocator, @embedFile("../main.zig"), .zig);
     defer tree.deinit(allocator);
 

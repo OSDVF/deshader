@@ -252,10 +252,10 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
         .optimize = optimize,
         .target = target,
+        .main_mod_path = .{ .path = "src" },
     });
     const runnerOptions = b.addOptions();
     runnerOptions.addOption(String, "deshaderLibName", deshaderLibName);
-    runnerOptions.addOption([]const String, "ICDLibNames", allLibraries.items);
     runnerExe.addOptions("options", runnerOptions);
     runnerExe.defineCMacro("_GNU_SOURCE", null); // To access dlinfo
 
@@ -312,11 +312,12 @@ pub fn build(b: *std.Build) void {
         // Run examples by `deshader-run`
         const exampleRun = b.addRunArtifact(runnerInstall.artifact);
         const exampleRunCmd = b.step("examples-run", "Run example with injected Deshader debugging");
-        exampleRun.setEnvironmentVariable("DESHADER_REPLACE_ROOT", b.lib_dir);
-        exampleRun.addArtifactArg(exampleInstall.artifact);
+        exampleRun.setEnvironmentVariable("DESHADER_LIB", std.fs.path.join(b.allocator, &.{ b.install_path, "lib", deshaderLibName }) catch unreachable);
+        exampleRun.addArg(std.fs.path.join(b.allocator, &.{ b.install_path, "bin", "examples" }) catch unreachable);
         exampleRunCmd.dependOn(&exampleInstall.step);
         exampleRunCmd.dependOn(&exampleRun.step);
         exampleRunCmd.dependOn(&runnerInstall.step);
+        exampleRunCmd.dependOn(stubGenCmd);
     }
 
     //

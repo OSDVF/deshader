@@ -72,7 +72,7 @@
                 "panel": "shared",
                 "showReuseMessage": true,
                 "clear": true
-            }
+            },
         },
         {
             "label": "Build Example",
@@ -82,6 +82,7 @@
                 "example",
                 "-DwolfSSL=true",
                 "-freference-trace",
+                "-DlogIntercept=true",
                 "--summary",
                 "none"
             ],
