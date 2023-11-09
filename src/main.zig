@@ -58,7 +58,7 @@ fn runOnLoad() !void {
     const showOpts = enum { yes, no, @"1", @"0", true, false, unknown };
     switch (std.meta.stringToEnum(showOpts, l) orelse .unknown) {
         .yes, .@"1", .true => {
-            _ = editorWindowShow();
+            _ = deshaderEditorWindowShow();
         },
         .no, .@"0", .false => {},
         .unknown => {
@@ -92,43 +92,101 @@ fn wrapErrorUnload() callconv(.C) void {
 /// Defines logging options for the whole library
 pub const std_options = @import("log.zig").std_options;
 
-pub export fn editorWindowTerminate() u8 {
-    editor.windowTerminate() catch |err| return @intFromError(err);
+const err_format = "{s}: {any}";
+pub export fn deshaderEditorWindowTerminate() usize {
+    editor.windowTerminate() catch |err| {
+        DeshaderLog.err(err_format, .{ @src().fn_name, err });
+        return @intFromError(err);
+    };
     return 0;
 }
 
-pub export fn editorWindowShow() u32 {
-    editor.windowShow() catch |err| return @intFromError(err);
+pub export fn deshaderEditorWindowShow() usize {
+    editor.windowShow() catch |err| {
+        DeshaderLog.err(err_format, .{ @src().fn_name, err });
+        return @intFromError(err);
+    };
     return 0;
 }
 
-pub export fn editorServerStart() u32 {
-    editor.serverStart() catch |err| return @intFromError(err);
+pub export fn deshaderEditorServerStart() usize {
+    editor.serverStart() catch |err| {
+        DeshaderLog.err(err_format, .{ @src().fn_name, err });
+        return @intFromError(err);
+    };
     return 0;
 }
 
-pub export fn editorServerStop() u32 {
-    editor.serverStop() catch |err| return @intFromError(err);
+pub export fn deshaderEditorServerStop() usize {
+    editor.serverStop() catch |err| {
+        DeshaderLog.err(err_format, .{ @src().fn_name, err });
+        return @intFromError(err);
+    };
     return 0;
 }
 
-pub export fn listShaders() ?[*]const [*:0]const u8 {
-    return null;
+/// [out] count - will be set to number of sources
+pub export fn deshaderListSources(include_untagged: bool, path: [*:0]const u8, count: *usize) ?[*]const [*:0]const u8 {
+    const result = shaders.Sources.list(include_untagged, std.mem.span(path)) catch return null;
+    count.* = result.len;
+    return @ptrCast(result);
 }
 
-const SourcePayload = shader_decls.SourcePayload;
+/// [out] count - will be set to number of programs
+pub export fn deshaderListPrograms(include_untagged: bool, path: [*:0]const u8, count: *usize) ?[*]const [*:0]const u8 {
+    const result = shaders.Programs.list(include_untagged, std.mem.span(path)) catch return null;
+    count.* = result.len;
+    return @ptrCast(result);
+}
+
+/// Free list returned by deshaderListSources or deshaderListPrograms
+pub export fn deshaderFreeList(list: [*]const [*:0]const u8, count: usize) void {
+    for (list[0..count]) |item| {
+        common.allocator.free(std.mem.span(item));
+    }
+    common.allocator.free(list[0..count]);
+}
+
+pub export fn deshaderSourceTag(ref: usize, part_index: usize, path: [*:0]const u8, move: bool, overwrite_other: bool) usize {
+    shaders.sourceTag(ref, part_index, path, move, overwrite_other) catch |err| {
+        DeshaderLog.err(err_format, .{ @src().fn_name, err });
+        return @intFromError(err);
+    };
+    return 0;
+}
+
+const SourcesPayload = shader_decls.SourcesPayload;
 const ProgramPayload = shader_decls.ProgramPayload;
-pub export fn deshaderAddTaggedSource(payload: SourcePayload, move: bool, overwrite_other: bool) u32 {
-    shaders.Sources.addTagged(payload, move, overwrite_other) catch |err| return @intFromError(err);
+/// SourcesPayload should contain only a single source
+pub export fn deshaderTaggedSource(payload: SourcesPayload, move: bool, overwrite_other: bool) usize {
+    std.debug.assert(payload.count == 1);
+    shaders.Sources.putTagged(payload, move, overwrite_other) catch |err| {
+        DeshaderLog.err(err_format, .{ @src().fn_name, err });
+        return @intFromError(err);
+    };
     return 0;
 }
 
-pub export fn deshaderRemoveSourceTag(path: [*:0]const u8, dir: bool) u32 {
-    shaders.Sources.remove(std.mem.span(path), dir) catch |err| return @intFromError(err);
+pub export fn deshaderRemoveSourceByTag(path: [*:0]const u8, dir: bool) usize {
+    shaders.Sources.removeByTag(std.mem.span(path), dir) catch |err| {
+        DeshaderLog.err(err_format, .{ @src().fn_name, err });
+        return @intFromError(err);
+    };
     return 0;
 }
 
-pub export fn deshaderAddTaggedProgram(payload: ProgramPayload, move: bool, overwrite_other: bool) u32 {
-    shaders.Programs.addTagged(payload, move, overwrite_other) catch |err| return @intFromError(err);
+pub export fn deshaderRemoveSource(ref: usize) usize {
+    shaders.Sources.remove(ref) catch |err| {
+        DeshaderLog.err(err_format, .{ @src().fn_name, err });
+        return @intFromError(err);
+    };
+    return 0;
+}
+
+pub export fn deshaderAddTaggedProgram(payload: ProgramPayload, move: bool, overwrite_other: bool) usize {
+    shaders.Programs.putTagged(payload, move, overwrite_other) catch |err| {
+        DeshaderLog.err(err_format, .{ @src().fn_name, err });
+        return @intFromError(err);
+    };
     return 0;
 }

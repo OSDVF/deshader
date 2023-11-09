@@ -45,17 +45,6 @@
             }
         },
         {
-            "label": "Symlink Libraries",
-            "command": "zig-out/bin/deshader-run",
-            "options": {
-                "cwd": "${workspaceFolder}",
-                "env": {
-                    "DESHADER_REPLACE_ROOT": "zig-out/lib"
-                }
-            },
-            "problemMatcher": []
-        },
-        {
             "label": "Run Example",
             "command": "zig",
             "args": [

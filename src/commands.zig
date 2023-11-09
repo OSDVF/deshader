@@ -8,8 +8,10 @@ const logging = @import("log.zig");
 const DeshaderLog = logging.DeshaderLog;
 const main = @import("main.zig");
 const editor = @import("tools/editor.zig");
+const shaders = @import("services/shaders.zig");
 
 const String = []const u8;
+const CString = [*:0]const u8;
 const Tuple = std.meta.Tuple;
 const Route = positron.Provider.Route;
 
@@ -81,8 +83,10 @@ pub const CommandListener = struct {
             self.provider_allocator.destroy(self.http.?);
         }
         if (self.ws != null) {
+            self.ws.?.writeText("432: Closing connection\n") catch {};
+            self.ws.?.writeClose() catch {};
             self.ws.?.close();
-            self.websocket_thread.?.join();
+            self.websocket_thread.?.detach();
         }
         self.server_arena.deinit();
     }
@@ -248,6 +252,15 @@ pub const CommandListener = struct {
                                             defer common.allocator.free(result);
                                             try self.conn.writeAllFrame(.text, &.{ accepted, result, "\n" });
                                         },
+                                        []const CString => {
+                                            defer {
+                                                for (result) |line| common.allocator.free(std.mem.span(line));
+                                                common.allocator.free(result);
+                                            }
+                                            var flattened = try common.joinInnerZ(common.allocator, "\n", result);
+                                            defer common.allocator.free(flattened);
+                                            try self.conn.writeAllFrame(.text, &.{ accepted, flattened, "\n" });
+                                        },
                                         []const String => {
                                             defer for (result) |line| common.allocator.free(line);
                                             defer common.allocator.free(result);
@@ -280,6 +293,7 @@ pub const CommandListener = struct {
 
     const WSHandler = struct {
         conn: *websocket.Conn,
+        context: *CommandListener,
 
         const Conn = websocket.Conn;
         const Message = websocket.Message;
@@ -287,15 +301,11 @@ pub const CommandListener = struct {
 
         pub fn init(h: Handshake, conn: *Conn, context: *CommandListener) !@This() {
             context.ws = conn;
-            // the last parameter is a `context` which we don't need
-            // `h` contains the initial websocket "handshake" request
-            // It can be used to apply application-specific logic to verify / allow
-            // the connection (e.g. valid url, query string parameters, or headers)
-
-            _ = h; // we're not using this in our simple case
+            _ = h;
 
             return @This(){
                 .conn = conn,
+                .context = context,
             };
         }
 
@@ -330,8 +340,14 @@ pub const CommandListener = struct {
 
         // optional hooks
         pub fn afterInit(_: *WSHandler) !void {}
-        pub fn close(_: *WSHandler) void {}
+        pub fn close(self: *WSHandler) void {
+            self.context.ws = null;
+        }
     };
+
+    fn stringToBool(val: ?String) bool {
+        return val != null and (std.mem.eql(u8, val.?, "true") or (val.?.len == 1 and val.?[0] == '1'));
+    }
 
     pub const commands = struct {
         const simple = struct {
@@ -353,6 +369,32 @@ pub const CommandListener = struct {
 
             pub fn editorServerStop() !void {
                 return editor.serverStop();
+            }
+
+            fn getListArgs(args: ?ArgumentsList) struct { untagged: bool, path: String } {
+                var untagged = true;
+                var path: String = "/";
+                if (args) |sure_args| {
+                    if (sure_args.get("untagged")) |wants_untagged| {
+                        untagged = stringToBool(wants_untagged);
+                    }
+                    if (sure_args.get("path")) |wants_path| {
+                        path = wants_path;
+                    }
+                }
+                return .{ .untagged = untagged, .path = path };
+            }
+
+            /// untagged: bool, path: String
+            pub fn listSources(args: ?ArgumentsList) ![]const CString {
+                const args_result = getListArgs(args);
+                return try shaders.Sources.list(args_result.untagged, args_result.path);
+            }
+
+            /// untagged: bool, path: String
+            pub fn listPrograms(args: ?ArgumentsList) ![]const CString {
+                const args_result = getListArgs(args);
+                return try shaders.Programs.list(args_result.untagged, args_result.path);
             }
 
             pub fn settings(args: ?ArgumentsList) error{ UnknownSettingName, OutOfMemory }![]const String {
@@ -389,7 +431,7 @@ pub const CommandListener = struct {
 
                     try struct {
                         fn setBool(comptime name: String, target_val: ?String) void {
-                            @field(setting_vars, name) = target_val != null and std.mem.eql(u8, target_val.?, "true");
+                            @field(setting_vars, name) = stringToBool(target_val);
                         }
 
                         fn setAny(name: String, target_val: ?String) !void {

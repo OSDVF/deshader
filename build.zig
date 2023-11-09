@@ -143,8 +143,8 @@ pub fn build(b: *std.Build) void {
     //
     // Steps for building generated and embedded files
     //
-    var stubGenCmd = b.step("generate_stubs", "Generate .zig file with function stubs for deshader library");
-    const deshaderStubs = b.addModule("deshader", .{
+    var stub_gen_cmd = b.step("generate_stubs", "Generate .zig file with function stubs for deshader library");
+    const deshader_stubs = b.addModule("deshader", .{
         .source_file = .{ .path = "zig-out/include/deshader.zig" }, //future file, may not exist
     });
     {
@@ -188,17 +188,17 @@ pub fn build(b: *std.Build) void {
         //
         // Or generate them right here in the build process
         const stubGenSrc = @import("src/tools/generate_stubs.zig");
-        var stubGen: *stubGenSrc.GenerateStubsStep = b.allocator.create(stubGenSrc.GenerateStubsStep) catch unreachable;
+        var stub_gen: *stubGenSrc.GenerateStubsStep = b.allocator.create(stubGenSrc.GenerateStubsStep) catch unreachable;
         {
             const path = std.fs.path.join(
                 b.allocator,
                 &[_]String{ b.install_path, "include", "deshader.zig" },
             ) catch unreachable;
             std.fs.cwd().makePath(std.fs.path.dirname(path).?) catch unreachable;
-            stubGen.* = stubGenSrc.GenerateStubsStep.init(b, std.fs.createFileAbsolute(path, .{}) catch unreachable);
+            stub_gen.* = stubGenSrc.GenerateStubsStep.init(b, std.fs.openFileAbsolute(path, .{ .mode = .write_only }) catch unreachable);
         }
-        stubGenCmd.dependOn(&stubGen.step);
-        deshaderLibCmd.dependOn(&stubGen.step);
+        stub_gen_cmd.dependOn(&stub_gen.step);
+        deshaderLibCmd.dependOn(&stub_gen.step);
 
         //
         // Emit H File
@@ -235,7 +235,7 @@ pub fn build(b: *std.Build) void {
         );
         headerGenExe.addOptions("options", headerGenOptions);
         headerGenExe.addModule("recursive_exports", recursiveExports);
-        headerGenExe.addModule("deshader", deshaderStubs);
+        headerGenExe.addModule("deshader", deshader_stubs);
         headerGenExe.step.dependOn(&addGlProcsStep.step);
         PositronSdk.linkPositron(headerGenExe, null);
         const headerGenInstall = b.addInstallArtifact(headerGenExe, .{});
@@ -288,7 +288,7 @@ pub fn build(b: *std.Build) void {
         {
             const exampleModules = .{
                 .{ .name = "gl", .module = glModule },
-                .{ .name = "deshader", .module = deshaderStubs },
+                .{ .name = "deshader", .module = deshader_stubs },
             };
             // GLFW
             const example_glfw = exampleSubProgram(example_bootstraper, "glfw", "examples/" ++ sub_examples.glfw ++ ".zig", exampleModules);
@@ -305,7 +305,7 @@ pub fn build(b: *std.Build) void {
             const example_editor = exampleSubProgram(example_bootstraper, "editor", "examples/" ++ sub_examples.editor ++ ".zig", exampleModules);
             example_editor.linkLibrary(deshader_lib);
         }
-        examplesStep.dependOn(stubGenCmd);
+        examplesStep.dependOn(stub_gen_cmd);
         const exampleInstall = b.addInstallArtifact(example_bootstraper, .{});
         examplesStep.dependOn(&exampleInstall.step);
 
@@ -317,7 +317,7 @@ pub fn build(b: *std.Build) void {
         exampleRunCmd.dependOn(&exampleInstall.step);
         exampleRunCmd.dependOn(&exampleRun.step);
         exampleRunCmd.dependOn(&runnerInstall.step);
-        exampleRunCmd.dependOn(stubGenCmd);
+        exampleRunCmd.dependOn(stub_gen_cmd);
     }
 
     //

@@ -99,7 +99,6 @@ pub fn serverStop() EditorProviderError!void {
         DeshaderLog.err("Editor server not running", .{});
         return error.NotRunning;
     }
-    global_provider.?.shutdown();
     global_provider.?.destroy();
     global_provider = null;
 }
@@ -130,13 +129,6 @@ pub fn windowShow() !void {
     if (global_provider == null) {
         try serverStart();
         editor_provider = global_provider;
-    }
-    defer {
-        if (editor_provider != null) {
-            serverStop() catch |err| {
-                DeshaderLog.err("Failed to stop editor server: {any}", .{err});
-            };
-        }
     }
     if (global_app != null) {
         DeshaderLog.err("Editor already running", .{});

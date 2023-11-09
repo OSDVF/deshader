@@ -11,6 +11,7 @@ const c = @cImport({
 const log = @import("log.zig").DeshaderLog;
 
 const String = []const u8;
+const CString = [*:0]const u8;
 
 pub var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 pub var allocator: std.mem.Allocator = undefined;
@@ -55,4 +56,39 @@ pub fn setenv(name: String, value: String) void {
             log.err("Failed to set env {s}={s}: {s}", .{ name, value, c.strerror(@intFromEnum(std.os.errno(result))) });
         }
     }
+}
+
+pub fn joinInnerZ(alloc: std.mem.Allocator, separator: []const u8, slices: []const CString) std.mem.Allocator.Error![]u8 {
+    if (slices.len == 0) return &[0]u8{};
+    var lengths = try alloc.alloc(usize, slices.len);
+    defer alloc.free(lengths);
+
+    const total_len = blk: {
+        var sum: usize = separator.len * (slices.len - 1);
+        for (slices, 0..) |slice, i| {
+            const len = std.mem.len(slice);
+            sum += len;
+            lengths[i] = len;
+        }
+        break :blk sum;
+    };
+
+    const buf = try alloc.alloc(u8, total_len);
+    errdefer alloc.free(buf);
+
+    @memcpy(buf, slices[0]);
+    var buf_index: usize = lengths[0];
+    for (slices[1..], 1..) |slice, i| {
+        std.mem.copyForwards(u8, buf[buf_index..], separator);
+        buf_index += separator.len;
+        copyForwardsZ(u8, buf[buf_index..], slice, lengths[i]);
+        buf_index += lengths[i];
+    }
+
+    // No need for shrink since buf is exactly the correct size.
+    return buf;
+}
+
+pub fn copyForwardsZ(comptime T: type, dest: []T, source: [*]const T, source_len: usize) void {
+    for (dest[0..source_len], source) |*d, s| d.* = s;
 }

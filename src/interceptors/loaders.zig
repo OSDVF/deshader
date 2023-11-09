@@ -123,6 +123,8 @@ export fn dlopen(name: ?[*:0]u8, mode: c_int) callconv(.C) ?*const anyopaque {
 
 const _known_gl_loaders = APIs.gl.glX.default_loaders ++ APIs.gl.egl.default_loaders ++ APIs.gl.wgl.default_loaders ++ [_]?String{options.glAddLoader};
 const _gl_ibs = .{ APIs.gl.glX, APIs.gl.egl, APIs.gl.wgl, APIs.gl.custom };
+
+/// Lists all declarations inside interceptors/shaders.zig and creates a map from procedure name to procedure pointer
 pub const intercepted = blk: {
     const decls = @typeInfo(shaders).Struct.decls;
     comptime var procs: [decls.len]std.meta.Tuple(&.{ String, gl.FunctionPointer }) = undefined;
