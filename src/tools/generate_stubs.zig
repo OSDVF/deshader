@@ -73,4 +73,5 @@ pub fn generateStubs(allocator: std.mem.Allocator, output: std.fs.File) !void {
             else => {},
         }
     }
+    try output.setEndPos(try output.getPos());
 }
