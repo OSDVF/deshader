@@ -45,9 +45,9 @@ pub fn build(b: *std.Build) void {
     const optionInterceptionLog = b.option(bool, "logIntercept", "Log intercepted GL and VK procedure list to stdout") orelse false;
 
     const deshader_lib: *std.build.Step.Compile = if (optionLinkage == .Static) b.addStaticLibrary(deshaderCompileOptions) else b.addSharedLibrary(deshaderCompileOptions);
-    const deshaderLibCmd = b.step("deshader", "Install deshader library");
+    const desahder_lib_cmd = b.step("deshader", "Install deshader library");
     const deshaderLibInstall = b.addInstallArtifact(deshader_lib, .{});
-    deshaderLibCmd.dependOn(&deshaderLibInstall.step);
+    desahder_lib_cmd.dependOn(&deshaderLibInstall.step);
 
     // WolfSSL
     var wolfssl: *std.build.Step.Compile = undefined;
@@ -195,52 +195,44 @@ pub fn build(b: *std.Build) void {
                 &[_]String{ b.install_path, "include", "deshader.zig" },
             ) catch unreachable;
             std.fs.cwd().makePath(std.fs.path.dirname(path).?) catch unreachable;
-            stub_gen.* = stubGenSrc.GenerateStubsStep.init(b, std.fs.openFileAbsolute(path, .{ .mode = .write_only }) catch unreachable);
+            stub_gen.* = stubGenSrc.GenerateStubsStep.init(b, std.fs.openFileAbsolute(path, .{ .mode = .write_only }) catch unreachable, true);
         }
         stub_gen_cmd.dependOn(&stub_gen.step);
-        deshaderLibCmd.dependOn(&stub_gen.step);
+        desahder_lib_cmd.dependOn(&stub_gen.step);
 
         //
         // Emit H File
         //
-        const headerGenCmd = b.step("generate_header", "Generate C header file for deshader library");
-        const headerGenExe = b.addExecutable(.{
+        const header_gen_cmd = b.step("generate_header", "Generate C header file for deshader library");
+        var header_gen = b.addExecutable(.{
             .name = "generate_header",
             .root_source_file = .{ .path = "src/tools/generate_header.zig" },
             .main_mod_path = .{ .path = "src" },
             .target = target,
             .optimize = optimize,
         });
-        headerGenExe.addAnonymousModule("header_gen", .{
+        const heade_gen_opts = b.addOptions();
+        heade_gen_opts.addOption(String, "emitHDir", std.fs.path.join(b.allocator, &.{ b.install_path, "include" }) catch unreachable);
+        header_gen.addOptions("options", heade_gen_opts);
+        header_gen.addAnonymousModule("header_gen", .{
             .source_file = .{ .path = "libs/zig-header-gen/src/header_gen.zig" },
         });
-        if (option_embed_editor) {
-            headerGenExe.addModule("positron", positron);
-            deshader_lib.addModule("serve", b.modules.get("serve").?);
-        } else {
-            headerGenExe.addModule("serve", serve);
+        // no-short stubs for the C header
+        {
+            const log_name = "deshader_long.zig";
+            const long_stub_file = (if (b.cache_root.handle.access(log_name, .{ .mode = .write_only })) //
+                b.cache_root.handle.openFile(log_name, .{ .mode = .write_only })
+            else |_|
+                b.cache_root.handle.createFile(log_name, .{})) catch unreachable;
+            var stub_gen_long = b.allocator.create(stubGenSrc.GenerateStubsStep) catch unreachable;
+            stub_gen_long.* = stubGenSrc.GenerateStubsStep.init(b, long_stub_file, false);
+            header_gen.step.dependOn(&stub_gen_long.step);
+            header_gen.addAnonymousModule("deshader", .{ .source_file = .{ .cwd_relative = "zig-cache/deshader_long.zig" } });
         }
-        headerGenExe.addModule("gl", glModule);
-        if (optionWolfSSL) {
-            headerGenExe.linkSystemLibrary("wolfssl");
-        } else {
-            headerGenExe.linkLibrary(wolfssl);
-        }
-
-        var headerGenOptions = b.addOptions();
-        headerGenOptions.addOption(
-            String,
-            "emitHDir",
-            std.fs.path.join(b.allocator, &[_]String{ b.install_path, "include" }) catch unreachable,
-        );
-        headerGenExe.addOptions("options", headerGenOptions);
-        headerGenExe.addModule("recursive_exports", recursiveExports);
-        headerGenExe.addModule("deshader", deshader_stubs);
-        headerGenExe.step.dependOn(&addGlProcsStep.step);
-        PositronSdk.linkPositron(headerGenExe, null);
-        const headerGenInstall = b.addInstallArtifact(headerGenExe, .{});
-        headerGenCmd.dependOn(&headerGenInstall.step);
-        deshaderLibCmd.dependOn(&b.addRunArtifact(headerGenInstall.artifact).step);
+        const header_gen_install = b.addInstallArtifact(header_gen, .{});
+        header_gen_cmd.dependOn(&header_gen_install.step);
+        // automatically create header when building the library
+        desahder_lib_cmd.dependOn(&b.addRunArtifact(header_gen_install.artifact).step);
     }
 
     //
@@ -267,7 +259,7 @@ pub fn build(b: *std.Build) void {
     //
     {
         const examplesStep = b.step("example", "Build example OpenGL app");
-        examplesStep.dependOn(deshaderLibCmd);
+        examplesStep.dependOn(desahder_lib_cmd);
 
         const example_bootstraper = b.addExecutable(.{
             .name = "examples",

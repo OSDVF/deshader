@@ -9,12 +9,14 @@ pub fn main() !void {
 pub const GenerateStubsStep = struct {
     step: std.build.Step,
     output: std.fs.File,
+    short_names: bool,
 
-    pub fn init(b: *std.build.Builder, output: std.fs.File) GenerateStubsStep {
+    pub fn init(b: *std.build.Builder, output: std.fs.File, short_names: bool) GenerateStubsStep {
         return @as(
             GenerateStubsStep,
             .{
                 .output = output,
+                .short_names = short_names,
                 .step = std.build.Step.init(
                     .{
                         .name = "generate_stubs_impl",
@@ -30,7 +32,7 @@ pub const GenerateStubsStep = struct {
     pub fn makeFn(step: *std.build.Step, progressNode: *std.Progress.Node) anyerror!void {
         const self: *@This() = @fieldParentPtr(@This(), "step", step);
         progressNode.activate();
-        try generateStubs(step.owner.allocator, self.output);
+        try generateStubs(step.owner.allocator, self.output, self.short_names);
         progressNode.end();
     }
 };
@@ -47,7 +49,7 @@ pub const GenerateStubsStep = struct {
 /// # Errors
 ///
 /// The function returns an error if there is an issue with parsing the main.zig file or writing to the output file.
-pub fn generateStubs(allocator: std.mem.Allocator, output: std.fs.File) !void {
+pub fn generateStubs(allocator: std.mem.Allocator, output: std.fs.File, short_names: bool) !void {
     // Struct decalrations
     try output.writeAll(@embedFile("../declarations/shaders.zig"));
 
@@ -64,10 +66,31 @@ pub fn generateStubs(allocator: std.mem.Allocator, output: std.fs.File) !void {
                 while (tree.source[protoEnd - 1] == ' ') {
                     protoEnd -= 1;
                 }
-                if (std.mem.indexOf(u8, tree.source[protoStart - 7 .. protoStart], "export") != null) {
-                    try output.writeAll("pub extern ");
-                    try output.writeAll(tree.source[protoStart..protoEnd]);
-                    try output.writeAll(";\n");
+                if (short_names) {
+                    var buffer: [1]std.zig.Ast.Node.Index = undefined;
+                    const f = tree.fullFnProto(&buffer, declNode.data.lhs);
+                    const l_paren = tree.tokens.get(f.?.lparen).start;
+                    const return_type = tree.tokens.get(tree.nodes.get(f.?.ast.return_type).main_token).start;
+                    const func_name = tree.source[protoStart..l_paren];
+
+                    if (std.mem.indexOf(u8, tree.source[protoStart - 7 .. protoStart], "export") != null) {
+                        try output.writeAll("pub const ");
+                        try output.writeAll(&.{std.ascii.toLower(func_name[11])});
+                        try output.writeAll(func_name[12..]);
+                        try output.writeAll(" = @extern(*const fn ");
+                        try output.writeAll(tree.source[l_paren..return_type]);
+                        try output.writeAll("callconv(.C) ");
+                        try output.writeAll(tree.source[return_type..protoEnd]);
+                        try output.writeAll(", .{.name = \"");
+                        try output.writeAll(func_name[3..]);
+                        try output.writeAll("\" });\n");
+                    }
+                } else {
+                    if (std.mem.indexOf(u8, tree.source[protoStart - 7 .. protoStart], "export") != null) {
+                        try output.writeAll("pub extern ");
+                        try output.writeAll(tree.source[protoStart..protoEnd]);
+                        try output.writeAll(";\n");
+                    }
                 }
             },
             else => {},
