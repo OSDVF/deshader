@@ -42,6 +42,7 @@ pub const Shader = struct {
         type: @TypeOf(SourcePayload.type) = decls.SourceType.unknown,
         context: ?*const anyopaque = null,
         compile: @TypeOf(SourcePayload.compile) = null,
+        save: @TypeOf(SourcePayload.save) = null,
 
         pub fn fromPayload(payload: decls.SourcesPayload, index: usize) @This() {
             std.debug.assert(index < payload.count);

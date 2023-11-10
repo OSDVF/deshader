@@ -63,7 +63,6 @@
             "name": "GLFW",
             "target": "./zig-out/bin/example/glfw",
             "cwd": "${workspaceRoot}",
-            "arguments": "zig-out/bin/example/glfw",
             "valuesFormatting": "parseText",
             "preLaunchTask": "Build Example",
             "autorun": [
@@ -75,5 +74,24 @@
                 "DESHADER_COMMANDS_WS": "8082"
             }
         },
+        {
+            "type": "gdb",
+            "request": "launch",
+            "name": "abi",
+            "target": "./zig-out/bin/example/abi",
+            "cwd": "${workspaceRoot}",
+            "valuesFormatting": "parseText",
+            "preLaunchTask": "Build Example",
+        },
+        {
+            "type": "gdb",
+            "request": "launch",
+            "name": "Header Generator",
+            "target": "./zig-out/bin/generate_header",
+            "cwd": "${workspaceRoot}",
+            "valuesFormatting": "parseText",
+            "preLaunchTask": "Build Headers Generator",
+        },
+        
     ]
 }

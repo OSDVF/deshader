@@ -143,10 +143,6 @@ export const init_array linksection(".init_array") = &wrapErrorRunOnLoad;
 export const fini_array linksection(".fini_array") = &finalize;
 var command_listener: ?*commands.CommandListener = null;
 
-comptime { // also export as main entry point so the library can be literally executed
-    @export(wrapErrorRunOnLoad, .{ .name = "main", .linkage = .Weak });
-}
-
 /// Run this functions at Deshader shared library load
 fn runOnLoad() !void {
     try common.init(); // init allocator and env

@@ -127,6 +127,7 @@ pub fn build(b: *std.Build) void {
     const transitive_exports = b.createModule(.{ .source_file = .{ .generated = &addGlProcsStep.generated_file } });
     deshader_lib.addModule("transitive_exports", transitive_exports);
     deshader_lib.addAnonymousModule("transitive_exports_count", .{ .source_file = .{ .generated = &addGlProcsStep.generated_count_file } });
+    const header_dir = std.fs.path.join(b.allocator, &.{ b.install_path, "include" }) catch unreachable;
 
     // Positron
     var positron: *std.build.Module = undefined;
@@ -144,9 +145,10 @@ pub fn build(b: *std.Build) void {
     //
     // Steps for building generated and embedded files
     //
+    const stubs_path = std.fs.path.join(b.allocator, &.{ header_dir, "deshader.zig" }) catch unreachable;
     var stub_gen_cmd = b.step("generate_stubs", "Generate .zig file with function stubs for deshader library");
     const deshader_stubs = b.addModule("deshader", .{
-        .source_file = .{ .path = "zig-out/include/deshader.zig" }, //future file, may not exist
+        .source_file = .{ .path = stubs_path }, //future file, may not exist
     });
     {
         //
@@ -191,12 +193,8 @@ pub fn build(b: *std.Build) void {
         const stubGenSrc = @import("src/tools/generate_stubs.zig");
         var stub_gen: *stubGenSrc.GenerateStubsStep = b.allocator.create(stubGenSrc.GenerateStubsStep) catch unreachable;
         {
-            const path = std.fs.path.join(
-                b.allocator,
-                &[_]String{ b.install_path, "include", "deshader.zig" },
-            ) catch unreachable;
-            std.fs.cwd().makePath(std.fs.path.dirname(path).?) catch unreachable;
-            stub_gen.* = stubGenSrc.GenerateStubsStep.init(b, std.fs.openFileAbsolute(path, .{ .mode = .write_only }) catch unreachable, true);
+            std.fs.cwd().makePath(std.fs.path.dirname(stubs_path).?) catch unreachable;
+            stub_gen.* = stubGenSrc.GenerateStubsStep.init(b, std.fs.openFileAbsolute(stubs_path, .{ .mode = .write_only }) catch unreachable, true);
         }
         stub_gen_cmd.dependOn(&stub_gen.step);
         desahder_lib_cmd.dependOn(&stub_gen.step);
@@ -213,7 +211,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         });
         const heade_gen_opts = b.addOptions();
-        heade_gen_opts.addOption(String, "emitHDir", std.fs.path.join(b.allocator, &.{ b.install_path, "include" }) catch unreachable);
+        heade_gen_opts.addOption(String, "emitHDir", header_dir);
         header_gen.addOptions("options", heade_gen_opts);
         header_gen.addAnonymousModule("header_gen", .{
             .source_file = .{ .path = "libs/zig-header-gen/src/header_gen.zig" },
@@ -272,9 +270,10 @@ pub fn build(b: *std.Build) void {
         const sub_examples = struct {
             const glfw = "glfw";
             const editor = "editor";
+            const abi = "abi";
         };
         const example_options = b.addOptions();
-        example_options.addOption([]const String, "exampleNames", &.{ sub_examples.glfw, sub_examples.editor });
+        example_options.addOption([]const String, "exampleNames", &.{ sub_examples.glfw, sub_examples.editor, sub_examples.abi });
         example_bootstraper.addOptions("options", example_options);
 
         // Various example applications
@@ -297,6 +296,11 @@ pub fn build(b: *std.Build) void {
             // Editor
             const example_editor = exampleSubProgram(example_bootstraper, "editor", "examples/" ++ sub_examples.editor ++ ".zig", exampleModules);
             example_editor.linkLibrary(deshader_lib);
+
+            // ABI
+            const example_abi = exampleSubProgram(example_bootstraper, "abi", "examples/" ++ sub_examples.abi ++ ".cpp", .{});
+            example_abi.addIncludePath(.{ .path = header_dir });
+            example_abi.linkLibrary(deshader_lib);
         }
         examplesStep.dependOn(stub_gen_cmd);
         const exampleInstall = b.addInstallArtifact(example_bootstraper, .{});

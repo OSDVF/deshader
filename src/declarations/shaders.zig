@@ -68,8 +68,10 @@ pub const SourcesPayload = extern struct {
     // Count of paths/sources/contexts
     count: usize = 0,
     type: SourceType = SourceType.unknown,
-    /// Non-null user-specified or defaultly set compile function
+    /// Non-null user-specified or defaultly set compile function to be executed when Deshader inejcts something and wants to apply it
     compile: ?*const fn (source: SourcesPayload) callconv(.C) u8 = null,
+    /// Function to execute when user wants to save a source in the Deshader editor
+    save: ?*const fn (source: SourcesPayload) callconv(.C) u8 = null,
 
     pub fn toString(self: *const @This()) []const u8 {
         return self.type.toExtension();
