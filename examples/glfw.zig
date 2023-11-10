@@ -112,12 +112,12 @@ pub fn main() !void {
     const program = gl.createProgram();
     defer gl.deleteProgram(program);
     const vertex = createShader(vertex_source, gl.VERTEX_SHADER);
-    defer gl.deleteShader(vertex);
     const fragment = createShader(fragment_source, gl.FRAGMENT_SHADER);
-    defer gl.deleteShader(fragment);
     gl.attachShader(program, vertex);
     gl.attachShader(program, fragment);
     gl.linkProgram(program);
+    gl.deleteShader(vertex);
+    gl.deleteShader(fragment);
     var info_length: gl.GLsizei = undefined;
     var info_log: [*:0]gl.GLchar = undefined;
     gl.getProgramInfoLog(program, 0, &info_length, info_log);

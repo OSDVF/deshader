@@ -1,5 +1,7 @@
 const CString = [*:0]const u8;
 
+pub const ExistsBehavior = enum(c_int) { Link, Overwrite, Error };
+
 pub const SourceType = enum(c_int) { // works with GL and VK :)
     unknown = 0,
     gl_vertex = 0x8b31,
@@ -85,82 +87,12 @@ pub const SourcesPayload = extern struct {
 pub const ProgramPayload = extern struct {
     ref: usize = 0,
     path: ?CString = null,
-    program: PipelinePayload = .{ .type = .Null, .pipeline = .{ .Null = {} } },
+    shaders: ?[*]usize = null,
+    count: usize = 0,
     context: ?*const anyopaque = null,
     link: ?*const fn (ref: usize, path: ?CString, sources: [*]SourcesPayload, count: usize, context: ?*const anyopaque) callconv(.C) u8,
 
     pub fn deinit(self: *@This()) void {
         _ = self;
     }
-};
-
-pub const PipelineType = enum(c_int) { Null = 0, Rasterize, Compute, Ray };
-pub const SourceTypeToPipeline = struct {
-    pub const unknown = PipelineType.Null;
-    pub const gl_vertex = PipelineType.Rasterize;
-    pub const gl_fragment = PipelineType.Rasterize;
-    pub const gl_geometry = PipelineType.Rasterize;
-    pub const gl_tess_control = PipelineType.Rasterize;
-    pub const gl_tess_evaluation = PipelineType.Rasterize;
-    pub const gl_compute = PipelineType.Compute;
-    pub const gl_mesh = PipelineType.Rasterize;
-    pub const gl_task = PipelineType.Rasterize;
-    pub const vk_vertex = PipelineType.Rasterize;
-    pub const vk_tess_control = PipelineType.Rasterize;
-    pub const vk_tess_evaluation = PipelineType.Rasterize;
-    pub const vk_geometry = PipelineType.Rasterize;
-    pub const vk_fragment = PipelineType.Rasterize;
-    pub const vk_compute = PipelineType.Compute;
-    pub const vk_raygen = PipelineType.Ray;
-    pub const vk_anyhit = PipelineType.Ray;
-    pub const vk_closesthit = PipelineType.Ray;
-    pub const vk_miss = PipelineType.Ray;
-    pub const vk_intersection = PipelineType.Ray;
-    pub const vk_callable = PipelineType.Ray;
-    pub const vk_task = PipelineType.Rasterize;
-    pub const vk_mesh = PipelineType.Rasterize;
-
-    pub fn map(typ: SourceType) PipelineType {
-        return switch (typ) {
-            .gl_fragment, .gl_vertex, .gl_geometry, .gl_tess_control, .gl_tess_evaluation, .gl_mesh, .gl_task => .Rasterize,
-            .gl_compute => .Compute,
-            .vk_fragment, .vk_vertex, .vk_geometry, .vk_tess_control, .vk_tess_evaluation, .vk_mesh, .vk_task => .Rasterize,
-            .vk_compute => .Compute,
-            .vk_raygen, .vk_anyhit, .vk_closesthit, .vk_miss, .vk_intersection, .vk_callable => .Ray,
-            else => .Null,
-        };
-    }
-};
-
-pub const PipelinePayload = extern struct {
-    type: PipelineType,
-    pipeline: extern union {
-        Null: void,
-        Rasterize: RasterizePayload,
-        Compute: ComputePayload,
-        Ray: RaytracePayload,
-
-        pub const RasterizePayload = extern struct {
-            vertex: usize,
-            geometry: usize = 0,
-            tess_control: usize = 0,
-            tess_evaluation: usize = 0,
-            fragment: usize,
-            task: usize = 0,
-            mesh: usize = 0,
-        };
-
-        pub const ComputePayload = extern struct {
-            compute: usize,
-        };
-
-        pub const RaytracePayload = extern struct {
-            raygen: usize,
-            anyhit: usize = 0,
-            closesthit: usize,
-            intersection: usize = 0,
-            miss: usize,
-            callable: usize = 0,
-        };
-    },
 };

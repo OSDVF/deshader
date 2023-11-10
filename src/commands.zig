@@ -388,7 +388,7 @@ pub const CommandListener = struct {
             /// untagged: bool, path: String
             pub fn listSources(args: ?ArgumentsList) ![]const CString {
                 const args_result = getListArgs(args);
-                return try shaders.Sources.list(args_result.untagged, args_result.path);
+                return try shaders.Shaders.list(args_result.untagged, args_result.path);
             }
 
             /// untagged: bool, path: String
