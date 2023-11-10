@@ -10,20 +10,20 @@ pub const SourceType = enum(c_int) { // works with GL and VK :)
     gl_compute = 0x91b9,
     gl_mesh = 0x9559, //nv_mesh_shader
     gl_task = 0x955a,
-    vk_vertex = 0x00000001,
-    vk_tess_control = 0x00000002,
-    vk_tess_evaluation = 0x00000004,
-    vk_geometry = 0x00000008,
-    vk_fragment = 0x00000010,
-    vk_compute = 0x00000020,
-    vk_raygen = 0x00000100,
-    vk_anyhit = 0x00000200,
-    vk_closesthit = 0x00000400,
-    vk_miss = 0x00000800,
-    vk_intersection = 0x00001000,
-    vk_callable = 0x00002000,
-    vk_task = 0x00004000,
-    vk_mesh = 0x00008000,
+    vk_vertex = 0x0001,
+    vk_tess_control = 0x0002,
+    vk_tess_evaluation = 0x0004,
+    vk_geometry = 0x0008,
+    vk_fragment = 0x0010,
+    vk_compute = 0x0020,
+    vk_raygen = 0x0100,
+    vk_anyhit = 0x0200,
+    vk_closesthit = 0x0400,
+    vk_miss = 0x0800,
+    vk_intersection = 0x1000,
+    vk_callable = 0x2000,
+    vk_task = 0x4000,
+    vk_mesh = 0x8000,
 
     pub fn toExtension(typ: SourceType) []const u8 {
         return switch (typ) {
@@ -57,6 +57,9 @@ pub const SourcesPayload = extern struct {
     /// Shader GLSL source code parts. Each of them has different path and context. Has the size of 'count'
     /// Sources are never duplicated or freed
     sources: ?[*]CString = null,
+    /// Source code lengths
+    /// is copied when intercepted because opengl specifies source length in 32-bit int
+    lengths: ?[*]usize = null,
     /// User-specified contexts. Can be anything. Has the size of 'count'
     /// Contexts are never duplicated or freed
     contexts: ?[*]?*const anyopaque = null, // so much ?questions?? :)
@@ -69,6 +72,14 @@ pub const SourcesPayload = extern struct {
     pub fn toString(self: *const @This()) []const u8 {
         return self.type.toExtension();
     }
+
+    pub fn deinit(self: *@This()) void {
+        const common = @import("../common.zig");
+        self.sources = null;
+        if (self.lengths != null) {
+            common.allocator.free(self.lengths.?[0..self.count]);
+        }
+    }
 };
 
 pub const ProgramPayload = extern struct {
@@ -77,6 +88,10 @@ pub const ProgramPayload = extern struct {
     program: PipelinePayload = .{ .type = .Null, .pipeline = .{ .Null = {} } },
     context: ?*const anyopaque = null,
     link: ?*const fn (ref: usize, path: ?CString, sources: [*]SourcesPayload, count: usize, context: ?*const anyopaque) callconv(.C) u8,
+
+    pub fn deinit(self: *@This()) void {
+        _ = self;
+    }
 };
 
 pub const PipelineType = enum(c_int) { Null = 0, Rasterize, Compute, Ray };
@@ -104,6 +119,17 @@ pub const SourceTypeToPipeline = struct {
     pub const vk_callable = PipelineType.Ray;
     pub const vk_task = PipelineType.Rasterize;
     pub const vk_mesh = PipelineType.Rasterize;
+
+    pub fn map(typ: SourceType) PipelineType {
+        return switch (typ) {
+            .gl_fragment, .gl_vertex, .gl_geometry, .gl_tess_control, .gl_tess_evaluation, .gl_mesh, .gl_task => .Rasterize,
+            .gl_compute => .Compute,
+            .vk_fragment, .vk_vertex, .vk_geometry, .vk_tess_control, .vk_tess_evaluation, .vk_mesh, .vk_task => .Rasterize,
+            .vk_compute => .Compute,
+            .vk_raygen, .vk_anyhit, .vk_closesthit, .vk_miss, .vk_intersection, .vk_callable => .Ray,
+            else => .Null,
+        };
+    }
 };
 
 pub const PipelinePayload = extern struct {
@@ -116,12 +142,12 @@ pub const PipelinePayload = extern struct {
 
         pub const RasterizePayload = extern struct {
             vertex: usize,
-            geometry: usize,
-            tess_control: usize,
-            tess_evaluation: usize,
+            geometry: usize = 0,
+            tess_control: usize = 0,
+            tess_evaluation: usize = 0,
             fragment: usize,
-            task: usize,
-            mesh: usize,
+            task: usize = 0,
+            mesh: usize = 0,
         };
 
         pub const ComputePayload = extern struct {
@@ -130,11 +156,11 @@ pub const PipelinePayload = extern struct {
 
         pub const RaytracePayload = extern struct {
             raygen: usize,
-            anyhit: usize,
+            anyhit: usize = 0,
             closesthit: usize,
-            intersection: usize,
+            intersection: usize = 0,
             miss: usize,
-            callable: usize,
+            callable: usize = 0,
         };
     },
 };

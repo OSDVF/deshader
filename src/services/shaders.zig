@@ -69,6 +69,7 @@ pub fn sourceContext(ref: usize, source_index: usize, context: *const anyopaque)
     }
 }
 
+/// Change existing source part. Does not allocate any new memory or reallocate existing source array
 pub fn sourceSource(ref: usize, source_index: usize, source_code: CString) !void {
     var maybe_sources = Sources.all.get(ref);
 
@@ -171,7 +172,15 @@ pub fn Storage(comptime Stored: type, comptime Payload: type) type {
 
         pub fn deinit(self: *@This()) void {
             self.tagged.deinit();
+            var it = self.taggedByRef.valueIterator();
+            while (it.next()) |val| {
+                val.*.deinit();
+            }
             self.taggedByRef.deinit();
+            var it2 = self.all.valueIterator();
+            while (it2.next()) |val| {
+                val.deinit();
+            }
             self.all.deinit();
         }
 
@@ -315,6 +324,7 @@ pub fn Storage(comptime Stored: type, comptime Payload: type) type {
         }
 
         /// assumes that the payload does not have a tag
+        /// updates all non-null fields inside the payload
         pub fn putUntagged(self: *@This(), payload: Payload, merge: bool) !void {
             switch (Payload) {
                 decls.SourcesPayload => {
@@ -576,7 +586,7 @@ pub const Shader = struct {
     pub const Source = struct {
         ref: @TypeOf(SourcePayload.ref) = 0,
         tag: ?*Tag(@This()) = null,
-        source: ?CString = null,
+        source: ?String = null,
         type: @TypeOf(SourcePayload.type) = decls.SourceType.unknown,
         context: ?*const anyopaque = null,
         compile: @TypeOf(SourcePayload.compile) = null,
@@ -600,7 +610,11 @@ pub const Shader = struct {
             }
             // source and context must be individually hydrated
             if (payload.sources != null) {
-                self.source = payload.sources.?[0];
+                if (payload.lengths != null) {
+                    self.source = payload.sources.?[0][0..payload.lengths.?[0]];
+                } else {
+                    self.source = std.mem.span(payload.sources.?[0]);
+                }
             }
             if (payload.contexts != null) {
                 self.context = payload.contexts.?[0];
@@ -609,6 +623,10 @@ pub const Shader = struct {
 
         pub fn toString(self: *const @This()) String {
             return self.type.toExtension();
+        }
+
+        pub fn deinit(self: *@This()) void {
+            _ = self;
         }
     };
 
@@ -657,6 +675,10 @@ pub const Shader = struct {
                     }
                 }
             }
+        }
+
+        pub fn deinit(self: *@This()) void {
+            _ = self;
         }
 
         pub const Pipeline = union(decls.PipelineType) {

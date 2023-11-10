@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const gl = @import("gl");
 const decls = @import("../declarations/shaders.zig");
 const shaders = @import("../services/shaders.zig");
@@ -60,10 +61,82 @@ pub export fn glCreateShader(shaderType: gl.GLenum) gl.GLuint {
         .type = @enumFromInt(shaderType),
         .compile = defaultCompileShader,
     }, false) catch |err| {
-        log.warn("Failed to add shader source {x} to virtual filesystem: {any}", .{ new_platform_source, err });
+        log.warn("Failed to add shader source {x} cache: {any}", .{ new_platform_source, err });
     };
 
     return new_platform_source;
+}
+
+pub export fn glCreateShaderProgramv(shaderType: gl.GLenum, count: gl.GLsizei, sources: [*][*:0]const gl.GLchar) gl.GLuint {
+    const source_type: decls.SourceType = @enumFromInt(shaderType);
+    const new_platform_program = gl.createShaderProgramv(shaderType, count, sources);
+    var new_platform_sources = common.allocator.alloc(gl.GLuint, @intCast(count)) catch |err| {
+        log.err("Failed to allocate memory for shader sources: {any}", .{err});
+        return 0;
+    };
+    defer common.allocator.free(new_platform_sources);
+
+    var source_count: c_int = undefined;
+    gl.getAttachedShaders(new_platform_program, count, &source_count, new_platform_sources.ptr);
+    std.debug.assert(source_count == 1);
+    var lengths = common.allocator.alloc(usize, 1) catch |err| {
+        log.err("Failed to allocate memory for shader sources lengths: {any}", .{err});
+        return 0;
+    };
+    lengths[0] = std.mem.len(sources[0]);
+
+    shaders.Sources.putUntagged(decls.SourcesPayload{
+        .ref = @intCast(new_platform_sources[0]),
+        .type = source_type,
+        .count = @intCast(count),
+        .sources = sources,
+        .lengths = lengths.ptr,
+        .compile = defaultCompileShader,
+    }, false) catch |err| {
+        log.warn("Failed to add shader source {x} cache: {any}", .{ new_platform_sources[0], err });
+    };
+
+    shaders.Programs.putUntagged(decls.ProgramPayload{ .ref = @intCast(new_platform_program), .link = defaultLink, .program = decls.PipelinePayload{ .type = decls.SourceTypeToPipeline.map(source_type), .pipeline = switch (source_type) {
+        .gl_compute, .vk_compute => .{ .Compute = .{ .compute = new_platform_sources[0] } },
+        .gl_vertex, .vk_vertex => .{ .Rasterize = .{ .vertex = new_platform_sources[0], .fragment = 0 } },
+        .gl_fragment, .vk_fragment => .{ .Rasterize = .{ .fragment = new_platform_sources[0], .vertex = 0 } },
+        .gl_geometry, .vk_geometry => .{ .Rasterize = .{ .geometry = new_platform_sources[0], .vertex = 0, .fragment = 0 } },
+        .gl_tess_control, .vk_tess_control => .{ .Rasterize = .{ .tess_control = new_platform_sources[0], .vertex = 0, .fragment = 0 } },
+        .gl_tess_evaluation, .vk_tess_evaluation => .{ .Rasterize = .{ .tess_evaluation = new_platform_sources[0], .vertex = 0, .fragment = 0 } },
+        .vk_raygen => .{ .Ray = .{ .raygen = new_platform_sources[0], .closesthit = 0, .miss = 0 } },
+        .vk_anyhit => .{ .Ray = .{ .anyhit = new_platform_sources[0], .raygen = 0, .closesthit = 0, .miss = 0 } },
+        .vk_closesthit => .{ .Ray = .{ .closesthit = new_platform_sources[0], .raygen = 0, .miss = 0 } },
+        .vk_miss => .{ .Ray = .{ .miss = new_platform_sources[0], .raygen = 0, .closesthit = 0 } },
+        .vk_intersection => .{ .Ray = .{ .intersection = new_platform_sources[0], .raygen = 0, .closesthit = 0, .miss = 0 } },
+        .vk_callable => .{ .Ray = .{ .callable = new_platform_sources[0], .raygen = 0, .miss = 0, .closesthit = 0 } },
+        else => unreachable,
+    } } }, false) catch |err| {
+        log.warn("Failed to add program {x} cache: {any}", .{ new_platform_program, err });
+    };
+
+    return new_platform_program;
+}
+
+pub export fn glShaderSource(shader: gl.GLuint, count: gl.GLsizei, sources: [*][*:0]const gl.GLchar, lengths: ?[*]gl.GLint) void {
+    var new_lengths: ?[*]usize = if (lengths != null) (common.allocator.alloc(usize, @intCast(count)) catch |err| {
+        log.err("Failed to allocate memory for shader sources lengths: {any}", .{err});
+        return;
+    }).ptr else null;
+    if (lengths != null) {
+        const ucount: usize = @intCast(count);
+        for (lengths.?[0..ucount], new_lengths.?[0..ucount]) |len, *target| {
+            target.* = @intCast(len);
+        }
+    }
+    shaders.Sources.putUntagged(decls.SourcesPayload{
+        .ref = @intCast(shader),
+        .count = @intCast(count),
+        .sources = sources,
+        .lengths = new_lengths,
+    }, true) catch |err| {
+        log.warn("Failed to add shader source {x} cache: {any}", .{ shader, err });
+    };
+    gl.shaderSource(shader, count, sources, lengths);
 }
 
 pub export fn glCreateProgram() gl.GLuint {
@@ -72,7 +145,7 @@ pub export fn glCreateProgram() gl.GLuint {
         .ref = @intCast(new_platform_program),
         .link = defaultLink,
     }, false) catch |err| {
-        log.warn("Failed to add program {x} to virtual filesystem: {any}", .{ new_platform_program, err });
+        log.warn("Failed to add program {x} cache: {any}", .{ new_platform_program, err });
     };
 
     return new_platform_program;

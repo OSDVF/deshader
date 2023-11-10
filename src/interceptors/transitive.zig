@@ -12,7 +12,8 @@ const String = []const u8;
 // Graphics API interception with trampoline generators
 //
 pub const TransitiveSymbols = struct {
-    var mapping: []gl.FunctionPointer = undefined;
+    var mapping: [@import("transitive_exports_count").count]gl.FunctionPointer = undefined;
+    var context_count: usize = 0;
     // Fill the mappings
     pub fn loadOriginal() !void {
         comptime var count: usize = 0;
@@ -23,7 +24,7 @@ pub const TransitiveSymbols = struct {
             //
             // Transitively export all GL, VK and system-specific (GLX, EGL) functions
             //
-            var recursive_procs = std.mem.splitScalar(u8, @embedFile("recursive_exports"), '\n');
+            var recursive_procs = std.mem.splitScalar(u8, @embedFile("transitive_exports"), '\n');
             {
                 @setEvalBranchQuota(150000); // Really a lot of functions to export
                 var i = 0;
@@ -79,8 +80,7 @@ pub const TransitiveSymbols = struct {
         // Runtime loadOriginal() code
         //
 
-        // Create the array
-        mapping = try common.allocator.alloc(gl.FunctionPointer, count);
+        // Fill the mappings array
         var i: usize = 0;
         inline for (names) |symbol_name| {
             defer i += 1;
@@ -102,9 +102,5 @@ pub const TransitiveSymbols = struct {
                 DeshaderLog.err("Failed to find symbol {s}", .{symbol_name});
             }
         }
-    }
-
-    pub fn deinit() void {
-        common.allocator.free(mapping);
     }
 };

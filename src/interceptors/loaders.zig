@@ -116,7 +116,7 @@ export fn dlopen(name: ?[*:0]u8, mode: c_int) callconv(.C) ?*const anyopaque {
     }
     const result = APIs.originalDlopen.?(name, mode);
     if (result == null) {
-        DeshaderLog.debug("Failed dlopen {?s}: {s}", .{ name, c.dlerror() });
+        DeshaderLog.debug("Failed dlopen {?s}: {?s}", .{ name, @as(?[*:0]const u8, c.dlerror()) });
     }
     return result;
 }

@@ -4,6 +4,11 @@ node_modules/vscode-web/dist/extensions/git-base/dist/browser/extension.js
 node_modules/vscode-web/dist/extensions/json/language-configuration.json
 node_modules/vscode-web/dist/extensions/json/syntaxes/JSONL.tmLanguage.json
 node_modules/vscode-web/dist/extensions/merge-conflict/dist/browser/mergeConflictMain.js
+node_modules/vscode-web/dist/extensions/theme-defaults/themes/dark_modern.json
+node_modules/vscode-web/dist/extensions/theme-defaults/themes/dark_plus.json
+node_modules/vscode-web/dist/extensions/theme-defaults/themes/dark_vs.json
+node_modules/vscode-web/dist/extensions/theme-defaults/themes/hc_black.json
+node_modules/vscode-web/dist/extensions/theme-defaults/themes/hc_light.json
 node_modules/vscode-web/dist/extensions/theme-defaults/themes/light_modern.json
 node_modules/vscode-web/dist/extensions/theme-defaults/themes/light_plus.json
 node_modules/vscode-web/dist/extensions/theme-defaults/themes/light_vs.json

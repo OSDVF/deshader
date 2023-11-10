@@ -124,8 +124,9 @@ pub fn build(b: *std.Build) void {
     var addGlProcsStep = AddGlProcsStep.init(b, "add_gl_procs", allLibraries.items, GlSymbolPrefixes, runSymbolEnum.captureStdOut());
     addGlProcsStep.step.dependOn(&runSymbolEnum.step);
     deshader_lib.step.dependOn(&addGlProcsStep.step);
-    const recursiveExports = b.createModule(.{ .source_file = .{ .generated = &addGlProcsStep.generatedFile } });
-    deshader_lib.addModule("recursive_exports", recursiveExports);
+    const transitive_exports = b.createModule(.{ .source_file = .{ .generated = &addGlProcsStep.generated_file } });
+    deshader_lib.addModule("transitive_exports", transitive_exports);
+    deshader_lib.addAnonymousModule("transitive_exports_count", .{ .source_file = .{ .generated = &addGlProcsStep.generated_count_file } });
 
     // Positron
     var positron: *std.build.Module = undefined;
@@ -606,11 +607,12 @@ const AddGlProcsStep = struct {
     libNames: []const String,
     symbolPrefixes: []const String,
     symbolsOutput: std.build.LazyPath,
-    generatedFile: std.Build.GeneratedFile,
+    generated_file: std.Build.GeneratedFile,
+    generated_count_file: std.Build.GeneratedFile,
 
     fn init(b: *std.build.Builder, name: String, libNames: []const String, symbolPrefixes: []const String, symbolEnumeratorOutput: std.build.LazyPath) *@This() {
         const self = b.allocator.create(AddGlProcsStep) catch @panic("OOM");
-        self.* = .{
+        self.* = @This(){
             .step = std.build.Step.init(.{
                 .owner = b,
                 .id = .options,
@@ -618,11 +620,13 @@ const AddGlProcsStep = struct {
                 .makeFn = make,
             }),
             .symbolsOutput = symbolEnumeratorOutput,
-            .generatedFile = undefined,
+            .generated_file = undefined,
+            .generated_count_file = undefined,
             .libNames = libNames,
             .symbolPrefixes = symbolPrefixes,
         };
-        self.generatedFile = .{ .step = &self.step };
+        self.generated_file = .{ .step = &self.step };
+        self.generated_count_file = .{ .step = &self.step };
         return self;
     }
 
@@ -655,6 +659,7 @@ const AddGlProcsStep = struct {
         const output = try std.mem.join(step.owner.allocator, "\n", glProcs.keys());
         // This is more or less copied from Options step.
         const basename = "procs.txt";
+        const count_basename = "procs_count.zig";
 
         // Hash contents to file name.
         var hash = step.owner.cache.hash;
@@ -662,10 +667,13 @@ const AddGlProcsStep = struct {
         // implementation is modified in a non-backwards-compatible way.
         hash.add(@as(u32, 0xad95e922));
         hash.addBytes(output);
-        const sub_path = "c" ++ std.fs.path.sep_str ++ hash.final() ++ std.fs.path.sep_str ++ basename;
+        const h = hash.final();
+        const sub_path = "c" ++ std.fs.path.sep_str ++ h ++ std.fs.path.sep_str ++ basename;
+        const sub_path_count = "c" ++ std.fs.path.sep_str ++ h ++ std.fs.path.sep_str ++ count_basename;
 
-        self.generatedFile.path = try step.owner.cache_root.join(step.owner.allocator, &.{sub_path});
-        if (step.owner.cache_root.handle.access(sub_path, .{})) |_| {
+        self.generated_file.path = try step.owner.cache_root.join(step.owner.allocator, &.{sub_path});
+        self.generated_count_file.path = try step.owner.cache_root.join(step.owner.allocator, &.{sub_path_count});
+        if (step.owner.cache_root.handle.access(sub_path, .{})) {
             // This is the hot path, success.
             step.result_cached = true;
             return;
@@ -682,6 +690,9 @@ const AddGlProcsStep = struct {
                 const tmp_sub_path = "tmp" ++ std.fs.path.sep_str ++
                     std.Build.hex64(rand_int) ++ std.fs.path.sep_str ++
                     basename;
+                const count_tmp_sub_path = "tmp" ++ std.fs.path.sep_str ++
+                    std.Build.hex64(rand_int) ++ std.fs.path.sep_str ++
+                    count_basename;
                 const tmp_sub_path_dirname = std.fs.path.dirname(tmp_sub_path).?;
 
                 step.owner.cache_root.handle.makePath(tmp_sub_path_dirname) catch |err| {
@@ -693,6 +704,13 @@ const AddGlProcsStep = struct {
                 step.owner.cache_root.handle.writeFile(tmp_sub_path, output) catch |err| {
                     return step.fail("unable to write procs to '{}{s}': {s}", .{
                         step.owner.cache_root, tmp_sub_path, @errorName(err),
+                    });
+                };
+                const count = std.fmt.allocPrint(step.owner.allocator, "pub const count = {d};", .{glProcs.count()}) catch unreachable;
+                defer step.owner.allocator.free(count);
+                step.owner.cache_root.handle.writeFile(count_tmp_sub_path, count) catch |err| {
+                    return step.fail("unable to write proc count to '{}{s}': {s}", .{
+                        step.owner.cache_root, count_tmp_sub_path, @errorName(err),
                     });
                 };
 
@@ -708,15 +726,34 @@ const AddGlProcsStep = struct {
                         return;
                     },
                     else => {
-                        return step.fail("unable to rename options from '{}{s}' to '{}{s}': {s}", .{
+                        return step.fail("unable to rename procs file from '{}{s}' to '{}{s}': {s}", .{
                             step.owner.cache_root, tmp_sub_path,
                             step.owner.cache_root, sub_path,
                             @errorName(err),
                         });
                     },
                 };
+                step.owner.cache_root.handle.rename(count_tmp_sub_path, sub_path_count) catch |err| switch (err) {
+                    error.PathAlreadyExists => {
+                        // Other process beat us to it. Clean up the temp file.
+                        step.owner.cache_root.handle.deleteFile(count_tmp_sub_path) catch |e| {
+                            try step.addError("warning: unable to delete temp file '{}{s}': {s}", .{
+                                step.owner.cache_root, count_tmp_sub_path, @errorName(e),
+                            });
+                        };
+                        step.result_cached = true;
+                        return;
+                    },
+                    else => {
+                        return step.fail("unable to rename procs count from '{}{s}' to '{}{s}': {s}", .{
+                            step.owner.cache_root, count_tmp_sub_path,
+                            step.owner.cache_root, sub_path_count,
+                            @errorName(err),
+                        });
+                    },
+                };
             },
-            else => |e| return step.fail("unable to access options file '{}{s}': {s}", .{
+            else => |e| return step.fail("unable to access procs file '{}{s}': {s}", .{
                 step.owner.cache_root, sub_path, @errorName(e),
             }),
         }

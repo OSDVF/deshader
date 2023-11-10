@@ -8,6 +8,8 @@ const DeshaderLog = @import("../log.zig").DeshaderLog;
 const String = []const u8;
 
 pub fn getProductJson(allocator: std.mem.Allocator, https: bool, port: u16) !String {
+    const authority = try std.fmt.allocPrint(allocator, "127.0.0.1:{}", .{port});
+    defer allocator.free(authority);
     return try std.json.stringifyAlloc(allocator, .{
         .productConfiguration = .{
             .nameShort = "Deshader Editor",
@@ -30,11 +32,13 @@ pub fn getProductJson(allocator: std.mem.Allocator, https: bool, port: u16) !Str
         },
         .additionalBuiltinExtensions = .{.{
             .scheme = if (https) "https" else "http",
-            .authority = try std.fmt.allocPrint(allocator, "127.0.0.1:{}", .{port}),
+            .authority = authority,
             .path = "/deshader-vscode",
         }},
     }, .{ .whitespace = .minified });
 }
+
+var provide_thread: ?std.Thread = null;
 
 // basicaly a HTTP server
 pub fn createEditorProvider() !*positron.Provider {
@@ -74,9 +78,8 @@ pub fn createEditorProvider() !*positron.Provider {
     defer common.allocator.free(product_config);
     try provider.addContent("/product.json", "application/json", product_config);
 
-    const provide_thread = try std.Thread.spawn(.{}, positron.Provider.run, .{provider});
-    provide_thread.detach();
-    try provide_thread.setName("EditorServer");
+    provide_thread = try std.Thread.spawn(.{}, positron.Provider.run, .{provider});
+    try provide_thread.?.setName("EditorServer");
     return provider;
 }
 
@@ -91,7 +94,10 @@ pub fn serverStart() !void {
         return error.AlreadyRunning;
     }
     global_provider = try createEditorProvider();
-    errdefer global_provider.?.destroy();
+    errdefer {
+        global_provider.?.destroy();
+        global_provider = null;
+    }
 }
 
 pub fn serverStop() EditorProviderError!void {
@@ -100,22 +106,23 @@ pub fn serverStop() EditorProviderError!void {
         return error.NotRunning;
     }
     global_provider.?.destroy();
+    provide_thread.?.join();
+    common.allocator.destroy(global_provider.?);
     global_provider = null;
 }
 
 const AppState = struct {
-    arena: std.heap.ArenaAllocator,
     provider: *positron.Provider,
     view: *positron.View,
 
-    shutdown_thread: u32,
+    shutdown_lock: std.Thread.Mutex,
 
     pub fn getWebView(app: *AppState) *positron.View {
         _ = app;
         return global_app.?.view;
     }
 };
-var global_app: ?AppState = null;
+pub var global_app: ?AppState = null;
 
 const EditorErrors = error{EditorNotEmbedded};
 
@@ -125,10 +132,8 @@ pub fn windowShow() !void {
         return error.EditorNotEmbedded;
     }
 
-    var editor_provider: ?*positron.Provider = null;
     if (global_provider == null) {
         try serverStart();
-        editor_provider = global_provider;
     }
     if (global_app != null) {
         DeshaderLog.err("Editor already running", .{});
@@ -136,17 +141,17 @@ pub fn windowShow() !void {
     }
 
     const view = try positron.View.create((@import("builtin").mode == .Debug), null);
-    defer view.destroy();
-    var arena = std.heap.ArenaAllocator.init(common.allocator);
-    defer arena.deinit();
+    defer {
+        view.destroy();
+        global_app.?.shutdown_lock.unlock();
+        global_app = null;
+    }
     global_app = AppState{
-        .arena = arena,
-        .provider = editor_provider.?,
+        .provider = global_provider.?,
         .view = view,
-        .shutdown_thread = 0,
+        .shutdown_lock = std.Thread.Mutex{},
     };
-    defer global_app = null;
-
+    global_app.?.shutdown_lock.lock();
     DeshaderLog.info("Editor URL: {s}", .{global_app.?.provider.base_url});
 
     global_app.?.view.setTitle("Deshader Editor");
@@ -155,13 +160,14 @@ pub fn windowShow() !void {
     global_app.?.view.navigate(global_app.?.provider.getUri("/index.html").?);
 
     global_app.?.view.run();
-
-    @atomicStore(u32, &global_app.?.shutdown_thread, 1, .SeqCst);
+    DeshaderLog.debug("Editor terminated", .{});
 }
 
 pub fn windowTerminate() !void {
     if (global_app != null) {
         global_app.?.view.terminate();
+        global_app.?.shutdown_lock.lock();
+        DeshaderLog.debug("Terminating editor", .{});
     } else {
         DeshaderLog.err("Editor not running", .{});
         return error.NotRunning;

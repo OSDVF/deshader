@@ -21,8 +21,12 @@ const editor = @import("tools/editor.zig");
 const String = []const u8;
 
 export const init_array linksection(".init_array") = &wrapErrorRunOnLoad;
-export const fini_array linksection(".fini_array") = &wrapErrorUnload;
+export const fini_array linksection(".fini_array") = &finalize;
 var command_listener: ?*commands.CommandListener = null;
+
+comptime { // also export as main entry point so the library can be literally executed
+    @export(wrapErrorRunOnLoad, .{ .name = "main", .linkage = .Weak });
+}
 
 /// Run this functions at Deshader shared library load
 fn runOnLoad() !void {
@@ -67,13 +71,22 @@ fn runOnLoad() !void {
     }
 }
 
-fn finalize() !void {
+fn finalize() callconv(.C) void {
     defer common.deinit();
     if (command_listener != null) {
         command_listener.?.stop();
         common.allocator.destroy(command_listener.?);
     }
-    transitive.TransitiveSymbols.deinit();
+    if (editor.global_app != null) {
+        editor.windowTerminate() catch |err| {
+            DeshaderLog.err("{any}", .{err});
+        };
+    }
+    if (editor.global_provider != null) {
+        editor.serverStop() catch |err| {
+            DeshaderLog.err("{any}", .{err});
+        };
+    }
     shaders.Programs.deinit();
     shaders.Sources.deinit();
 }
@@ -84,11 +97,6 @@ fn wrapErrorRunOnLoad() callconv(.C) void {
     };
 }
 
-fn wrapErrorUnload() callconv(.C) void {
-    finalize() catch |err| {
-        DeshaderLog.err("Finalization error: {any}", .{err});
-    };
-}
 /// Defines logging options for the whole library
 pub const std_options = @import("log.zig").std_options;
 
