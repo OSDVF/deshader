@@ -194,6 +194,11 @@ pub fn build(b: *std.Build) void {
         var stub_gen: *stubGenSrc.GenerateStubsStep = b.allocator.create(stubGenSrc.GenerateStubsStep) catch unreachable;
         {
             std.fs.cwd().makePath(std.fs.path.dirname(stubs_path).?) catch unreachable;
+            std.fs.accessAbsolute(stubs_path, .{}) catch |err| {
+                if (err == error.FileNotFound) {
+                    _ = std.fs.cwd().createFile(stubs_path, .{}) catch unreachable;
+                }
+            };
             stub_gen.* = stubGenSrc.GenerateStubsStep.init(b, std.fs.openFileAbsolute(stubs_path, .{ .mode = .write_only }) catch unreachable, true);
         }
         stub_gen_cmd.dependOn(&stub_gen.step);
