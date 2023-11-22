@@ -39,6 +39,7 @@ pub fn build(b: *std.Build) void {
     };
     // Compile options
     const optionLinkage = b.option(Linkage, "linkage", "Select linkage type for deshader library") orelse Linkage.Dynamic;
+    const optionIgnoreMissingLibs = b.option(bool, "ignoreMissingLibs", "Ignore missing VK and GL libraries. Defaultly GLX, EGL and VK will be required") orelse false;
     const optionWolfSSL = b.option(bool, "wolfSSL", "Link against WolfSSL available on this system (produces smaller binaries)") orelse false;
     const option_embed_editor = b.option(bool, "embedEditor", "Embed VSCode editor into the library (default yes)") orelse true;
     const optionAdditionalLibraries = b.option([]const String, "customLibrary", "Names of additional libraroes to intercept");
@@ -106,11 +107,29 @@ pub fn build(b: *std.Build) void {
         runSymbolEnum.addArgs(GlLibNames);
         runSymbolEnum.addArg(VulkanLibName);
     } else {
-        runSymbolEnum = b.addSystemCommand(&[_]String{ "nm", "--format=posix", "--defined-only", "-DAp" }); // BUGFIX: symbol enumerator does not return all the symbols
+        runSymbolEnum = b.addSystemCommand(&[_]String{ "sh", "-c", "nm", "--format=posix", "--defined-only", "-DAp" }); // BUGFIX: symbol enumerator does not return all the symbols
         for (GlLibNames) |libName| {
-            runSymbolEnum.addArg(std.fmt.allocPrint(b.allocator, "/usr/lib/{s}", .{libName}) catch unreachable);
+            if (std.DynLib.open(libName)) |_| {
+                runSymbolEnum.addArg(std.fmt.allocPrint(b.allocator, "/usr/lib/{s}*", .{libName}) catch unreachable);
+            } else |_| {
+                if (optionIgnoreMissingLibs) {
+                    std.log.warn("Missing library {s}", .{libName});
+                } else {
+                    std.log.err("Missing library {s}", .{libName});
+                    return;
+                }
+            }
         }
-        runSymbolEnum.addArg(std.fmt.allocPrint(b.allocator, "/usr/lib/{s}", .{VulkanLibName}) catch unreachable);
+        if (std.DynLib.open(VulkanLibName)) |_| {
+            runSymbolEnum.addArg(std.fmt.allocPrint(b.allocator, "/usr/lib/{s}*", .{VulkanLibName}) catch unreachable);
+        } else |_| {
+            if (optionIgnoreMissingLibs) {
+                std.log.warn("Missing library {s}", .{VulkanLibName});
+            } else {
+                std.log.err("Missing library {s}", .{VulkanLibName});
+                return;
+            }
+        }
     }
     runSymbolEnum.expectExitCode(0);
     runSymbolEnum.expectStdErrEqual("");
