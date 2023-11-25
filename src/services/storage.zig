@@ -21,11 +21,11 @@ const Programs = shaders.Programs;
 /// Some code is specialized for Shader.Program or Shader.Source so it is not competely generic
 pub fn Storage(comptime Stored: type) type {
     return struct {
-        pub const TagMap = std.StringHashMap(Dir(Stored));
+
         // The capacity is 8 by default so it is no such a big deal to treat it as a hash-list hybrid
         pub const RefMap = std.AutoHashMap(usize, std.ArrayList(Stored));
         /// programs / source parts mapped by tag
-        tagged: TagMap,
+        tagged: Dir(Stored),
         /// programs / source parts mapped by ref
         all: RefMap,
         allocator: std.mem.Allocator,
@@ -33,25 +33,19 @@ pub fn Storage(comptime Stored: type) type {
         pub fn init(alloc: std.mem.Allocator) !@This() {
             return @This(){
                 .allocator = alloc,
-                .tagged = TagMap.init(alloc),
+                .tagged = try Dir(Stored).init(alloc, null, ""),
                 .all = RefMap.init(alloc),
             };
         }
 
         pub fn deinit(self: *@This()) void {
-            {
-                var it = self.tagged.valueIterator();
-                while (it.next()) |val| {
-                    val.*.deinit();
-                }
-                self.tagged.deinit();
-            }
+            self.tagged.deinit();
             {
                 var it = self.all.valueIterator();
                 while (it.next()) |val_array| {
                     for (val_array.items) |*val| {
-                        if (val.tag == null) {
-                            val.deinit();
+                        if (val.*.tag == null) {
+                            val.*.deinit();
                         }
                     }
                     val_array.deinit();
@@ -68,16 +62,12 @@ pub fn Storage(comptime Stored: type) type {
 
             if (path) |sure_path| {
                 // print tagged
-                var tag_iter = self.tagged.iterator();
                 var buffer: [std.fs.MAX_PATH_BYTES]u8 = undefined;
                 var allocator = std.heap.FixedBufferAllocator.init(&buffer);
                 // growing and shrinking path prefix for current directory
                 var current_path = std.ArrayList(u8).init(allocator.allocator());
                 defer current_path.deinit();
-                try current_path.appendSlice(sure_path);
-                if (current_path.getLast() != '/') {
-                    try current_path.append('/');
-                }
+                try current_path.appendSlice(if (sure_path[sure_path.len - 1] == '/') sure_path[0 .. sure_path.len - 1] else sure_path);
 
                 const DirStackItem = struct {
                     dir: *Dir(Stored),
@@ -85,49 +75,52 @@ pub fn Storage(comptime Stored: type) type {
                 };
                 var stack = std.ArrayList(DirStackItem).init(self.allocator);
                 defer stack.deinit();
-                while (tag_iter.next()) |dir| {
-                    //DFS print of directory tree
-                    try stack.append(.{ .dir = dir.value_ptr, .prev_len = 1 });
-                    while (stack.popOrNull()) |current_dir| {
+                //DFS print of directory tree
+                try stack.append(.{ .dir = &self.tagged, .prev_len = 1 });
+                while (stack.popOrNull()) |current_dir| {
+                    if (current_dir.dir.name.len > 0) {
                         current_path.shrinkRetainingCapacity(current_dir.prev_len);
+                    }
 
-                        try current_path.appendSlice(dir.key_ptr.*); // add current directory
-                        try current_path.append('/');
+                    log.debug("Expanding directory {s}", .{current_dir.dir.name});
+                    try current_path.appendSlice(current_dir.dir.name); // add current directory
+                    try current_path.append('/');
 
-                        var subdirs = current_dir.dir.dirs.iterator();
-                        while (subdirs.next()) |subdir| {
-                            try stack.append(.{ .dir = subdir.value_ptr, .prev_len = current_path.items.len });
-                        }
-                        var files = current_dir.dir.files.iterator();
-                        while (files.next()) |file| {
-                            switch (Stored) { // specialization
-                                Shader.Program => {
-                                    const program_links: ?*Shader.Program = file.value_ptr.getFirstTarget(); // programs should be always only one in a file (no symlinks)
-                                    if (program_links) |program| {
-                                        if (program.shaders == null) {
-                                            continue;
-                                        }
-                                        for (program.shaders.?.items) |shaders_s| {
-                                            if (findMainShaderSource(shaders_s.value_ptr.items)) |shader| {
-                                                try result.append(try std.mem.concatWithSentinel(self.allocator, u8, &.{ current_path.items, file.value_ptr.name, shader.toString() }, 0));
-                                            }
+                    var subdirs = current_dir.dir.dirs.iterator();
+                    while (subdirs.next()) |subdir| {
+                        log.debug("Pushing directory {s}", .{subdir.key_ptr.*});
+                        try stack.append(.{ .dir = subdir.value_ptr, .prev_len = current_path.items.len });
+                    }
+                    var files = current_dir.dir.files.iterator();
+                    while (files.next()) |file| {
+                        switch (Stored) { // specialization
+                            Shader.Program => {
+                                const program_links: ?*Shader.Program = file.value_ptr.getFirstTarget(); // programs should be always only one in a file (no symlinks)
+                                if (program_links) |program| {
+                                    if (program.shaders == null) {
+                                        continue;
+                                    }
+                                    for (program.shaders.?.items) |shaders_s| {
+                                        if (findMainShaderSource(shaders_s.value_ptr.items)) |shader| {
+                                            try result.append(try std.mem.concatWithSentinel(self.allocator, u8, &.{ current_path.items, file.value_ptr.name, shader.toString() }, 0));
                                         }
                                     }
-                                },
-                                else => {
-                                    var this_result = std.ArrayList(u8).init(self.allocator);
-                                    try this_result.appendSlice(current_path.items);
-                                    try this_result.appendSlice(file.value_ptr.name);
-                                    // resolve all symlinks
-                                    var targets = file.value_ptr.targets.keyIterator();
-                                    while (targets.next()) |target| {
-                                        try this_result.append('_');
-                                        try std.fmt.formatIntValue(target.*.ref, "d", .{}, this_result.writer());
-                                    }
-                                    try this_result.append(0);
-                                    try result.append(@ptrCast(try this_result.toOwnedSlice()));
-                                },
-                            }
+                                }
+                            },
+                            else => {
+                                var this_result = std.ArrayList(u8).init(self.allocator);
+                                try this_result.appendSlice(current_path.items);
+                                try this_result.appendSlice(file.value_ptr.name);
+                                // resolve all symlinks
+                                var targets = file.value_ptr.targets.keyIterator();
+                                while (targets.next()) |target| {
+                                    try this_result.append('_');
+                                    try std.fmt.formatIntValue(target.*.*.ref, "d", .{}, this_result.writer());
+                                }
+                                try this_result.append(0);
+                                log.debug("Tagged file {s}", .{this_result.items});
+                                try result.append(@ptrCast(try this_result.toOwnedSlice()));
+                            },
                         }
                     }
                 }
@@ -161,18 +154,14 @@ pub fn Storage(comptime Stored: type) type {
         }
 
         pub fn renameBasename(self: *@This(), path: String, new_name: String) !void {
-            (try self.makePathPtr(path, false, false, false)).Tag.name = new_name;
+            (try self.makePathRecursive(path, false, false, false)).Tag.name = new_name;
         }
 
         /// the content has to exist in the untagged storage
         pub fn assignTag(self: *@This(), ref: usize, index: usize, path: String, if_exists: decls.ExistsBehavior) !void {
             // check for all
-            const maybe_ptr = try self.all.getOrPut(ref);
-            if (!maybe_ptr.found_existing) {
-                log.err("Tried to put tag {s} to {x} but the pointer has no untagged content", .{ path, ref });
-                return error.TargetNotFound;
-            } else {
-                var item = maybe_ptr.value_ptr.items[index];
+            if (self.all.getEntry(ref)) |ptr| {
+                var item: Stored = ptr.value_ptr.items[index];
                 if (item.tag != null) {
                     const p = try item.tag.?.getPathAlloc(self.allocator);
                     defer self.allocator.free(p);
@@ -181,27 +170,31 @@ pub fn Storage(comptime Stored: type) type {
                         return error.TagExists;
                     }
                 }
-            }
 
-            var target = try self.makePathPtr(path, true, if_exists != .Error, false);
+                var target = try self.makePathRecursive(path, true, if_exists != .Error, false);
 
-            if (target.content == .Dir) {
-                log.err("Tried to put tag {s} to {x}_{d} but the path is a directory", .{ path, ref, index });
-                return error.DirExists;
+                if (target.content == .Dir) {
+                    log.err("Tried to put tag {s} to {x}_{d} but the path is a directory", .{ path, ref, index });
+                    return error.DirExists;
+                }
+                // assign "reverse pointer" (from the content to the tag)
+                ptr.value_ptr.items[index].tag = target.content.Tag;
+                if (if_exists == .Overwrite) {
+                    target.content.Tag.targets.clearAndFree();
+                }
+                try target.content.Tag.targets.put(&ptr.value_ptr.items[index], {});
+            } else {
+                log.err("Tried to put tag {s} to {x} but the pointer has no untagged content", .{ path, ref });
+                return error.TargetNotFound;
             }
-            // assign "reverse pointer" (from the content to the tag)
-            maybe_ptr.value_ptr.items[index].tag = target.content.Tag;
-            if (if_exists == .Overwrite) {
-                target.content.Tag.targets.clearAndFree();
-            }
-            try target.content.Tag.targets.put(&maybe_ptr.value_ptr.items[index], {});
         }
 
         pub fn mkdir(self: *@This(), path: String) !Dir(Stored) {
-            return try self.makePathPtr(path, true, false, true).content.Dir;
+            return try self.makePathRecursive(path, true, false, true).content.Dir;
         }
 
         /// Append to existing []Stored with same ref or create a new Stored
+        /// The payload will be stored verbatim and will not be copied
         pub fn appendUntagged(self: *@This(), payload: Stored) !void {
             std.debug.assert(payload.tag == null);
 
@@ -235,11 +228,12 @@ pub fn Storage(comptime Stored: type) type {
             }
         }
 
+        // Both from tagged and all
         fn removeTag(self: *@This(), tag: *Tag(Stored)) !void {
             std.debug.assert(tag.targets.count() > 0);
             var it = tag.targets.keyIterator();
             while (it.next()) |item| {
-                var untagged = self.all.getPtr(item.*.ref);
+                var untagged = self.all.getPtr(item.*.*.ref);
                 var found = false;
                 for (untagged.?.items, 0..) |*untag, i| {
                     if (untag == item.*) {
@@ -249,7 +243,7 @@ pub fn Storage(comptime Stored: type) type {
                     }
                 }
                 if (!found) {
-                    log.err("Tag {s} target {d} not found in untagged", .{ tag.name, item.*.ref });
+                    log.err("Tag {s} target {d} not found in untagged", .{ tag.name, item.*.*.ref });
                 }
             }
             std.debug.assert(tag.parent.files.remove(tag.name));
@@ -258,7 +252,7 @@ pub fn Storage(comptime Stored: type) type {
         /// dir => remove recursively
         /// does not erase tag content from the untagged storage
         pub fn removePath(self: *@This(), path: String, dir: bool) !void {
-            const ptr = try self.makePathPtr(path, false, false, false); // also checks for existence
+            const ptr = try self.makePathRecursive(path, false, false, false); // also checks for existence
             switch (ptr.content) {
                 .Dir => |content_dir| {
                     if (!dir) {
@@ -283,6 +277,7 @@ pub fn Storage(comptime Stored: type) type {
             }
         }
 
+        // From both tagged and all
         pub fn remove(self: *@This(), ref: usize) !void {
             // remove the content
             const removed_maybe = self.all.fetchRemove(ref);
@@ -290,7 +285,7 @@ pub fn Storage(comptime Stored: type) type {
                 for (removed.value.items) |item| {
                     if (item.tag != null) {
                         // and the tag
-                        try self.removeTag(item.tag.?);
+                        try self.removeTag(item.*.tag.?);
                     }
                 }
             } else {
@@ -298,15 +293,30 @@ pub fn Storage(comptime Stored: type) type {
             }
         }
 
-        pub fn removeIndex(self: *@This(), ref: usize, index: usize) !void {
-            // remove the content
+        /// Remove only from tagged, kepp in untagged
+        pub fn removeTagForIndex(self: *@This(), ref: usize, index: usize) !void {
             const contents_maybe = self.all.get(ref);
             if (contents_maybe) |contents| {
-                const tag = contents.items[index].value.tag;
+                const tag = contents.items[index].tag;
                 if (tag != null) {
                     try self.removeTag(tag.?);
                 } else {
-                    contents.items.orderedRemove(index);
+                    return error.NotTagged;
+                }
+            } else {
+                return error.TargetNotFound;
+            }
+        }
+
+        pub fn removeAllTags(self: *@This(), ref: usize) !void {
+            const contents_maybe = self.all.get(ref);
+            if (contents_maybe) |contents| {
+                for (contents.items) |item| {
+                    if (item.tag != null) {
+                        try self.removeTag(item.tag.?);
+                    } else {
+                        return error.NotTagged;
+                    }
                 }
             } else {
                 return error.TargetNotFound;
@@ -328,123 +338,135 @@ pub fn Storage(comptime Stored: type) type {
         /// overwrite => return the path pointer even if it already exists and create_new is true (this means the function should always succeed).
         /// Caller should assign pointer from the content to the tag when the tag path pointer is created or changed.
         /// Makes this kind of a universal function.
-        fn makePathPtr(self: *@This(), path: String, create_new: bool, overwrite: bool, create_as_dir: bool) !DirOrFile {
-            var path_iterator = std.mem.splitScalar(u8, path, '/');
-            var current_dir_entry = try self.tagged.getOrPut(path_iterator.first());
-            if (!current_dir_entry.found_existing) {
-                // create root-level directory if it does not exist
-                current_dir_entry.value_ptr.* = try Dir(Stored).init(self.allocator, null, path_iterator.first());
-            }
-            var current_dir: *Dir(Stored) = current_dir_entry.value_ptr;
+        fn makePathRecursive(self: *@This(), path: String, create_new: bool, overwrite: bool, create_as_dir: bool) !DirOrFile {
+            std.debug.assert(path.len > 0);
+            var path_iterator = std.mem.splitScalar(u8, if (path[0] == '/') path[1..] else path, '/');
+            var root: String = "";
+            var current_dir_entry: Dir(Stored).DirMap.Entry = .{ .value_ptr = &self.tagged, .key_ptr = &root };
 
             var no_further_dirs = false;
+            var last_path_part = root;
             while (path_iterator.next()) |path_part| {
+                defer last_path_part = path_part;
                 if (no_further_dirs) {
                     // we are at the last part of the path (the basename)
                     // there was already the last directory match found
                     if (path_iterator.peek() != null) { // there is another path part (directory) pending
                         if (create_new) { // create_new creates recursive directory structure
                             log.debug("Recursively creating directory {s}", .{path_part});
-                            const new_dir = try Dir(Stored).init(self.allocator, current_dir, path_part);
-                            const new_dir_ptr = try current_dir.dirs.getOrPut(path_part);
+                            const new_dir = try Dir(Stored).init(self.allocator, current_dir_entry.value_ptr, path_part);
+                            const new_dir_ptr = try current_dir_entry.value_ptr.dirs.getOrPut(path_part);
                             new_dir_ptr.value_ptr.* = new_dir;
-                            current_dir = new_dir_ptr.value_ptr;
+                            current_dir_entry = .{ .value_ptr = new_dir_ptr.value_ptr, .key_ptr = new_dir_ptr.key_ptr };
                         } else {
                             return error.DirectoryNotFound;
                         }
                     } else {
-                        // traverse files
-                        const existing_file = try current_dir.files.getOrPut(path_part);
-                        if (existing_file.found_existing) {
-                            if (overwrite) {
-                                if (create_as_dir) {
-                                    return error.TagExists;
-                                }
-
-                                // Remove old / overwrite
-                                const old_ref = existing_file.value_ptr.getFirstTarget().?.ref;
-                                if (!self.all.remove(old_ref)) {
-                                    log.err("Tag {d} not found in all", .{old_ref});
-                                    return error.NotTagged;
-                                }
-                                log.debug("Overwriting tag {s} from source {x} with {s}", .{ existing_file.value_ptr.name, old_ref, path_part });
-                                // remove existing tag
-                                if (!current_dir.files.remove(existing_file.value_ptr.name)) {
-                                    // should be a race condition
-                                    log.err("Tag {s} not found in parent directory", .{existing_file.value_ptr.name});
-                                    return error.NotTagged;
-                                }
-                                // overwrite tag and content
-                                existing_file.value_ptr.name = try self.allocator.dupe(u8, path_part);
-
-                                return .{
-                                    .is_new = false,
-                                    .content = .{ .Tag = existing_file.value_ptr },
-                                    .key = existing_file.key_ptr,
-                                };
-                            } else {
-                                return error.TagExists;
-                            }
-                        } else {
-                            // target tag/dir does not exist
-                            if (create_new) {
-                                if (create_as_dir) {
-                                    const existing_dir = try current_dir.dirs.getOrPut(path_part);
-                                    if (existing_dir.found_existing) {
-                                        if (!overwrite) {
-                                            return error.DirExists;
-                                        }
-
-                                        return .{
-                                            .is_new = false,
-                                            .content = .{ .Dir = existing_dir.value_ptr },
-                                            .key = existing_dir.key_ptr,
-                                        };
-                                    }
-                                    // create NEW directory
-                                    log.debug("Making new tag dir {s}", .{path_part});
-                                    existing_dir.value_ptr.* = try Dir(Stored).init(self.allocator, current_dir, path_part);
-                                    return .{
-                                        .is_new = true,
-                                        .content = .{ .Dir = existing_dir.value_ptr },
-                                        .key = existing_dir.key_ptr,
-                                    };
-                                }
-
-                                log.debug("Making new tag file {s}", .{path_part});
-                                existing_file.value_ptr.* = Tag(Stored){
-                                    .name = try self.allocator.dupe(u8, path_part),
-                                    .parent = current_dir,
-                                    .targets = Tag(Stored).Targets.init(self.allocator),
-                                };
-                                // the caller should assign reverse pointer to the tag
-                                return .{
-                                    .is_new = true,
-                                    .content = .{ .Tag = existing_file.value_ptr },
-                                    .key = existing_file.key_ptr,
-                                };
-                            } else {
-                                log.debug("Path {s} not found", .{path_part});
-                                return error.TargetNotFound;
-                            }
-                        }
+                        return self.makePath(current_dir_entry.value_ptr, path_part, create_new, overwrite, create_as_dir);
                     }
                 }
 
                 // traverse directories
-                current_dir_entry = try current_dir.dirs.getOrPut(path_part);
-                if (current_dir_entry.found_existing) {
-                    current_dir = current_dir_entry.value_ptr;
+                if (current_dir_entry.value_ptr.dirs.getEntry(path_part)) |found| {
+                    current_dir_entry = .{ .value_ptr = found.value_ptr, .key_ptr = found.key_ptr };
                 } else {
                     no_further_dirs = true;
+                    log.debug("Directory {s} not found", .{path_part});
                 }
             }
+
+            if (no_further_dirs) {
+                return self.makePath(current_dir_entry.value_ptr, last_path_part, create_new, overwrite, create_as_dir);
+            }
+
             // at this point we have found a directory but not a file
             return .{
                 .is_new = false,
-                .content = .{ .Dir = current_dir },
+                .content = .{ .Dir = current_dir_entry.value_ptr },
                 .key = current_dir_entry.key_ptr,
             };
+        }
+
+        fn makePath(self: *@This(), in_dir: *Dir(Stored), new: String, create: bool, overwrite: bool, create_as_dir: bool) !DirOrFile {
+            std.debug.assert(new.len > 0);
+            // traverse files
+            if (in_dir.files.getEntry(new)) |existing_file| {
+                if (overwrite) {
+                    if (create_as_dir) {
+                        return error.TagExists;
+                    }
+
+                    // Remove old / overwrite
+                    const old_ref = existing_file.value_ptr.getFirstTarget().?.*.ref;
+                    if (!self.all.remove(old_ref)) {
+                        log.err("Tag {d} not found in all", .{old_ref});
+                        return error.NotTagged;
+                    }
+                    log.debug("Overwriting tag {s} from source {x} with {s}", .{ existing_file.value_ptr.name, old_ref, new });
+                    // remove existing tag
+                    if (!in_dir.files.remove(existing_file.value_ptr.name)) {
+                        // should be a race condition
+                        log.err("Tag {s} not found in parent directory", .{existing_file.value_ptr.name});
+                        return error.NotTagged;
+                    }
+                    // overwrite tag and content
+                    existing_file.value_ptr.name = try self.allocator.dupe(u8, new);
+
+                    return .{
+                        .is_new = false,
+                        .content = .{ .Tag = existing_file.value_ptr },
+                        .key = existing_file.key_ptr,
+                    };
+                } else {
+                    return error.TagExists;
+                }
+            } else {
+                // target does not exist as file. Maybe it exists as directory
+                if (create) {
+                    if (create_as_dir) {
+                        if (in_dir.dirs.getEntry(new)) |existing_dir| {
+                            if (!overwrite) {
+                                return error.DirExists;
+                            }
+
+                            return .{
+                                .is_new = false,
+                                .content = .{ .Dir = existing_dir.value_ptr },
+                                .key = existing_dir.key_ptr,
+                            };
+                        } else {
+                            // create NEW directory
+                            log.debug("Making new tag dir {s}", .{new});
+                            const new_dir = try in_dir.dirs.getOrPut(new);
+                            std.debug.assert(new_dir.found_existing == false);
+                            new_dir.value_ptr.* = try Dir(Stored).init(self.allocator, in_dir, new);
+                            return .{
+                                .is_new = true,
+                                .content = .{ .Dir = new_dir.value_ptr },
+                                .key = new_dir.key_ptr,
+                            };
+                        }
+                    }
+
+                    log.debug("Making new tag file {s}", .{new});
+                    const new_file = try in_dir.files.getOrPut(new);
+                    std.debug.assert(new_file.found_existing == false);
+                    new_file.value_ptr.* = Tag(Stored){
+                        .name = try self.allocator.dupe(u8, new),
+                        .parent = in_dir,
+                        .targets = Tag(Stored).Targets.init(self.allocator),
+                    };
+                    // the caller should assign reverse pointer to the tag
+                    return .{
+                        .is_new = true,
+                        .content = .{ .Tag = new_file.value_ptr },
+                        .key = new_file.key_ptr,
+                    };
+                } else {
+                    log.debug("Path {s} not found", .{new});
+                    return error.TargetNotFound;
+                }
+            }
         }
     };
 }
@@ -509,7 +531,7 @@ pub fn Tag(comptime taggable: type) type {
 
 /// find shader entry point among other shaders sources in the shader
 /// TODO search for main instead of searching for the source which does not have any symlinks
-fn findMainShaderSource(sources: []const Shader.Source) ?Shader.Source {
+fn findMainShaderSource(sources: []*const Shader.SourceInterface) ?*const Shader.SourceInterface {
     for (sources) |s| {
         if (s.tag) |tag| {
             if (tag.targets.count() == 1) { // The tag is only used by this program (not symlinked to some other program)

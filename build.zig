@@ -10,13 +10,19 @@ const Linkage = enum {
 };
 const String = []const u8;
 
-pub fn build(b: *std.Build) void {
-    const target = b.standardTargetOptions(.{});
+// Shims for compatibility between Zig versions
+const exec = if (@hasDecl(std.ChildProcess, "exec")) std.ChildProcess.exec else std.ChildProcess.run;
+fn openIterableDir(path: String) std.fs.File.OpenError!if (@hasDecl(std.fs, "openIterableDirAbsolute")) std.fs.IterableDir else std.fs.Dir {
+    return if (@hasDecl(std.fs, "openIterableDirAbsolute")) std.fs.openIterableDirAbsolute(path, .{}) else std.fs.openDirAbsolute(path, .{ .iterate = true });
+}
+
+pub fn build(b: *std.Build) !void {
+    var target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const targetTarget = target.os_tag orelse builtin.os.tag;
     const GlLibNames: []const String = switch (targetTarget) {
         .windows => &[_]String{"opengl32.dll"},
-        else => &[_]String{ "libGLX.so", "libEGL.so" },
+        else => &[_]String{ "libGLX.so.0", "libEGL.so" },
     };
     const GlSymbolPrefixes: []const String = switch (targetTarget) {
         .windows => &[_]String{ "wgl", "gl" },
@@ -28,6 +34,10 @@ pub fn build(b: *std.Build) void {
         .macos => "libvulkan.dylib",
         else => "libvulkan.so",
     };
+    const optionOfmt = b.option(enum { Default, c, IR, BC }, "ofmt", "Compile into object format") orelse .Default;
+    if (optionOfmt == .c) {
+        target.ofmt = .c;
+    }
 
     // Deshader library
     const deshaderCompileOptions = .{
@@ -36,7 +46,9 @@ pub fn build(b: *std.Build) void {
         .main_mod_path = .{ .path = "src" },
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
     };
+
     // Compile options
     const optionLinkage = b.option(Linkage, "linkage", "Select linkage type for deshader library") orelse Linkage.Dynamic;
     const optionIgnoreMissingLibs = b.option(bool, "ignoreMissingLibs", "Ignore missing VK and GL libraries. Defaultly GLX, EGL and VK will be required") orelse false;
@@ -46,7 +58,21 @@ pub fn build(b: *std.Build) void {
     const optionInterceptionLog = b.option(bool, "logIntercept", "Log intercepted GL and VK procedure list to stdout") orelse false;
 
     const deshader_lib: *std.build.Step.Compile = if (optionLinkage == .Static) b.addStaticLibrary(deshaderCompileOptions) else b.addSharedLibrary(deshaderCompileOptions);
+    const deshader_lib_name = try std.mem.concat(b.allocator, u8, &.{ "libdeshader", targetTarget.dynamicLibSuffix() });
     const desahder_lib_cmd = b.step("deshader", "Install deshader library");
+    switch (optionOfmt) {
+        .BC => {
+            deshader_lib.generated_llvm_ir = try b.allocator.create(std.build.GeneratedFile);
+            deshader_lib.generated_llvm_ir.?.* = .{ .step = &deshader_lib.step, .path = try b.cache_root.join(b.allocator, &.{ "llvm", "deshader.ll" }) };
+            desahder_lib_cmd.dependOn(&b.addInstallFileWithDir(deshader_lib.getEmittedLlvmBc(), .bin, "deshader.bc").step);
+        },
+        .IR => {
+            deshader_lib.generated_llvm_bc = try b.allocator.create(std.build.GeneratedFile);
+            deshader_lib.generated_llvm_bc.?.* = .{ .step = &deshader_lib.step, .path = try b.cache_root.join(b.allocator, &.{ "llvm", "deshader.bc" }) };
+            desahder_lib_cmd.dependOn(&b.addInstallFileWithDir(deshader_lib.getEmittedLlvmIr(), .bin, "deshader.ll").step);
+        },
+        else => {},
+    }
     const deshaderLibInstall = b.addInstallArtifact(deshader_lib, .{});
     desahder_lib_cmd.dependOn(&deshaderLibInstall.step);
 
@@ -60,18 +86,28 @@ pub fn build(b: *std.Build) void {
         deshader_lib.linkLibrary(wolfssl);
     }
 
-    // Websocket;
+    // Websocket
     const websocket = b.addModule("websocket", .{
         .source_file = .{ .path = "libs/websocket/src/websocket.zig" },
+        .dependencies = &.{
+            .{
+                .name = "zigtrait",
+                .module = b.addModule("zigtrait", .{
+                    .source_file = .{
+                        .path = "libs/websocket/vendor/zigtrait/src/zigtrait.zig",
+                    },
+                }),
+            },
+        },
     });
     deshader_lib.addModule("websocket", websocket);
 
     // OpenGL
-    const glModule = openGlModule(b);
+    const glModule = try openGlModule(b);
     deshader_lib.addModule("gl", glModule);
 
     // Vulkan
-    const vulkanXmlInput = b.build_root.join(b.allocator, &[_]String{"libs/Vulkan-Docs/xml/vk.xml"}) catch unreachable;
+    const vulkanXmlInput = try b.build_root.join(b.allocator, &[_]String{"libs/Vulkan-Docs/xml/vk.xml"});
     const vkzig_dep = b.dependency("vulkan_zig", .{
         .registry = @as(String, vulkanXmlInput),
     });
@@ -87,8 +123,9 @@ pub fn build(b: *std.Build) void {
     options.addOption(?String, "vkAddDeviceLoader", optionvkAddDeviceLoader);
     options.addOption(?String, "vkAddInstanceLoader", optionvkAddInstanceLoader);
     options.addOption(bool, "logIntercept", optionInterceptionLog);
-    const deshaderLibName = std.fs.path.basename(deshader_lib.out_filename);
-    options.addOption(String, "deshaderLibName", deshaderLibName);
+    options.addOption(String, "deshaderLibName", deshader_lib_name);
+    const version_result = try exec(.{ .allocator = b.allocator, .argv = &.{ "git", "describe", "--tags", "--always" } });
+    options.addOption(String, "version", std.mem.trim(u8, version_result.stdout, " \n\t"));
 
     // Symbol Enumerator
     const buildSymbolEnum = b.addExecutable(.{
@@ -107,29 +144,29 @@ pub fn build(b: *std.Build) void {
         runSymbolEnum.addArgs(GlLibNames);
         runSymbolEnum.addArg(VulkanLibName);
     } else {
-        runSymbolEnum = b.addSystemCommand(&[_]String{ "sh", "-c", "nm", "--format=posix", "--defined-only", "-DAp" }); // BUGFIX: symbol enumerator does not return all the symbols
+        runSymbolEnum = b.addSystemCommand(&[_]String{ "nm", "--format=posix", "--defined-only", "-DAp" }); // BUGFIX: symbol enumerator does not return all the symbols
         for (GlLibNames) |libName| {
-            if (std.DynLib.open(libName)) |_| {
-                runSymbolEnum.addArg(std.fmt.allocPrint(b.allocator, "/usr/lib/{s}*", .{libName}) catch unreachable);
-            } else |_| {
+            if (try fileWithPrefixExists(b.allocator, "/usr/lib/", libName)) |real_name| {
+                runSymbolEnum.addArg(std.fmt.allocPrint(b.allocator, "/usr/lib/{s}", .{real_name}) catch unreachable);
+            } else {
                 if (optionIgnoreMissingLibs) {
                     std.log.warn("Missing library {s}", .{libName});
                 } else {
-                    std.log.err("Missing library {s}", .{libName});
-                    return;
+                    return deshader_lib.step.fail("Missing library {s}", .{libName});
                 }
             }
         }
-        if (std.DynLib.open(VulkanLibName)) |_| {
-            runSymbolEnum.addArg(std.fmt.allocPrint(b.allocator, "/usr/lib/{s}*", .{VulkanLibName}) catch unreachable);
-        } else |_| {
+        if (try fileWithPrefixExists(b.allocator, "/usr/lib/", VulkanLibName)) |real_name| {
+            runSymbolEnum.addArg(std.fmt.allocPrint(b.allocator, "/usr/lib/{s}", .{real_name}) catch unreachable);
+        } else {
             if (optionIgnoreMissingLibs) {
                 std.log.warn("Missing library {s}", .{VulkanLibName});
             } else {
-                std.log.err("Missing library {s}", .{VulkanLibName});
-                return;
+                return deshader_lib.step.fail("Missing library {s}", .{VulkanLibName});
             }
         }
+
+        runSymbolEnum.addArg(std.fmt.allocPrint(b.allocator, "/usr/lib/{s}", .{VulkanLibName}) catch unreachable);
     }
     runSymbolEnum.expectExitCode(0);
     runSymbolEnum.expectStdErrEqual("");
@@ -146,25 +183,19 @@ pub fn build(b: *std.Build) void {
     const transitive_exports = b.createModule(.{ .source_file = .{ .generated = &addGlProcsStep.generated_file } });
     deshader_lib.addModule("transitive_exports", transitive_exports);
     deshader_lib.addAnonymousModule("transitive_exports_count", .{ .source_file = .{ .generated = &addGlProcsStep.generated_count_file } });
-    const header_dir = std.fs.path.join(b.allocator, &.{ b.install_path, "include" }) catch unreachable;
+    const header_dir = try std.fs.path.join(b.allocator, &.{ b.install_path, "include" });
 
     // Positron
-    var positron: *std.build.Module = undefined;
-    var serve: *std.build.Module = undefined;
+    const positron = PositronSdk.getPackage(b, "positron");
+    deshader_lib.addModule("positron", positron);
+    deshader_lib.addModule("serve", b.modules.get("serve").?);
     if (option_embed_editor) {
-        positron = PositronSdk.getPackage(b, "positron");
-        deshader_lib.addModule("positron", positron);
         PositronSdk.linkPositron(deshader_lib, null);
-        deshader_lib.addModule("serve", b.modules.get("serve").?);
-    } else {
-        // The serve module itself is normally included in positron
-        serve = PositronSdk.getServeModule(b);
-        deshader_lib.addModule("serve", serve);
     }
     //
     // Steps for building generated and embedded files
     //
-    const stubs_path = std.fs.path.join(b.allocator, &.{ header_dir, "deshader.zig" }) catch unreachable;
+    const stubs_path = try std.fs.path.join(b.allocator, &.{ header_dir, "deshader.zig" });
     var stub_gen_cmd = b.step("generate_stubs", "Generate .zig file with function stubs for deshader library");
     const deshader_stubs = b.addModule("deshader", .{
         .source_file = .{ .path = stubs_path }, //future file, may not exist
@@ -175,7 +206,7 @@ pub fn build(b: *std.Build) void {
         // NOTE: must be run manually with `zig build dependencies` before `zig  build`
         //
         const dependenciesCmd = b.step("dependencies", "Bootstrap building nested deshader components and dependencies");
-        var dependenciesStep: *DependenciesStep = b.allocator.create(DependenciesStep) catch unreachable;
+        var dependenciesStep: *DependenciesStep = try b.allocator.create(DependenciesStep);
         dependenciesStep.* = DependenciesStep.init(b);
         dependenciesCmd.dependOn(&dependenciesStep.step);
 
@@ -188,13 +219,13 @@ pub fn build(b: *std.Build) void {
         // Add all files names in the editor dist folder to `files`
         const editor_directory = "editor";
         if (option_embed_editor) {
-            const editor_files = std.fs.cwd().readFileAlloc(b.allocator, editor_directory ++ "/required.txt", 1024 * 1024) catch undefined;
+            const editor_files = try std.fs.cwd().readFileAlloc(b.allocator, editor_directory ++ "/required.txt", 1024 * 1024);
             var editor_files_lines = std.mem.splitScalar(u8, editor_files, '\n');
             editor_files_lines.reset();
             while (editor_files_lines.next()) |line| {
-                appendFiles(deshader_lib, &files, .{
-                    std.fmt.allocPrint(b.allocator, "{s}/{s}", .{ editor_directory, line }) catch unreachable,
-                }) catch unreachable;
+                try appendFiles(deshader_lib, &files, .{
+                    try std.fmt.allocPrint(b.allocator, "{s}/{s}", .{ editor_directory, line }),
+                });
             }
         }
 
@@ -210,15 +241,15 @@ pub fn build(b: *std.Build) void {
         //
         // Or generate them right here in the build process
         const stubGenSrc = @import("src/tools/generate_stubs.zig");
-        var stub_gen: *stubGenSrc.GenerateStubsStep = b.allocator.create(stubGenSrc.GenerateStubsStep) catch unreachable;
+        var stub_gen: *stubGenSrc.GenerateStubsStep = try b.allocator.create(stubGenSrc.GenerateStubsStep);
         {
-            std.fs.cwd().makePath(std.fs.path.dirname(stubs_path).?) catch unreachable;
+            try std.fs.cwd().makePath(std.fs.path.dirname(stubs_path).?);
             std.fs.accessAbsolute(stubs_path, .{}) catch |err| {
                 if (err == error.FileNotFound) {
-                    _ = std.fs.cwd().createFile(stubs_path, .{}) catch unreachable;
+                    _ = try std.fs.cwd().createFile(stubs_path, .{});
                 }
             };
-            stub_gen.* = stubGenSrc.GenerateStubsStep.init(b, std.fs.openFileAbsolute(stubs_path, .{ .mode = .write_only }) catch unreachable, true);
+            stub_gen.* = stubGenSrc.GenerateStubsStep.init(b, try std.fs.openFileAbsolute(stubs_path, .{ .mode = .write_only }), true);
         }
         stub_gen_cmd.dependOn(&stub_gen.step);
         desahder_lib_cmd.dependOn(&stub_gen.step);
@@ -227,11 +258,13 @@ pub fn build(b: *std.Build) void {
         // Emit H File
         //
         const header_gen_cmd = b.step("generate_header", "Generate C header file for deshader library");
+        var header_gen_target = target;
+        header_gen_target.ofmt = null;
         var header_gen = b.addExecutable(.{
             .name = "generate_header",
             .root_source_file = .{ .path = "src/tools/generate_header.zig" },
             .main_mod_path = .{ .path = "src" },
-            .target = target,
+            .target = header_gen_target,
             .optimize = optimize,
         });
         const heade_gen_opts = b.addOptions();
@@ -244,10 +277,10 @@ pub fn build(b: *std.Build) void {
         {
             const log_name = "deshader_long.zig";
             const long_stub_file = (if (b.cache_root.handle.access(log_name, .{ .mode = .write_only })) //
-                b.cache_root.handle.openFile(log_name, .{ .mode = .write_only })
+                try b.cache_root.handle.openFile(log_name, .{ .mode = .write_only })
             else |_|
-                b.cache_root.handle.createFile(log_name, .{})) catch unreachable;
-            var stub_gen_long = b.allocator.create(stubGenSrc.GenerateStubsStep) catch unreachable;
+                try b.cache_root.handle.createFile(log_name, .{}));
+            var stub_gen_long = try b.allocator.create(stubGenSrc.GenerateStubsStep);
             stub_gen_long.* = stubGenSrc.GenerateStubsStep.init(b, long_stub_file, false);
             header_gen.step.dependOn(&stub_gen_long.step);
             header_gen.addAnonymousModule("deshader", .{ .source_file = .{ .cwd_relative = "zig-cache/deshader_long.zig" } });
@@ -270,7 +303,7 @@ pub fn build(b: *std.Build) void {
         .main_mod_path = .{ .path = "src" },
     });
     const runnerOptions = b.addOptions();
-    runnerOptions.addOption(String, "deshaderLibName", deshaderLibName);
+    runnerOptions.addOption(String, "deshaderLibName", deshader_lib_name);
     runnerExe.addOptions("options", runnerOptions);
     runnerExe.defineCMacro("_GNU_SOURCE", null); // To access dlinfo
 
@@ -307,7 +340,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "deshader", .module = deshader_stubs },
             };
             // GLFW
-            const example_glfw = exampleSubProgram(example_bootstraper, "glfw", "examples/" ++ sub_examples.glfw ++ ".zig", exampleModules);
+            const example_glfw = try exampleSubProgram(example_bootstraper, "glfw", "examples/" ++ sub_examples.glfw ++ ".zig", exampleModules);
 
             // Use mach-glfw
             const glfw_dep = b.dependency("mach_glfw", .{
@@ -318,11 +351,11 @@ pub fn build(b: *std.Build) void {
             @import("mach_glfw").link(glfw_dep.builder, example_glfw);
 
             // Editor
-            const example_editor = exampleSubProgram(example_bootstraper, "editor", "examples/" ++ sub_examples.editor ++ ".zig", exampleModules);
+            const example_editor = try exampleSubProgram(example_bootstraper, "editor", "examples/" ++ sub_examples.editor ++ ".zig", exampleModules);
             example_editor.linkLibrary(deshader_lib);
 
             // ABI
-            const example_abi = exampleSubProgram(example_bootstraper, "abi", "examples/" ++ sub_examples.abi ++ ".cpp", .{});
+            const example_abi = try exampleSubProgram(example_bootstraper, "abi", "examples/" ++ sub_examples.abi ++ ".cpp", .{});
             example_abi.addIncludePath(.{ .path = header_dir });
             example_abi.linkLibrary(deshader_lib);
         }
@@ -333,8 +366,8 @@ pub fn build(b: *std.Build) void {
         // Run examples by `deshader-run`
         const exampleRun = b.addRunArtifact(runnerInstall.artifact);
         const exampleRunCmd = b.step("examples-run", "Run example with injected Deshader debugging");
-        exampleRun.setEnvironmentVariable("DESHADER_LIB", std.fs.path.join(b.allocator, &.{ b.install_path, "lib", deshaderLibName }) catch unreachable);
-        exampleRun.addArg(std.fs.path.join(b.allocator, &.{ b.install_path, "bin", "examples" }) catch unreachable);
+        exampleRun.setEnvironmentVariable("DESHADER_LIB", try std.fs.path.join(b.allocator, &.{ b.install_path, "lib", deshader_lib_name }));
+        exampleRun.addArg(try std.fs.path.join(b.allocator, &.{ b.install_path, "bin", "examples" }));
         exampleRunCmd.dependOn(&exampleInstall.step);
         exampleRunCmd.dependOn(&exampleRun.step);
         exampleRunCmd.dependOn(&runnerInstall.step);
@@ -372,12 +405,12 @@ pub fn build(b: *std.Build) void {
 
 // This scans the environment for the `DESHADER_GL_VERSION` variable and
 // returns a module that exports the OpenGL bindings for that version.
-fn openGlModule(b: *std.build.Builder) *std.build.Module {
+fn openGlModule(b: *std.build.Builder) !*std.build.Module {
     const glVersion = b.option(String, "glSuffix", "Suffix to libs/zig-opengl/exports/gl_X.zig that will be imported") orelse "4v6";
     const glFormat = "libs/zig-opengl/exports/gl_{s}.zig";
 
     return b.addModule("gl", .{
-        .source_file = .{ .path = std.fmt.allocPrint(b.allocator, glFormat, .{glVersion}) catch unreachable },
+        .source_file = .{ .path = try std.fmt.allocPrint(b.allocator, glFormat, .{glVersion}) },
     });
 }
 
@@ -425,8 +458,8 @@ const DependenciesStep = struct {
     pub fn doStep(step: *std.build.Step, progressNode: *std.Progress.Node) anyerror!void {
         const self: *DependenciesStep = @fieldParentPtr(DependenciesStep, "step", step);
 
-        const env_map: *std.process.EnvMap = self.step.owner.allocator.create(std.process.EnvMap) catch unreachable;
-        env_map.* = std.process.getEnvMap(step.owner.allocator) catch unreachable;
+        const env_map: *std.process.EnvMap = try self.step.owner.allocator.create(std.process.EnvMap);
+        env_map.* = try std.process.getEnvMap(step.owner.allocator);
         try env_map.put("NOTEST", "y");
 
         progressNode.activate();
@@ -468,8 +501,8 @@ const CompressStep = struct {
     source: std.build.LazyPath,
     generatedFile: std.Build.GeneratedFile,
 
-    pub fn init(b: *std.build.Builder, source: std.build.LazyPath) *@This() {
-        var self = b.allocator.create(@This()) catch unreachable;
+    pub fn init(b: *std.build.Builder, source: std.build.LazyPath) !*@This() {
+        var self = try b.allocator.create(@This());
         self.* = .{
             .source = source,
             .step = std.build.Step.init(.{ .id = .custom, .makeFn = make, .name = "compress", .owner = b }),
@@ -560,7 +593,7 @@ const CompressStep = struct {
 
 fn appendFiles(step: *std.build.Step.Compile, files: *std.ArrayList(String), toAdd: anytype) !void {
     inline for (toAdd) |addThis| {
-        const compress = CompressStep.init(step.step.owner, std.build.FileSource.relative(addThis));
+        const compress = try CompressStep.init(step.step.owner, std.build.FileSource.relative(addThis));
         step.addAnonymousModule(addThis, .{
             .source_file = .{ .generated = &compress.generatedFile },
         });
@@ -580,7 +613,7 @@ fn appendFilesRecursive(
     eachFile: while (try it.next()) |file| {
         switch (file.kind) {
             .directory => {
-                const innerDir = try std.fs.openIterableDirAbsolute(try it.dir.realpathAlloc(b.allocator, file.name), .{});
+                const innerDir = try openIterableDir(try it.dir.realpathAlloc(b.allocator, file.name));
                 var innerIt = innerDir.iterateAssumeFirstIteration();
                 try appendFilesRecursive(b, step, files, absolutePasePath, &innerIt, exclude);
                 continue;
@@ -734,7 +767,7 @@ const AddGlProcsStep = struct {
                         step.owner.cache_root, tmp_sub_path, @errorName(err),
                     });
                 };
-                const count = std.fmt.allocPrint(step.owner.allocator, "pub const count = {d};", .{glProcs.count()}) catch unreachable;
+                const count = try std.fmt.allocPrint(step.owner.allocator, "pub const count = {d};", .{glProcs.count()});
                 defer step.owner.allocator.free(count);
                 step.owner.cache_root.handle.writeFile(count_tmp_sub_path, count) catch |err| {
                     return step.fail("unable to write proc count to '{}{s}': {s}", .{
@@ -788,7 +821,7 @@ const AddGlProcsStep = struct {
     }
 };
 
-fn exampleSubProgram(bootstraper: *std.build.Step.Compile, name: String, path: String, modules: anytype) *std.build.Step.Compile {
+fn exampleSubProgram(bootstraper: *std.build.Step.Compile, name: String, path: String, modules: anytype) !*std.build.Step.Compile {
     var step = &bootstraper.step;
     const subExe = step.owner.addExecutable(.{
         .name = name,
@@ -803,8 +836,21 @@ fn exampleSubProgram(bootstraper: *std.build.Step.Compile, name: String, path: S
 
     const install = step.owner.addInstallArtifact(
         subExe,
-        .{ .dest_sub_path = std.fs.path.join(step.owner.allocator, &.{ "example", name }) catch unreachable },
+        .{ .dest_sub_path = try std.fs.path.join(step.owner.allocator, &.{ "example", name }) },
     );
     step.dependOn(&install.step);
     return subExe;
+}
+
+fn fileWithPrefixExists(allocator: std.mem.Allocator, dirname: String, basename: String) !?String {
+    var dir = try openIterableDir(dirname);
+    var it = dir.iterate();
+    while (try it.next()) |current| {
+        if (current.kind == .file) {
+            if (std.mem.startsWith(u8, current.name, basename)) {
+                return try allocator.dupe(u8, current.name);
+            }
+        }
+    }
+    return null;
 }

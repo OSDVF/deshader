@@ -16,7 +16,7 @@ const shader_decls = @import("declarations/shaders.zig");
 
 const loaders = @import("interceptors/loaders.zig");
 const transitive = @import("interceptors/transitive.zig");
-const editor = @import("tools/editor.zig");
+const editor = if (options.embedEditor) @import("tools/editor.zig") else null;
 
 const String = []const u8;
 
@@ -33,34 +33,42 @@ const ProgramPayload = shader_decls.ProgramPayload;
 const ExistsBehavior = shader_decls.ExistsBehavior;
 
 pub export fn deshaderEditorServerStart() usize {
-    editor.serverStart() catch |err| {
-        DeshaderLog.err(err_format, .{ @src().fn_name, err });
-        return @intFromError(err);
-    };
+    if (options.embedEditor) {
+        editor.serverStart() catch |err| {
+            DeshaderLog.err(err_format, .{ @src().fn_name, err });
+            return @intFromError(err);
+        };
+    }
     return 0;
 }
 
 pub export fn deshaderEditorServerStop() usize {
-    editor.serverStop() catch |err| {
-        DeshaderLog.err(err_format, .{ @src().fn_name, err });
-        return @intFromError(err);
-    };
+    if (options.embedEditor) {
+        editor.serverStop() catch |err| {
+            DeshaderLog.err(err_format, .{ @src().fn_name, err });
+            return @intFromError(err);
+        };
+    }
     return 0;
 }
 
 pub export fn deshaderEditorWindowShow() usize {
-    editor.windowShow() catch |err| {
-        DeshaderLog.err(err_format, .{ @src().fn_name, err });
-        return @intFromError(err);
-    };
+    if (options.embedEditor) {
+        editor.windowShow() catch |err| {
+            DeshaderLog.err(err_format, .{ @src().fn_name, err });
+            return @intFromError(err);
+        };
+    }
     return 0;
 }
 
 pub export fn deshaderEditorWindowTerminate() usize {
-    editor.windowTerminate() catch |err| {
-        DeshaderLog.err(err_format, .{ @src().fn_name, err });
-        return @intFromError(err);
-    };
+    if (options.embedEditor) {
+        editor.windowTerminate() catch |err| {
+            DeshaderLog.err(err_format, .{ @src().fn_name, err });
+            return @intFromError(err);
+        };
+    }
     return 0;
 }
 
@@ -99,11 +107,28 @@ pub export fn deshaderRemoveSource(ref: usize) usize {
     return 0;
 }
 
-pub export fn deshaderSourceTag(ref: usize, part_index: usize, path: [*:0]const u8, if_exists: ExistsBehavior) usize {
+pub export fn deshaderTagSource(ref: usize, part_index: usize, path: [*:0]const u8, if_exists: ExistsBehavior) usize {
     shaders.Shaders.assignTag(ref, part_index, std.mem.span(path), if_exists) catch |err| {
         DeshaderLog.err(err_format, .{ @src().fn_name, err });
         return @intFromError(err);
     };
+    return 0;
+}
+
+/// Link shader source code to a file in physical workspace
+pub export fn deshaderLinkSource(ref: usize, part_index: usize, path: [*:0]const u8) usize {
+    _ = path;
+    _ = part_index;
+    _ = ref;
+    //TODO
+    return 0;
+}
+
+/// Set a physical folder as a workspace for shader sources
+/// ALl calls to deshaderSourceLink will expect paths relative to this folder
+pub export fn deshaderPhysicalWorkspace(path: [*:0]const u8) usize {
+    _ = path;
+    //TODO
     return 0;
 }
 
@@ -192,15 +217,17 @@ fn finalize() callconv(.C) void {
         command_listener.?.stop();
         common.allocator.destroy(command_listener.?);
     }
-    if (editor.global_app != null) {
-        editor.windowTerminate() catch |err| {
-            DeshaderLog.err("{any}", .{err});
-        };
-    }
-    if (editor.global_provider != null) {
-        editor.serverStop() catch |err| {
-            DeshaderLog.err("{any}", .{err});
-        };
+    if (options.embedEditor) {
+        if (editor.global_app != null) {
+            editor.windowTerminate() catch |err| {
+                DeshaderLog.err("{any}", .{err});
+            };
+        }
+        if (editor.global_provider != null) {
+            editor.serverStop() catch |err| {
+                DeshaderLog.err("{any}", .{err});
+            };
+        }
     }
     shaders.Programs.deinit();
     shaders.Shaders.deinit();
@@ -209,5 +236,8 @@ fn finalize() callconv(.C) void {
 fn wrapErrorRunOnLoad() callconv(.C) void {
     runOnLoad() catch |err| {
         DeshaderLog.err("Initialization error: {any}", .{err});
+        if (@errorReturnTrace()) |trace| {
+            std.debug.dumpStackTrace(trace.*);
+        }
     };
 }

@@ -7,7 +7,8 @@ const common = @import("common.zig");
 const logging = @import("log.zig");
 const DeshaderLog = logging.DeshaderLog;
 const main = @import("main.zig");
-const editor = @import("tools/editor.zig");
+const options = @import("options");
+const editor = if (options.embedEditor) @import("tools/editor.zig") else null;
 const shaders = @import("services/shaders.zig");
 
 const String = []const u8;
@@ -16,7 +17,7 @@ const Tuple = std.meta.Tuple;
 const Route = positron.Provider.Route;
 
 pub const CommandListener = struct {
-    const ArgumentsList = std.StringHashMap(String);
+    pub const ArgumentsList = std.StringHashMap(String);
     pub const setting_vars = struct {
         pub var log_into_responses = false;
     };
@@ -226,68 +227,28 @@ pub const CommandListener = struct {
     }
 
     const ws_commands = blk: {
+        const CommandReturnType = enum { Void, String, CStringArray, StringArray, HttpStatusCode };
         const decls = @typeInfo(commands.simple).Struct.decls;
-        comptime var command_array: [decls.len]std.meta.Tuple(&.{ String, *const fn (self: *WSHandler, args: ?ArgumentsList, body: String) anyerror!void }) = undefined;
+        const comInfo = struct { r: CommandReturnType, a: usize, c: *const anyopaque };
+        comptime var command_array: [decls.len]std.meta.Tuple(&.{ String, comInfo }) = undefined;
         inline for (decls, 0..) |function, i| {
             const command = @field(commands.simple, function.name);
-            //const error_union = @typeInfo(return_type).ErrorUnion;
-            command_array[i] = .{
-                function.name,
-                &struct {
-                    var http_code_buffer: [3]u8 = undefined;
-                    fn wrap(comptime inner: anytype) type {
-                        return struct {
-                            fn wrapped(self: *WSHandler, args: ?ArgumentsList, body: String) !void {
-                                const accepted = "202: Accepted\n";
-                                const arguments = @typeInfo(@TypeOf(inner)).Fn.params;
-                                if (switch (arguments.len) {
-                                    0 => inner(),
-                                    1 => inner(args),
-                                    2 => inner(args, body),
-                                    else => @compileError("Command " ++ @typeName(inner) ++ " has invalid number of arguments. Only none, parameters and body are available."),
-                                }) |result| {
-                                    switch (@TypeOf(result)) {
-                                        void => try self.conn.writeText(accepted),
-                                        String => {
-                                            defer common.allocator.free(result);
-                                            try self.conn.writeAllFrame(.text, &.{ accepted, result, "\n" });
-                                        },
-                                        []const CString => {
-                                            defer {
-                                                for (result) |line| common.allocator.free(std.mem.span(line));
-                                                common.allocator.free(result);
-                                            }
-                                            var flattened = try common.joinInnerZ(common.allocator, "\n", result);
-                                            defer common.allocator.free(flattened);
-                                            try self.conn.writeAllFrame(.text, &.{ accepted, flattened, "\n" });
-                                        },
-                                        []const String => {
-                                            defer for (result) |line| common.allocator.free(line);
-                                            defer common.allocator.free(result);
-                                            var flattened = try std.mem.join(common.allocator, "\n", result);
-                                            defer common.allocator.free(flattened);
-                                            try self.conn.writeAllFrame(.text, &.{ accepted, flattened, "\n" });
-                                        },
-                                        serve.HttpStatusCode => |code| {
-                                            try self.conn.writeAllFrame(.text, &.{ try std.fmt.bufPrint(http_code_buffer, "{d}", .{code}), ": ", @tagName(result), "\n" });
-                                        },
-                                        else => {
-                                            defer if (@typeInfo(@TypeOf(result)) == .Pointer) common.allocator.free(result);
-                                            const json = try std.json.stringifyAlloc(common.allocator, result, .{ .whitespace = .minified });
-                                            defer common.allocator.free(json);
-                                            try self.conn.writeAllFrame(.text, &.{ accepted, json, "\n" });
-                                        },
-                                    }
-                                } else |err| {
-                                    try self.conn.writeText(try std.fmt.allocPrint(common.allocator, "Error: {any}", .{err}));
-                                }
-                            }
-                        };
-                    }
-                }.wrap(command).wrapped,
-            };
+            const return_type = @typeInfo(@TypeOf(command)).Fn.return_type.?;
+            const error_union = @typeInfo(return_type).ErrorUnion;
+            command_array[i] = .{ function.name, comInfo{
+                .r = switch (error_union.payload) {
+                    void => CommandReturnType.Void,
+                    String => CommandReturnType.String,
+                    []const String => CommandReturnType.StringArray,
+                    []const CString => CommandReturnType.CStringArray,
+                    serve.HttpStatusCode => CommandReturnType.HttpStatusCode,
+                    else => @compileError("Command " ++ function.name ++ " has invalid return type. Only void, string, string array and http status code are available."),
+                },
+                .a = @typeInfo(@TypeOf(command)).Fn.params.len,
+                .c = &command,
+            } };
         }
-        var map = std.ComptimeStringMap(@TypeOf(command_array[0][1]), command_array);
+        const map = std.ComptimeStringMap(@TypeOf(command_array[0][1]), command_array);
         break :blk map;
     };
 
@@ -309,11 +270,54 @@ pub const CommandListener = struct {
             };
         }
 
+        fn handleInner(self: *@This(), result_or_error: anytype, command_name: String) !void {
+            var http_code_buffer: [3]u8 = undefined;
+            const accepted = "202: Accepted\n";
+            if (result_or_error) |result| {
+                switch (@TypeOf(result)) {
+                    void => try self.conn.writeAllFrame(.text, &.{ accepted, command_name, "\n" }),
+                    String => {
+                        defer common.allocator.free(result);
+                        try self.conn.writeAllFrame(.text, &.{ accepted, command_name, "\n", result, "\n" });
+                    },
+                    []const CString => {
+                        defer {
+                            for (result) |line| common.allocator.free(std.mem.span(line));
+                            common.allocator.free(result);
+                        }
+                        const flattened = try common.joinInnerZ(common.allocator, "\n", result);
+                        defer common.allocator.free(flattened);
+                        try self.conn.writeAllFrame(.text, &.{ accepted, command_name, "\n", flattened, "\n" });
+                    },
+                    []const String => {
+                        defer for (result) |line| common.allocator.free(line);
+                        defer common.allocator.free(result);
+                        const flattened = try std.mem.join(common.allocator, "\n", result);
+                        defer common.allocator.free(flattened);
+                        try self.conn.writeAllFrame(.text, &.{ accepted, command_name, "\n", flattened, "\n" });
+                    },
+                    serve.HttpStatusCode => {
+                        try self.conn.writeAllFrame(.text, &.{
+                            try std.fmt.bufPrint(&http_code_buffer, "{d}", .{@as(serve.HttpStatusCode, result)}),
+                            ": ",
+                            @tagName(result),
+                            "\n",
+                            command_name,
+                            "\n",
+                        });
+                    },
+                    else => unreachable,
+                }
+            } else |err| {
+                try self.conn.writeText(try std.fmt.allocPrint(common.allocator, "Error: {any}", .{err}));
+            }
+        }
+
         pub fn handle(self: *@This(), message: Message) !void {
             errdefer |err| {
                 DeshaderLog.err("Error while handling websocket command: {any}", .{err});
                 DeshaderLog.debug("Message: {any}", .{message.data});
-                const err_mess = std.fmt.allocPrint(common.allocator, "Error: {any}", .{err}) catch "";
+                const err_mess = std.fmt.allocPrint(common.allocator, "Error: {any}\n", .{err}) catch "";
                 defer if (err_mess.len > 0) common.allocator.free(err_mess);
                 self.conn.writeText(err_mess) catch |er| DeshaderLog.err("Error while writing error: {any}", .{er});
             }
@@ -325,17 +329,50 @@ pub const CommandListener = struct {
             const body = iterator.rest();
 
             var command_query = std.mem.splitScalar(u8, args, '?');
-            const command = command_query.first();
+            const command_name = command_query.first();
             const query = command_query.rest();
-            var parsed_args: ?ArgumentsList = if (query.len > 0) try argsFromUri(common.allocator, query) else null;
-            defer if (parsed_args != null) parsed_args.?.deinit();
 
-            const target_command = ws_commands.get(command);
+            const target_command = ws_commands.get(command_name);
             if (target_command == null) {
                 try self.conn.writeText("404: Command not found\n");
                 return;
             }
-            try target_command.?(self, parsed_args, body);
+
+            var parsed_args: ?ArgumentsList = if (query.len > 0) try argsFromUri(common.allocator, query) else null;
+            defer if (parsed_args != null) parsed_args.?.deinit();
+
+            try switch (target_command.?.r) {
+                .Void => switch (target_command.?.a) {
+                    0 => handleInner(self, @as(*const fn () anyerror!void, @ptrCast(target_command.?.c))(), command_name),
+                    1 => handleInner(self, @as(*const fn (?ArgumentsList) anyerror!void, @ptrCast(target_command.?.c))(parsed_args), command_name),
+                    2 => handleInner(self, @as(*const fn (?ArgumentsList, String) anyerror!void, @ptrCast(target_command.?.c))(parsed_args, body), command_name),
+                    else => unreachable,
+                },
+                .String => switch (target_command.?.a) {
+                    0 => handleInner(self, @as(*const fn () anyerror!String, @ptrCast(target_command.?.c))(), command_name),
+                    1 => handleInner(self, @as(*const fn (?ArgumentsList) anyerror!String, @ptrCast(target_command.?.c))(parsed_args), command_name),
+                    2 => handleInner(self, @as(*const fn (?ArgumentsList, String) anyerror!String, @ptrCast(target_command.?.c))(parsed_args, body), command_name),
+                    else => unreachable,
+                },
+                .CStringArray => switch (target_command.?.a) {
+                    0 => handleInner(self, @as(*const fn () anyerror![]const CString, @ptrCast(target_command.?.c))(), command_name),
+                    1 => handleInner(self, @as(*const fn (?ArgumentsList) anyerror![]const CString, @ptrCast(target_command.?.c))(parsed_args), command_name),
+                    2 => handleInner(self, @as(*const fn (?ArgumentsList, String) anyerror![]const CString, @ptrCast(target_command.?.c))(parsed_args, body), command_name),
+                    else => unreachable,
+                },
+                .StringArray => switch (target_command.?.a) {
+                    0 => handleInner(self, @as(*const fn () anyerror![]const String, @ptrCast(target_command.?.c))(), command_name),
+                    1 => handleInner(self, @as(*const fn (?ArgumentsList) anyerror![]const String, @ptrCast(target_command.?.c))(parsed_args), command_name),
+                    2 => handleInner(self, @as(*const fn (?ArgumentsList, String) anyerror![]const String, @ptrCast(target_command.?.c))(parsed_args, body), command_name),
+                    else => unreachable,
+                },
+                .HttpStatusCode => switch (target_command.?.a) {
+                    0 => handleInner(self, @as(*const fn () anyerror!serve.HttpStatusCode, @ptrCast(target_command.?.c))(), command_name),
+                    1 => handleInner(self, @as(*const fn (?ArgumentsList) anyerror!serve.HttpStatusCode, @ptrCast(target_command.?.c))(parsed_args), command_name),
+                    2 => handleInner(self, @as(*const fn (?ArgumentsList, String) anyerror!serve.HttpStatusCode, @ptrCast(target_command.?.c))(parsed_args, body), command_name),
+                    else => unreachable,
+                },
+            };
         }
 
         // optional hooks
@@ -356,19 +393,27 @@ pub const CommandListener = struct {
             }
 
             pub fn editorWindowShow() !void {
-                return editor.windowShow();
+                if (options.embedEditor) {
+                    return editor.windowShow();
+                }
             }
 
             pub fn editorWindowTerminate() !void {
-                return editor.windowTerminate();
+                if (options.embedEditor) {
+                    return editor.windowTerminate();
+                }
             }
 
             pub fn editorServerStart() !void {
-                return editor.serverStart();
+                if (options.embedEditor) {
+                    return editor.serverStart();
+                }
             }
 
             pub fn editorServerStop() !void {
-                return editor.serverStop();
+                if (options.embedEditor) {
+                    return editor.serverStop();
+                }
             }
 
             fn getListArgs(args: ?ArgumentsList) struct { untagged: bool, path: String } {

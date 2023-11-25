@@ -1,6 +1,13 @@
 const CString = [*:0]const u8;
 
-pub const ExistsBehavior = enum(c_int) { Link, Overwrite, Error };
+pub const ExistsBehavior = enum(c_int) {
+    /// Link to existing tag. When the target tag is deleted, this tag will be deleted too
+    Link,
+    /// Overwrite contents of the target tag. Tags that pointed to that content will be linked to the new content.
+    Overwrite,
+    /// Do not permit collisions
+    Error,
+};
 
 pub const SourceType = enum(c_int) { // works with GL and VK :)
     unknown = 0,

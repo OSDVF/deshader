@@ -26,9 +26,9 @@ pub fn getProductJson(allocator: std.mem.Allocator, https: bool, port: u16) !Str
                 .@"vscode.vscode-web-playground" = .{ "fileSearchProvider", "textSearchProvider" },
             },
         },
-        .folderUri = .{
+        .workspaceUri = .{
             .scheme = "deshader",
-            .path = "/current-app",
+            .path = "/live-app.code-workspace",
         },
         .additionalBuiltinExtensions = .{.{
             .scheme = if (https) "https" else "http",
@@ -153,11 +153,14 @@ pub fn windowShow() !void {
     };
     global_app.?.shutdown_lock.lock();
     DeshaderLog.info("Editor URL: {s}", .{global_app.?.provider.base_url});
-
     global_app.?.view.setTitle("Deshader Editor");
     global_app.?.view.setSize(500, 300, .none);
 
     global_app.?.view.navigate(global_app.?.provider.getUri("/index.html").?);
+
+    const injected_code = try std.mem.concatWithSentinel(global_app.?.provider.allocator, u8, &.{ "globalThis.deshader = ", global_app.?.provider.base_url }, 0);
+    defer global_app.?.provider.allocator.free(injected_code);
+    global_app.?.view.eval(injected_code);
 
     global_app.?.view.run();
     DeshaderLog.debug("Editor terminated", .{});

@@ -54,7 +54,7 @@ Deshader consists of several (mostly third party; mostly forked) components that
     - Managed by **Bun** and bundled by Webpack
 
 ## Requirements
-- Zig [Installation](https://github.com/ziglang/zig#installation) (developed against 0.12.0-dev.899+027aabf49)
+- Zig 0.12.0-dev.1718+3acb0e30a [built from source](https://github.com/ziglang/zig#building-from-source) (checkout the commit with hash 027aabf49)
 - Bun 1.0.6 [Install](https://github.com/oven-sh/bun#install)
 - Dotnet
 - C libraries

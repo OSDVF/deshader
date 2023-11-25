@@ -11,7 +11,7 @@
     .dependencies = .{
         .mach_glfw = .{
             .url = "https://github.com/osdvf/mach-glfw/tarball/master",
-            .hash = "12208c1cd28861354cebb548e20a0309592af78842435d4c24b71364fcfd8fbe78ee",
+            .hash = "12204779ba2f14b46f569110f774d5c3f48b7a105b6717e668bc410710bceae62072",
         },
         .vulkan_zig = .{
             .url = "https://github.com/Snektron/vulkan-zig/archive/27d9b028ebedf616bc9bf49ba551bf33b3ff33a8.tar.gz",

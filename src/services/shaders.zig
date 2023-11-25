@@ -10,15 +10,23 @@ const CString = [*:0]const u8;
 const Storage = storage.Storage;
 const Tag = storage.Tag;
 
-pub var Shaders: Storage(Shader.Source) = undefined;
+pub var Shaders: Storage(*Shader.SourceInterface) = undefined;
 pub var Programs: Storage(Shader.Program) = undefined;
 
 // Used just for type resolution
 const SourcePayload: decls.SourcesPayload = undefined;
 const ProgramPayload: decls.ProgramPayload = undefined;
 
-pub fn mergeObj(comptime T: type, self: *T, payload: T) !void {
-    inline for (@typeInfo(@TypeOf(payload)).Struct.fields) |field| {
+pub fn mergeObj(comptime T: type, self: T, payload: T) !void {
+    comptime var inner = @typeInfo(@TypeOf(payload));
+    inline while (inner == .Optional or inner == .Pointer) {
+        if (inner == .Optional) {
+            inner = @typeInfo(inner.Optional.child);
+        } else {
+            inner = @typeInfo(inner.Pointer.child);
+        }
+    }
+    inline for (inner.Struct.fields) |field| {
         if (@hasField(@This(), field.name)) {
             const val = @field(payload, field.name);
             if (@typeInfo(@TypeOf(val)) == .Optional) {
@@ -34,17 +42,39 @@ pub fn mergeObj(comptime T: type, self: *T, payload: T) !void {
 }
 
 pub const Shader = struct {
-    /// Contrary to decls.SourcePayload this is just a single tagged shader source code.
-    pub const Source = struct {
+    pub const SourceInterface = struct {
         ref: @TypeOf(SourcePayload.ref) = 0,
-        tag: ?*Tag(@This()) = null,
-        source: ?String = null,
+        tag: ?*Tag(*@This()) = null,
         type: @TypeOf(SourcePayload.type) = decls.SourceType.unknown,
         context: ?*const anyopaque = null,
         compile: @TypeOf(SourcePayload.compile) = null,
         save: @TypeOf(SourcePayload.save) = null,
 
-        pub fn fromPayload(payload: decls.SourcesPayload, index: usize) @This() {
+        implementation: *anyopaque, // is on heap
+        /// The most important part of interface implementation
+        getSource: *const fn (impl: *const anyopaque) ?String,
+        deinitImpl: *const fn (impl: *const anyopaque) void,
+
+        pub fn toString(self: *const @This()) String {
+            return self.type.toExtension();
+        }
+
+        pub fn deinit(self: *@This()) void {
+            self.deinitImpl(self.implementation);
+        }
+
+        pub fn eql(self: *const @This(), other: *const @This()) bool {
+            return self.ref == other.ref and self.source == other.source and self.type == other.type and self.context == other.context;
+        }
+    };
+
+    /// Contrary to decls.SourcePayload this is just a single tagged shader source code.
+    pub const MemorySource = struct {
+        super: *SourceInterface,
+        source: ?String = null,
+        allocator: std.mem.Allocator,
+
+        pub fn fromPayload(allocator: std.mem.Allocator, payload: decls.SourcesPayload, index: usize) !*@This() {
             std.debug.assert(index < payload.count);
             var source: ?String = null;
             if (payload.sources != null) {
@@ -54,30 +84,37 @@ pub const Shader = struct {
                     source = std.mem.span(payload.sources.?[index]);
                 }
             }
-            return @This(){
+            const result = try allocator.create(@This());
+            const interface = try allocator.create(SourceInterface);
+            interface.* = SourceInterface{
+                .implementation = result,
                 .ref = payload.ref,
                 .type = payload.type,
                 .compile = payload.compile,
                 .context = if (payload.contexts != null) payload.contexts.?[index] else null,
+                .getSource = @ptrCast(&getSource),
+                .deinitImpl = @ptrCast(&deinit),
+            };
+            result.* = @This(){
+                .allocator = allocator,
+                .super = interface,
                 .source = source,
             };
+            return result;
         }
 
-        pub fn toString(self: *const @This()) String {
-            return self.type.toExtension();
+        pub fn getSource(this: *@This()) ?String {
+            return this.source;
         }
 
-        pub fn deinit(self: *@This()) void {
-            _ = self;
-        }
-
-        pub fn eql(self: *const @This(), other: *const @This()) bool {
-            return self.ref == other.ref and self.source == other.source and self.type == other.type and self.context == other.context;
+        pub fn deinit(this: *@This()) void {
+            this.allocator.destroy(this.super);
+            this.allocator.destroy(this);
         }
     };
 
     pub const Program = struct {
-        pub const Shaders = std.ArrayList(Storage(Shader.Source).RefMap.Entry);
+        pub const Shaders = std.ArrayList(Storage(*Shader.SourceInterface).RefMap.Entry);
         ref: @TypeOf(ProgramPayload.ref) = 0,
         tag: ?*Tag(Program) = null,
         /// Ref and sources
@@ -112,24 +149,24 @@ pub const Shader = struct {
             Ray: Raytrace,
 
             pub const Rasterize = struct {
-                vertex: ?*Source,
-                geometry: ?*Source,
-                tess_control: ?*Source,
-                tess_evaluation: ?*Source,
-                fragment: ?*Source,
-                task: ?*Source,
-                mesh: ?*Source,
+                vertex: ?*SourceInterface,
+                geometry: ?*SourceInterface,
+                tess_control: ?*SourceInterface,
+                tess_evaluation: ?*SourceInterface,
+                fragment: ?*SourceInterface,
+                task: ?*SourceInterface,
+                mesh: ?*SourceInterface,
             };
             pub const Compute = struct {
-                compute: *Source,
+                compute: *SourceInterface,
             };
             pub const Raytrace = struct {
-                raygen: *Source,
-                anyhit: ?*Source,
-                closesthit: *Source,
-                intersection: ?*Source,
-                miss: *Source,
-                callable: ?*Source,
+                raygen: *SourceInterface,
+                anyhit: ?*SourceInterface,
+                closesthit: *SourceInterface,
+                intersection: ?*SourceInterface,
+                miss: *SourceInterface,
+                callable: ?*SourceInterface,
             };
         };
     };
@@ -140,27 +177,30 @@ pub const Shader = struct {
 //
 
 pub fn sourcesCreateUntagged(sources: decls.SourcesPayload) !void {
-    const new_stored = try Shaders.allocator.alloc(Shader.Source, sources.count);
+    const new_stored = try Shaders.allocator.alloc(*Shader.SourceInterface, sources.count);
+    defer Shaders.allocator.free(new_stored);
     for (new_stored, 0..) |*stored, i| {
-        stored.* = Shader.Source.fromPayload(sources, i);
+        stored.* = (try Shader.MemorySource.fromPayload(Shaders.allocator, sources, i)).super;
     }
     try Shaders.createUntagged(new_stored);
 }
 
 pub fn sourceReplaceUntagged(sources: decls.SourcesPayload) !void {
-    var existing = Shaders.all.getPtr(sources.ref);
+    const existing = Shaders.all.getPtr(sources.ref);
     if (existing) |e_sources| {
         if (e_sources.items.len != sources.count) {
             try e_sources.resize(sources.count);
         }
         for (e_sources.items, 0..) |*item, i| {
-            try mergeObj(@TypeOf(item.*), item, Shader.Source.fromPayload(sources, i));
+            const data = try Shader.MemorySource.fromPayload(Shaders.allocator, sources, i);
+            defer data.deinit();
+            try mergeObj(@TypeOf(item.*), item.*, data.super);
         }
     }
 }
 
 pub fn sourceType(ref: usize, @"type": decls.SourceType) !void {
-    var maybe_sources = Shaders.all.get(ref);
+    const maybe_sources = Shaders.all.get(ref);
 
     if (maybe_sources) |sources| {
         for (sources.items) |*item| {
@@ -172,7 +212,7 @@ pub fn sourceType(ref: usize, @"type": decls.SourceType) !void {
 }
 
 pub fn sourceCompileFunc(ref: usize, func: @TypeOf((Shader.Source{}).compile)) !void {
-    var maybe_sources = Shaders.all.get(ref);
+    const maybe_sources = Shaders.all.get(ref);
 
     if (maybe_sources) |sources| {
         for (sources.items) |*item| {
@@ -184,7 +224,7 @@ pub fn sourceCompileFunc(ref: usize, func: @TypeOf((Shader.Source{}).compile)) !
 }
 
 pub fn sourceContext(ref: usize, source_index: usize, context: *const anyopaque) !void {
-    var maybe_sources = Shaders.all.get(ref);
+    const maybe_sources = Shaders.all.get(ref);
 
     if (maybe_sources) |sources| {
         std.debug.assert(sources.contexts != null);
@@ -196,7 +236,7 @@ pub fn sourceContext(ref: usize, source_index: usize, context: *const anyopaque)
 
 /// Change existing source part. Does not allocate any new memory or reallocate existing source array
 pub fn sourceSource(ref: usize, source_index: usize, source_code: CString) !void {
-    var maybe_sources = Shaders.all.get(ref);
+    const maybe_sources = Shaders.all.get(ref);
 
     if (maybe_sources) |sources| {
         std.debug.assert(sources.items.len != 0);

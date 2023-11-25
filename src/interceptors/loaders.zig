@@ -334,17 +334,17 @@ comptime {
     inline for (.{ APIs.gl.wgl, APIs.gl.egl, APIs.gl.glX }) |lib| {
         inline for (lib.default_loaders) |gl_loader| {
             const r = LoaderInterceptor(lib, gl_loader);
-            @export(r.loaderReplacement, .{ .name = gl_loader, .section = ".text" });
+            @export(r.loaderReplacement, .{ .name = gl_loader });
         }
     }
     if (options.glAddLoader) |name| {
-        @export(deshaderGetProcAddress, .{ .name = name, .section = ".text" });
+        @export(deshaderGetProcAddress, .{ .name = name });
     }
 
     inline for (APIs.vk.device_loaders) |original_name_maybe| {
-        if (original_name_maybe) |originalName| @export(deshaderGetVkDeviceProcAddr, .{ .name = originalName, .section = ".text" });
+        if (original_name_maybe) |originalName| @export(deshaderGetVkDeviceProcAddr, .{ .name = originalName });
     }
     inline for (APIs.vk.instance_loaders) |original_name_maybe| {
-        if (original_name_maybe) |originalName| @export(deshaderGetVkInstanceProcAddr, .{ .name = originalName, .section = ".text" });
+        if (original_name_maybe) |originalName| @export(deshaderGetVkInstanceProcAddr, .{ .name = originalName });
     }
 } // end comptime

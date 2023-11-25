@@ -14,6 +14,18 @@ const String = []const u8;
 pub const TransitiveSymbols = struct {
     var mapping: [@import("transitive_exports_count").count]gl.FunctionPointer = undefined;
     var context_count: usize = 0;
+
+    fn create(comptime index: usize) type { // Trampoline generator
+        return struct { // Captures `i` and `RecursiveSymbols.mapping[]`
+            fn intercepted() callconv(.Naked) noreturn { // Naked trampoline preserves caller arguments
+                @setRuntimeSafety(false);
+                asm volatile ("jmp *%[target]"
+                    : //no outputs
+                    : [target] "r" (mapping[index]), // inputs
+                );
+            }
+        };
+    }
     // Fill the mappings
     pub fn loadOriginal() !void {
         comptime var count: usize = 0;
@@ -36,20 +48,7 @@ pub const TransitiveSymbols = struct {
                     }
                     defer i += 1;
 
-                    @export(struct {
-                        fn create(comptime index: usize) type { // Trampoline generator
-                            return struct { // Captures `i` and `RecursiveSymbols.mapping[]`
-                                fn intercepted() callconv(.Naked) noreturn { // Naked trampoline preserves caller arguments
-                                    @setRuntimeSafety(false);
-                                    asm volatile ("jmp *%[target]"
-                                        : //no outputs
-                                        : [target] "r" (mapping[index]), // inputs
-                                    );
-                                    unreachable;
-                                }
-                            };
-                        }
-                    }.create(i).intercepted, .{ .name = symbol_name, .section = ".text" });
+                    @export(create(i).intercepted, .{ .name = symbol_name });
                 }
 
                 count = i;
@@ -92,7 +91,7 @@ pub const TransitiveSymbols = struct {
                 'w' => APIs.gl.wgl.lib,
                 else => @panic(try std.fmt.allocPrint(common.allocator, "Unknown GL or VK function prefix: {c}", .{prefix})),
             };
-            var with_null = try common.allocator.dupeZ(u8, symbol_name);
+            const with_null = try common.allocator.dupeZ(u8, symbol_name);
             defer common.allocator.free(with_null);
 
             const symbol_target = lib.?.lookup(gl.FunctionPointer, with_null);

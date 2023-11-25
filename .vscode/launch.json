@@ -31,9 +31,6 @@
             "valuesFormatting": "parseText",
             "preLaunchTask": "Build Example",
             "env": {
-                "__GLX_VENDOR_LIBRARY_NAME": "nvidia",
-                "__NV_PRIME_RENDER_OFFLOAD": "1",
-                "__VK_LAYER_NV_optimus": "NVIDIA_only",
                 "LD_PRELOAD": "${workspaceRoot}/zig-out/lib/libdeshader.so",
                 "DESHADER_LIB_ROOT": "/usr/lib/",
             }
@@ -50,9 +47,6 @@
                 "set environment LD_PRELOAD ${workspaceRoot}/zig-out/lib/libdeshader.so"
             ],
             "env": {
-                "__GLX_VENDOR_LIBRARY_NAME": "nvidia",
-                "__NV_PRIME_RENDER_OFFLOAD": "1",
-                "__VK_LAYER_NV_optimus": "NVIDIA_only",
                 "DESHADER_LIB_ROOT": "/usr/lib/",
                 "DESHADER_COMMANDS_WS": "8082"
             }
@@ -91,7 +85,6 @@
             "cwd": "${workspaceRoot}",
             "valuesFormatting": "parseText",
             "preLaunchTask": "Build Headers Generator",
-        },
-        
+        }        
     ]
 }

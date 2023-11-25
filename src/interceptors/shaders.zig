@@ -15,7 +15,7 @@ fn defaultCompileShader(source: decls.SourcesPayload) callconv(.C) u8 {
     gl.compileShader(shader);
 
     var info_length: gl.GLsizei = undefined;
-    var info_log: [*:0]gl.GLchar = undefined;
+    const info_log: [*:0]gl.GLchar = undefined;
     gl.getShaderInfoLog(shader, 0, &info_length, info_log);
     if (info_length > 0) {
         var paths: ?String = null;
@@ -43,7 +43,7 @@ fn defaultLink(ref: usize, path: ?CString, sources: [*]decls.SourcesPayload, cou
     gl.linkProgram(program);
 
     var info_length: gl.GLsizei = undefined;
-    var info_log: [*:0]gl.GLchar = undefined;
+    const info_log: [*:0]gl.GLchar = undefined;
     gl.getProgramInfoLog(program, 0, &info_length, info_log);
     if (info_length > 0) {
         log.err("program {d}:{?s} linking failed: {s}", .{ program, path, info_log });
@@ -56,11 +56,16 @@ fn defaultLink(ref: usize, path: ?CString, sources: [*]decls.SourcesPayload, cou
 pub export fn glCreateShader(shaderType: gl.GLenum) gl.GLuint {
     const new_platform_source = gl.createShader(shaderType);
 
-    shaders.Shaders.appendUntagged(shaders.Shader.Source{
+    const stored = shaders.Shader.MemorySource.fromPayload(shaders.Shaders.allocator, decls.SourcesPayload{
         .ref = @intCast(new_platform_source),
         .type = @enumFromInt(shaderType),
         .compile = defaultCompileShader,
-    }) catch |err| {
+        .count = 1,
+    }, 0) catch |err| {
+        log.warn("Failed to add shader source {x} cache because of alocation: {any}", .{ new_platform_source, err });
+        return new_platform_source;
+    };
+    shaders.Shaders.appendUntagged(stored.super) catch |err| {
         log.warn("Failed to add shader source {x} cache: {any}", .{ new_platform_source, err });
     };
 
@@ -70,7 +75,7 @@ pub export fn glCreateShader(shaderType: gl.GLenum) gl.GLuint {
 pub export fn glCreateShaderProgramv(shaderType: gl.GLenum, count: gl.GLsizei, sources: [*][*:0]const gl.GLchar) gl.GLuint {
     const source_type: decls.SourceType = @enumFromInt(shaderType);
     const new_platform_program = gl.createShaderProgramv(shaderType, count, sources);
-    var new_platform_sources = common.allocator.alloc(gl.GLuint, @intCast(count)) catch |err| {
+    const new_platform_sources = common.allocator.alloc(gl.GLuint, @intCast(count)) catch |err| {
         log.err("Failed to allocate memory for shader sources: {any}", .{err});
         return 0;
     };
@@ -142,4 +147,78 @@ pub export fn glAttachShader(program: gl.GLuint, shader: gl.GLuint) void {
     };
 
     gl.attachShader(program, shader);
+}
+
+fn objLabErr(label: String, name: gl.GLuint, index: usize, err: anytype) void {
+    log.err("Failed to assign tag {s} for {d} index {d}: {any}", .{ label, name, index, err });
+}
+
+/// Label expressed as 0:include.glsl;1:program.frag
+/// 0 is index of shader source part
+/// include.glsl is tag for shader source part
+/// Tags for program parts are separated by ;
+///
+/// To link shader source part to physical file use
+/// l:path/to/file.glsl
+/// the path is relative to workspace root. Use glDebugMessageInsert to set workspace root
+pub export fn glObjectLabel(identifier: gl.GLenum, name: gl.GLuint, length: gl.GLsizei, label: ?CString) void {
+    if (label == null) {
+        // Then the tag is meant to be removed.
+        switch (identifier) {
+            gl.PROGRAM => shaders.Programs.removeTagForIndex(name, 0) catch |err| {
+                log.warn("Failed to remove tag for program {x}: {any}", .{ name, err });
+            },
+            gl.SHADER => shaders.Shaders.removeAllTags(name) catch |err| {
+                log.warn("Failed to remove all tags for shader {x}: {any}", .{ name, err });
+            },
+            else => {}, // TODO support other objects?
+        }
+    } else {
+        var real_length: usize = undefined;
+        if (length < 0) {
+            // Then label is null-terminated and length is ignored.
+            real_length = std.mem.len(label.?);
+        } else {
+            real_length = @intCast(length);
+        }
+        switch (identifier) {
+            gl.SHADER => {
+                if (std.mem.indexOfScalar(u8, label.?[0..128], ':') != null) {
+                    var it = std.mem.splitScalar(u8, label.?[0..real_length], ';');
+                    while (it.next()) |current| {
+                        var it2 = std.mem.splitScalar(u8, current, ':');
+                        const index = std.fmt.parseUnsigned(usize, it2.first(), 10) catch std.math.maxInt(usize);
+                        const tag = it2.next();
+                        if (tag == null or index == std.math.maxInt(usize)) {
+                            log.err("Failed to parse tag {s} for shader {x}", .{ current, name });
+                            continue;
+                        }
+                        shaders.Shaders.assignTag(@intCast(name), index, tag.?, .Overwrite) catch |err| objLabErr(label.?[0..real_length], name, index, err);
+                        //TODO specify if-exists
+                    }
+                } else {
+                    shaders.Shaders.assignTag(@intCast(name), 0, label.?[0..real_length], .Overwrite) catch |err| objLabErr(label.?[0..real_length], name, 0, err);
+                }
+            },
+            gl.PROGRAM => shaders.Programs.assignTag(@intCast(name), 0, label.?[0..real_length], .Overwrite) catch |err| objLabErr(label.?[0..real_length], name, 0, err),
+            else => {}, // TODO support other objects?
+        }
+    }
+}
+
+/// use glDebugMessageInsert with these parameters to set workspace root
+/// source = GL_DEBUG_SOURCE_OTHER
+/// type = DEBUG_TYPE_OTHER
+/// id = 0
+pub export fn glDebugMessageInsert(source: gl.GLenum, _type: gl.GLenum, id: gl.GLuint, severity: gl.GLenum, length: gl.GLsizei, buf: [*c]const gl.GLchar) void {
+    _ = severity;
+    _ = length;
+    _ = buf;
+
+    if (source == gl.DEBUG_SOURCE_OTHER and _type == gl.DEBUG_TYPE_OTHER) {
+        switch (id) {
+            0 => {},
+            else => {},
+        }
+    }
 }

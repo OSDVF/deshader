@@ -30,7 +30,7 @@ pub fn createShader(source: []const u8, typ: gl.GLenum) c_uint {
     gl.compileShader(shader);
 
     var info_length: gl.GLsizei = undefined;
-    var info_log: [*:0]gl.GLchar = undefined;
+    const info_log: [*:0]gl.GLchar = undefined;
     gl.getShaderInfoLog(shader, 0, &info_length, info_log);
     if (info_length > 0) {
         log.err("shader compilation failed: {s}", .{info_log});
@@ -113,13 +113,15 @@ pub fn main() !void {
     defer gl.deleteProgram(program);
     const vertex = createShader(vertex_source, gl.VERTEX_SHADER);
     const fragment = createShader(fragment_source, gl.FRAGMENT_SHADER);
+    gl.objectLabel(gl.SHADER, vertex, -1, "myvertex.vert");
+    gl.objectLabel(gl.SHADER, fragment, -1, "myfragment.frag");
     gl.attachShader(program, vertex);
     gl.attachShader(program, fragment);
     gl.linkProgram(program);
     gl.deleteShader(vertex);
     gl.deleteShader(fragment);
     var info_length: gl.GLsizei = undefined;
-    var info_log: [*:0]gl.GLchar = undefined;
+    const info_log: [*:0]gl.GLchar = undefined;
     gl.getProgramInfoLog(program, 0, &info_length, info_log);
     if (info_length > 0) {
         log.err("program linking failed: {s}", .{info_log});
