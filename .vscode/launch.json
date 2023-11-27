@@ -65,17 +65,43 @@
             "env": {
                 "DESHADER_IGNORE_PROCESS": "gdb,zsh",
                 "DESHADER_LIB_ROOT": "/usr/lib/",
-                "DESHADER_COMMANDS_WS": "8082"
+                "DESHADER_COMMANDS_WS": "8082",
             }
         },
         {
             "type": "gdb",
             "request": "launch",
-            "name": "abi",
-            "target": "./zig-out/bin/example/abi",
+            "name": "Editor in C++",
+            "target": "./zig-out/bin/example/editor_cpp",
             "cwd": "${workspaceRoot}",
             "valuesFormatting": "parseText",
             "preLaunchTask": "Build Example",
+        },
+        {
+            "type": "gdb",
+            "request": "launch",
+            "name": "GLFW in C++",
+            "target": "./zig-out/bin/example/glfw_cpp",
+            "cwd": "${workspaceRoot}",
+            "valuesFormatting": "parseText",
+            "preLaunchTask": "Build Example",
+        },
+        {
+            "type": "cppdbg",
+            "request": "launch",
+            "name": "Editor in C++ from CMake",
+            "program": "${workspaceRoot}/build/example_editor",
+            "cwd": "${workspaceRoot}",
+        },
+        {
+            "type": "gdb",
+            "request": "launch",
+            "name": "GLFW in C++ from CMake",
+            "target": "${workspaceRoot}/build/example_glfw",
+            "cwd": "${workspaceRoot}",
+            "autorun": [
+                "set environment LD_PRELOAD ${workspaceRoot}/build/libdeshader.so"
+            ],
         },
         {
             "type": "gdb",

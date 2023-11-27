@@ -42,6 +42,7 @@ pub fn mergeObj(comptime T: type, self: T, payload: T) !void {
 }
 
 pub const Shader = struct {
+    // Zig does not have inheritance so this is quite ugly
     pub const SourceInterface = struct {
         ref: @TypeOf(SourcePayload.ref) = 0,
         tag: ?*Tag(*@This()) = null,
@@ -52,15 +53,19 @@ pub const Shader = struct {
 
         implementation: *anyopaque, // is on heap
         /// The most important part of interface implementation
-        getSource: *const fn (impl: *const anyopaque) ?String,
-        deinitImpl: *const fn (impl: *const anyopaque) void,
+        getSourceImpl: *const anyopaque,
+        deinitImpl: *const anyopaque,
 
         pub fn toString(self: *const @This()) String {
             return self.type.toExtension();
         }
 
         pub fn deinit(self: *@This()) void {
-            self.deinitImpl(self.implementation);
+            @as(*const fn (*const anyopaque) void, @ptrCast(self.deinitImpl))(self.implementation);
+        }
+
+        pub fn getSource(self: *@This()) ?String {
+            return @as(*const fn (*const anyopaque) ?String, @ptrCast(self.getSourceImpl))(self.implementation);
         }
 
         pub fn eql(self: *const @This(), other: *const @This()) bool {
@@ -92,8 +97,8 @@ pub const Shader = struct {
                 .type = payload.type,
                 .compile = payload.compile,
                 .context = if (payload.contexts != null) payload.contexts.?[index] else null,
-                .getSource = @ptrCast(&getSource),
-                .deinitImpl = @ptrCast(&deinit),
+                .getSourceImpl = &getSource,
+                .deinitImpl = &deinit,
             };
             result.* = @This(){
                 .allocator = allocator,

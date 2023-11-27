@@ -22,3 +22,6 @@
 [submodule "libs/websocket"]
 	path = libs/websocket
 	url = git@github.com:karlseguin/websocket.zig.git
+[submodule "bootstrap/llvm-ir-cmake"]
+	path = bootstrap/llvm-ir-cmake
+	url = git@github.com:compor/llvm-ir-cmake-utils.git

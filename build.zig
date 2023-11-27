@@ -3,6 +3,9 @@ const builtin = @import("builtin");
 const PositronSdk = @import("libs/positron/Sdk.zig");
 const ZigServe = @import("libs/positron/vendor/serve/build.zig");
 const ctregex = @import("libs/ctregex/ctregex.zig");
+const CompressStep = @import("bootstrap/compress.zig").CompressStep;
+const DependenciesStep = @import("bootstrap/dependencies.zig").DependenciesStep;
+const ListGlProcsStep = @import("bootstrap/list_gl_procs.zig").ListGlProcsStep;
 
 const Linkage = enum {
     Static,
@@ -64,12 +67,12 @@ pub fn build(b: *std.Build) !void {
         .BC => {
             deshader_lib.generated_llvm_ir = try b.allocator.create(std.build.GeneratedFile);
             deshader_lib.generated_llvm_ir.?.* = .{ .step = &deshader_lib.step, .path = try b.cache_root.join(b.allocator, &.{ "llvm", "deshader.ll" }) };
-            desahder_lib_cmd.dependOn(&b.addInstallFileWithDir(deshader_lib.getEmittedLlvmBc(), .bin, "deshader.bc").step);
+            desahder_lib_cmd.dependOn(&b.addInstallFileWithDir(deshader_lib.getEmittedLlvmBc(), .lib, "deshader.bc").step);
         },
         .IR => {
             deshader_lib.generated_llvm_bc = try b.allocator.create(std.build.GeneratedFile);
             deshader_lib.generated_llvm_bc.?.* = .{ .step = &deshader_lib.step, .path = try b.cache_root.join(b.allocator, &.{ "llvm", "deshader.bc" }) };
-            desahder_lib_cmd.dependOn(&b.addInstallFileWithDir(deshader_lib.getEmittedLlvmIr(), .bin, "deshader.ll").step);
+            desahder_lib_cmd.dependOn(&b.addInstallFileWithDir(deshader_lib.getEmittedLlvmIr(), .lib, "deshader.ll").step);
         },
         else => {},
     }
@@ -177,12 +180,11 @@ pub fn build(b: *std.Build) !void {
         runSymbolEnum.addArgs(optionAdditionalLibraries.?);
         allLibraries.appendSlice(optionAdditionalLibraries.?) catch unreachable;
     }
-    var addGlProcsStep = AddGlProcsStep.init(b, "add_gl_procs", allLibraries.items, GlSymbolPrefixes, runSymbolEnum.captureStdOut());
+    var addGlProcsStep = ListGlProcsStep.init(b, "add_gl_procs", allLibraries.items, GlSymbolPrefixes, runSymbolEnum.captureStdOut());
     addGlProcsStep.step.dependOn(&runSymbolEnum.step);
     deshader_lib.step.dependOn(&addGlProcsStep.step);
     const transitive_exports = b.createModule(.{ .source_file = .{ .generated = &addGlProcsStep.generated_file } });
     deshader_lib.addModule("transitive_exports", transitive_exports);
-    deshader_lib.addAnonymousModule("transitive_exports_count", .{ .source_file = .{ .generated = &addGlProcsStep.generated_count_file } });
     const header_dir = try std.fs.path.join(b.allocator, &.{ b.install_path, "include" });
 
     // Positron
@@ -327,10 +329,11 @@ pub fn build(b: *std.Build) !void {
         const sub_examples = struct {
             const glfw = "glfw";
             const editor = "editor";
-            const abi = "abi";
+            const glfw_cpp = "glfw_cpp";
+            const editor_cpp = "editor_cpp";
         };
         const example_options = b.addOptions();
-        example_options.addOption([]const String, "exampleNames", &.{ sub_examples.glfw, sub_examples.editor, sub_examples.abi });
+        example_options.addOption([]const String, "exampleNames", &.{ sub_examples.glfw, sub_examples.editor, sub_examples.editor_cpp, sub_examples.glfw_cpp });
         example_bootstraper.addOptions("options", example_options);
 
         // Various example applications
@@ -340,7 +343,7 @@ pub fn build(b: *std.Build) !void {
                 .{ .name = "deshader", .module = deshader_stubs },
             };
             // GLFW
-            const example_glfw = try exampleSubProgram(example_bootstraper, "glfw", "examples/" ++ sub_examples.glfw ++ ".zig", exampleModules);
+            const example_glfw = try exampleSubProgram(example_bootstraper, sub_examples.glfw, "examples/" ++ sub_examples.glfw ++ ".zig", exampleModules);
 
             // Use mach-glfw
             const glfw_dep = b.dependency("mach_glfw", .{
@@ -351,13 +354,35 @@ pub fn build(b: *std.Build) !void {
             @import("mach_glfw").link(glfw_dep.builder, example_glfw);
 
             // Editor
-            const example_editor = try exampleSubProgram(example_bootstraper, "editor", "examples/" ++ sub_examples.editor ++ ".zig", exampleModules);
+            const example_editor = try exampleSubProgram(example_bootstraper, sub_examples.editor, "examples/" ++ sub_examples.editor ++ ".zig", exampleModules);
             example_editor.linkLibrary(deshader_lib);
 
-            // ABI
-            const example_abi = try exampleSubProgram(example_bootstraper, "abi", "examples/" ++ sub_examples.abi ++ ".cpp", .{});
-            example_abi.addIncludePath(.{ .path = header_dir });
-            example_abi.linkLibrary(deshader_lib);
+            // GLFW in C++
+            const example_glfw_cpp = try exampleSubProgram(example_bootstraper, sub_examples.glfw_cpp, "examples/glfw.cpp", .{});
+            example_glfw_cpp.addIncludePath(.{ .path = header_dir });
+            example_glfw_cpp.linkLibCpp();
+            //example_glfw_cpp.linkLibrary(deshader_lib);
+            example_glfw_cpp.linkSystemLibrary("glew");
+            @import("mach_glfw").link(glfw_dep.builder, example_glfw_cpp);
+            inline for (.{ "fragment.frag", "vertex.vert" }) |shader| {
+                const output = try std.fs.path.join(b.allocator, &.{ b.cache_root.path.?, "shaders", shader ++ ".o" });
+                b.cache_root.handle.access("shaders", .{}) catch try std.fs.makeDirAbsolute(std.fs.path.dirname(output).?);
+                const result = try exec(.{
+                    .allocator = b.allocator,
+                    .argv = &.{ "ld", "--relocatable", "--format", "binary", "--output", output, shader },
+                    .cwd_dir = try std.fs.cwd().openDir("examples", .{}),
+                });
+                if (result.term.Exited == 0) {
+                    example_glfw_cpp.addObjectFile(.{ .path = output });
+                } else {
+                    std.log.err("Failed to compile shader {s}: {s}", .{ shader, result.stderr });
+                }
+            }
+
+            // Editor in C++
+            const example_editor_cpp = try exampleSubProgram(example_bootstraper, sub_examples.editor_cpp, "examples/editor.cpp", .{});
+            example_editor_cpp.addIncludePath(.{ .path = header_dir });
+            example_editor_cpp.linkLibrary(deshader_lib);
         }
         examplesStep.dependOn(stub_gen_cmd);
         const exampleInstall = b.addInstallArtifact(example_bootstraper, .{});
@@ -414,183 +439,6 @@ fn openGlModule(b: *std.build.Builder) !*std.build.Module {
     });
 }
 
-const DependenciesStep = struct {
-    step: std.build.Step,
-
-    pub fn init(b: *std.build.Builder) DependenciesStep {
-        return @as(
-            DependenciesStep,
-            .{
-                .step = std.build.Step.init(
-                    .{
-                        .name = "dependencies",
-                        .makeFn = DependenciesStep.doStep,
-                        .owner = b,
-                        .id = .custom,
-                    },
-                ),
-            },
-        );
-    }
-
-    pub fn initSubprocess(self: *DependenciesStep, argv: []const String, cwd: String, env_map: ?*std.process.EnvMap) std.process.Child {
-        return .{
-            .id = undefined,
-            .allocator = self.step.owner.allocator,
-            .cwd = cwd,
-            .env_map = env_map,
-            .argv = argv,
-            .thread_handle = undefined,
-            .err_pipe = null,
-            .term = null,
-            .uid = if (builtin.os.tag == .windows or builtin.os.tag == .wasi) {} else null,
-            .gid = if (builtin.os.tag == .windows or builtin.os.tag == .wasi) {} else null,
-            .stdin = null,
-            .stdout = null,
-            .stderr = null,
-            .stdin_behavior = .Ignore,
-            .stdout_behavior = .Inherit,
-            .stderr_behavior = .Inherit,
-            .expand_arg0 = .no_expand,
-        };
-    }
-
-    pub fn doStep(step: *std.build.Step, progressNode: *std.Progress.Node) anyerror!void {
-        const self: *DependenciesStep = @fieldParentPtr(DependenciesStep, "step", step);
-
-        const env_map: *std.process.EnvMap = try self.step.owner.allocator.create(std.process.EnvMap);
-        env_map.* = try std.process.getEnvMap(step.owner.allocator);
-        try env_map.put("NOTEST", "y");
-
-        progressNode.activate();
-
-        var oglProcess = self.initSubprocess(&.{ "make", "all" }, "./libs/zig-opengl", env_map);
-        try oglProcess.spawn();
-
-        const bunInstallCmd = [_]String{ "bun", "install", "--frozen-lockfile" };
-        var bunProcess1 = self.initSubprocess((&bunInstallCmd ++ &[_]String{"--production"}), "editor", null);
-        try bunProcess1.spawn();
-
-        const deshaderVsCodeExt = "editor/deshader-vscode";
-        var bunProcess2 = self.initSubprocess(&bunInstallCmd, deshaderVsCodeExt, null);
-        try bunProcess2.spawn();
-
-        const oglResult = try oglProcess.wait();
-        if (oglResult.Exited != 0) {
-            std.log.err("Subprocess for making opengl exited with error code {}", .{oglResult.Exited});
-        }
-
-        const bunProcess2Result = try bunProcess2.wait();
-        if (bunProcess2Result.Exited != 0) {
-            std.log.err("Node.js dependencies installation failed for deshader-vscode", .{});
-        }
-        var webpackProcess = self.initSubprocess(&.{ "bun", "compile-web" }, deshaderVsCodeExt, null);
-        try webpackProcess.spawn();
-        if ((try webpackProcess.wait()).Exited != 0) {
-            std.log.err("VSCode extension compilation failed", .{});
-        }
-        if ((try bunProcess1.wait()).Exited != 0) {
-            std.log.err("Node.js dependencies installation failed for editor", .{});
-        }
-
-        progressNode.end();
-    }
-};
-const CompressStep = struct {
-    step: std.build.Step,
-    source: std.build.LazyPath,
-    generatedFile: std.Build.GeneratedFile,
-
-    pub fn init(b: *std.build.Builder, source: std.build.LazyPath) !*@This() {
-        var self = try b.allocator.create(@This());
-        self.* = .{
-            .source = source,
-            .step = std.build.Step.init(.{ .id = .custom, .makeFn = make, .name = "compress", .owner = b }),
-            .generatedFile = undefined,
-        };
-        self.generatedFile = .{ .step = &self.step };
-        return self;
-    }
-
-    fn make(step: *std.build.Step, progressNode: *std.Progress.Node) anyerror!void {
-        const self = @fieldParentPtr(@This(), "step", step);
-        progressNode.activate();
-        defer progressNode.end();
-        const source = self.source.getPath(step.owner);
-        const reader = try std.fs.openFileAbsolute(source, .{});
-        var buffer: [10 * 1024 * 1024]u8 = undefined;
-        const size = try reader.readAll(&buffer);
-        var hash = step.owner.cache.hash;
-        // Random bytes to make unique. Refresh this with new random bytes when
-        // implementation is modified in a non-backwards-compatible way.
-        hash.add(@as(u32, 0xad95e922));
-        hash.addBytes(buffer[0..size]);
-        const dest = try step.owner.cache_root.join(step.owner.allocator, &.{ "c", "compressed", &hash.final(), std.fs.path.basename(source) });
-        self.generatedFile.path = dest;
-        if (step.owner.cache_root.handle.access(dest, .{})) |_| {
-            // This is the hot path, success.
-            step.result_cached = true;
-            return;
-        } else |outer_err| switch (outer_err) {
-            error.FileNotFound => {
-                const dest_dirname = std.fs.path.dirname(dest).?;
-                step.owner.cache_root.handle.makePath(dest_dirname) catch |err| {
-                    return step.fail("unable to make path '{}{s}': {s}", .{
-                        step.owner.cache_root, dest_dirname, @errorName(err),
-                    });
-                };
-
-                const rand_int = std.crypto.random.int(u64);
-                const tmp_sub_path = try std.fs.path.join(
-                    step.owner.allocator,
-                    &.{ "tmp", &std.Build.hex64(rand_int), std.fs.path.basename(dest) },
-                );
-                const tmp_sub_path_dirname = std.fs.path.dirname(tmp_sub_path).?;
-
-                step.owner.cache_root.handle.makePath(tmp_sub_path_dirname) catch |err| {
-                    return step.fail("unable to make temporary directory '{}{s}': {s}", .{
-                        step.owner.cache_root, tmp_sub_path_dirname, @errorName(err),
-                    });
-                };
-
-                const file = try step.owner.cache_root.handle.createFile(tmp_sub_path, .{});
-                var compressor = try std.compress.zlib.compressStream(step.owner.allocator, file.writer(), .{});
-                const wrote_size = try compressor.write(buffer[0..size]);
-                if (wrote_size != size) {
-                    return step.fail("unable to write all bytes to compressor", .{});
-                }
-                try compressor.finish();
-                compressor.deinit();
-                file.close();
-                reader.close();
-
-                step.owner.cache_root.handle.rename(tmp_sub_path, dest) catch |err| switch (err) {
-                    error.PathAlreadyExists => {
-                        // Other process beat us to it. Clean up the temp file.
-                        step.owner.cache_root.handle.deleteFile(tmp_sub_path) catch |e| {
-                            try step.addError("warning: unable to delete temp file '{}{s}': {s}", .{
-                                step.owner.cache_root, tmp_sub_path, @errorName(e),
-                            });
-                        };
-                        step.result_cached = true;
-                        return;
-                    },
-                    else => {
-                        return step.fail("unable to rename options from '{}{s}' to '{}{s}': {s}", .{
-                            step.owner.cache_root, tmp_sub_path,
-                            step.owner.cache_root, dest,
-                            @errorName(err),
-                        });
-                    },
-                };
-            },
-            else => |e| return step.fail("unable to access options file '{}{s}': {s}", .{
-                step.owner.cache_root, dest, @errorName(e),
-            }),
-        }
-    }
-};
-
 fn appendFiles(step: *std.build.Step.Compile, files: *std.ArrayList(String), toAdd: anytype) !void {
     inline for (toAdd) |addThis| {
         const compress = try CompressStep.init(step.step.owner, std.build.FileSource.relative(addThis));
@@ -638,188 +486,6 @@ fn appendFilesRecursive(
         }
     }
 }
-
-const PrintStep = struct {
-    step: std.build.Step,
-    message: String,
-
-    fn init(b: *std.build.Builder, name: String, message: String) @This() {
-        return .{
-            .step = std.build.Step.init(.{
-                .owner = b,
-                .id = .custom,
-                .name = name,
-                .makeFn = @This().makeFn,
-            }),
-            .message = message,
-        };
-    }
-
-    fn makeFn(step: *std.build.Step, progressNode: *std.Progress.Node) anyerror!void {
-        progressNode.activate();
-        const self = @fieldParentPtr(@This(), "step", step);
-        std.log.err("{s}", .{self.message});
-        progressNode.end();
-    }
-};
-
-const AddGlProcsStep = struct {
-    step: std.build.Step,
-    libNames: []const String,
-    symbolPrefixes: []const String,
-    symbolsOutput: std.build.LazyPath,
-    generated_file: std.Build.GeneratedFile,
-    generated_count_file: std.Build.GeneratedFile,
-
-    fn init(b: *std.build.Builder, name: String, libNames: []const String, symbolPrefixes: []const String, symbolEnumeratorOutput: std.build.LazyPath) *@This() {
-        const self = b.allocator.create(AddGlProcsStep) catch @panic("OOM");
-        self.* = @This(){
-            .step = std.build.Step.init(.{
-                .owner = b,
-                .id = .options,
-                .name = name,
-                .makeFn = make,
-            }),
-            .symbolsOutput = symbolEnumeratorOutput,
-            .generated_file = undefined,
-            .generated_count_file = undefined,
-            .libNames = libNames,
-            .symbolPrefixes = symbolPrefixes,
-        };
-        self.generated_file = .{ .step = &self.step };
-        self.generated_count_file = .{ .step = &self.step };
-        return self;
-    }
-
-    fn make(step: *std.build.Step, progressNode: *std.Progress.Node) anyerror!void {
-        progressNode.activate();
-        defer progressNode.end();
-        const self = @fieldParentPtr(@This(), "step", step);
-        const symbolsFile = try std.fs.cwd().openFile(self.symbolsOutput.generated.getPath(), .{});
-        const reader = symbolsFile.reader();
-        var glProcs = std.StringArrayHashMap(void).init(step.owner.allocator);
-        defer glProcs.deinit();
-        while (try reader.readUntilDelimiterOrEofAlloc(self.step.owner.allocator, '\n', 1024 * 1024)) |symbolsLine| {
-            defer self.step.owner.allocator.free(symbolsLine);
-            var tokens = std.mem.splitScalar(u8, symbolsLine, ' ');
-            const libName = tokens.next();
-            const symbolName = tokens.next();
-            if (libName == null or symbolName == null) {
-                continue;
-            }
-            for (self.libNames) |selfLibName| {
-                if (std.mem.indexOf(u8, libName.?, selfLibName) != null) {
-                    for (self.symbolPrefixes) |prefix| {
-                        if (std.mem.startsWith(u8, symbolName.?, prefix)) {
-                            try glProcs.put(self.step.owner.dupe(symbolName.?), {});
-                        }
-                    }
-                }
-            }
-        }
-        const output = try std.mem.join(step.owner.allocator, "\n", glProcs.keys());
-        // This is more or less copied from Options step.
-        const basename = "procs.txt";
-        const count_basename = "procs_count.zig";
-
-        // Hash contents to file name.
-        var hash = step.owner.cache.hash;
-        // Random bytes to make unique. Refresh this with new random bytes when
-        // implementation is modified in a non-backwards-compatible way.
-        hash.add(@as(u32, 0xad95e922));
-        hash.addBytes(output);
-        const h = hash.final();
-        const sub_path = "c" ++ std.fs.path.sep_str ++ h ++ std.fs.path.sep_str ++ basename;
-        const sub_path_count = "c" ++ std.fs.path.sep_str ++ h ++ std.fs.path.sep_str ++ count_basename;
-
-        self.generated_file.path = try step.owner.cache_root.join(step.owner.allocator, &.{sub_path});
-        self.generated_count_file.path = try step.owner.cache_root.join(step.owner.allocator, &.{sub_path_count});
-        if (step.owner.cache_root.handle.access(sub_path, .{})) {
-            // This is the hot path, success.
-            step.result_cached = true;
-            return;
-        } else |outer_err| switch (outer_err) {
-            error.FileNotFound => {
-                const sub_dirname = std.fs.path.dirname(sub_path).?;
-                step.owner.cache_root.handle.makePath(sub_dirname) catch |e| {
-                    return step.fail("unable to make path '{}{s}': {s}", .{
-                        step.owner.cache_root, sub_dirname, @errorName(e),
-                    });
-                };
-
-                const rand_int = std.crypto.random.int(u64);
-                const tmp_sub_path = "tmp" ++ std.fs.path.sep_str ++
-                    std.Build.hex64(rand_int) ++ std.fs.path.sep_str ++
-                    basename;
-                const count_tmp_sub_path = "tmp" ++ std.fs.path.sep_str ++
-                    std.Build.hex64(rand_int) ++ std.fs.path.sep_str ++
-                    count_basename;
-                const tmp_sub_path_dirname = std.fs.path.dirname(tmp_sub_path).?;
-
-                step.owner.cache_root.handle.makePath(tmp_sub_path_dirname) catch |err| {
-                    return step.fail("unable to make temporary directory '{}{s}': {s}", .{
-                        step.owner.cache_root, tmp_sub_path_dirname, @errorName(err),
-                    });
-                };
-
-                step.owner.cache_root.handle.writeFile(tmp_sub_path, output) catch |err| {
-                    return step.fail("unable to write procs to '{}{s}': {s}", .{
-                        step.owner.cache_root, tmp_sub_path, @errorName(err),
-                    });
-                };
-                const count = try std.fmt.allocPrint(step.owner.allocator, "pub const count = {d};", .{glProcs.count()});
-                defer step.owner.allocator.free(count);
-                step.owner.cache_root.handle.writeFile(count_tmp_sub_path, count) catch |err| {
-                    return step.fail("unable to write proc count to '{}{s}': {s}", .{
-                        step.owner.cache_root, count_tmp_sub_path, @errorName(err),
-                    });
-                };
-
-                step.owner.cache_root.handle.rename(tmp_sub_path, sub_path) catch |err| switch (err) {
-                    error.PathAlreadyExists => {
-                        // Other process beat us to it. Clean up the temp file.
-                        step.owner.cache_root.handle.deleteFile(tmp_sub_path) catch |e| {
-                            try step.addError("warning: unable to delete temp file '{}{s}': {s}", .{
-                                step.owner.cache_root, tmp_sub_path, @errorName(e),
-                            });
-                        };
-                        step.result_cached = true;
-                        return;
-                    },
-                    else => {
-                        return step.fail("unable to rename procs file from '{}{s}' to '{}{s}': {s}", .{
-                            step.owner.cache_root, tmp_sub_path,
-                            step.owner.cache_root, sub_path,
-                            @errorName(err),
-                        });
-                    },
-                };
-                step.owner.cache_root.handle.rename(count_tmp_sub_path, sub_path_count) catch |err| switch (err) {
-                    error.PathAlreadyExists => {
-                        // Other process beat us to it. Clean up the temp file.
-                        step.owner.cache_root.handle.deleteFile(count_tmp_sub_path) catch |e| {
-                            try step.addError("warning: unable to delete temp file '{}{s}': {s}", .{
-                                step.owner.cache_root, count_tmp_sub_path, @errorName(e),
-                            });
-                        };
-                        step.result_cached = true;
-                        return;
-                    },
-                    else => {
-                        return step.fail("unable to rename procs count from '{}{s}' to '{}{s}': {s}", .{
-                            step.owner.cache_root, count_tmp_sub_path,
-                            step.owner.cache_root, sub_path_count,
-                            @errorName(err),
-                        });
-                    },
-                };
-            },
-            else => |e| return step.fail("unable to access procs file '{}{s}': {s}", .{
-                step.owner.cache_root, sub_path, @errorName(e),
-            }),
-        }
-    }
-};
 
 fn exampleSubProgram(bootstraper: *std.build.Step.Compile, name: String, path: String, modules: anytype) !*std.build.Step.Compile {
     var step = &bootstraper.step;

@@ -109,7 +109,7 @@ export fn dlopen(name: ?[*:0]u8, mode: c_int) callconv(.C) ?*const anyopaque {
                         // Prevent recursive hooking
                         common.setenv("DESHADER_DLOPENED", "1");
                     }
-                    return APIs.originalDlopen.?(options.deshaderLibName[0..options.deshaderLibName.len :0], mode);
+                    return APIs.originalDlopen.?(@ptrCast(options.deshaderLibName ++ &[_]u8{0}), mode);
                 }
             }
         }
@@ -300,10 +300,10 @@ pub fn deshaderGetVkDeviceProcAddr(procedure: [*:0]const u8) callconv(.C) *align
 pub fn LoaderInterceptor(comptime interface: type, comptime loader: String) type {
     return struct {
         /// Generic loader interception function
-        pub fn loaderReplacement(procedure: [*:0]const u8) callconv(.C) gl.FunctionPointer {
+        pub fn loaderReplacement(procedure: [*:0]const u8) callconv(.C) ?gl.FunctionPointer {
             if (interface.loader == null) {
-                DeshaderLog.err("Loader" ++ loader ++ " is not available", .{});
-                return undefined;
+                DeshaderLog.err("Loader " ++ loader ++ " is not available", .{});
+                return null;
             }
             const original = interface.loader.?(procedure);
             const target = intercepted.map.get(std.mem.span(procedure));

@@ -2,7 +2,7 @@
 #include <deshader.hpp>
 
 int main(int argc, char** argv) {
-    std::cout << "Hello, world from C++ app!" << std::endl;
+    std::cout << "Showing editor from C++" << std::endl;
     deshaderEditorWindowShow();
     return 0;
 }

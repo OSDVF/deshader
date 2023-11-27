@@ -62,6 +62,9 @@ Deshader consists of several (mostly third party; mostly forked) components that
         - gtk-3 and webkit2gtk
     - Windows
         - [Edge Dev Channel](https://www.microsoftedgeinsider.com/download)
+- For using CMake
+    - pkg-config
+    - glfw 3.3
 
 ## How to
 After you install all the required frameworks, clone this repository with submodules, open terminal in its folder and create a debug build by
