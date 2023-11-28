@@ -2,6 +2,25 @@
     "version": "2.0.0",
     "tasks": [
         {
+            "label": "Create build ramdisk",
+            "type": "shell",
+            "command": "sudo",
+            "args": [
+                "sh",
+                "-c",
+                "mkdir -p ${workspaceFolder}/build && mount -t ramfs -o size=512m ramfs ${workspaceFolder}/build && chmod 777 ${workspaceFolder}/build"
+            ],
+            "problemMatcher": [],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": true,
+                "panel": "shared",
+                "showReuseMessage": true,
+                "clear": false
+            }
+        },
+        {
             "label": "Build Library",
             "command": "zig",
             "args": [
@@ -11,7 +30,7 @@
                 "-DlogIntercept=true",
                 "-freference-trace",
                 "--summary",
-                "none",
+                "none"
             ],
             "problemMatcher": "$zig",
             "group": "build",
@@ -61,7 +80,7 @@
                 "panel": "shared",
                 "showReuseMessage": true,
                 "clear": true
-            },
+            }
         },
         {
             "label": "Build Example",
@@ -72,6 +91,7 @@
                 "-DwolfSSL=true",
                 "-freference-trace",
                 "-DlogIntercept=true",
+                "-DmemoryFrames=10",
                 "--summary",
                 "none"
             ],

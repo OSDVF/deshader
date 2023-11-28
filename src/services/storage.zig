@@ -44,9 +44,7 @@ pub fn Storage(comptime Stored: type) type {
                 var it = self.all.valueIterator();
                 while (it.next()) |val_array| {
                     for (val_array.items) |*val| {
-                        if (val.*.tag == null) {
-                            val.*.deinit();
-                        }
+                        val.*.deinit();
                     }
                     val_array.deinit();
                 }
@@ -477,6 +475,7 @@ pub fn Dir(comptime taggable: type) type {
     return struct {
         const DirMap = std.StringHashMap(Dir(taggable));
         const FileMap = std.StringHashMap(Tag(taggable));
+        allocator: std.mem.Allocator,
         dirs: DirMap,
         files: FileMap,
         /// is not owned. Only needed for reverse path resolution for Tag(taggable)
@@ -485,6 +484,7 @@ pub fn Dir(comptime taggable: type) type {
 
         fn init(allocator: std.mem.Allocator, parent: ?*@This(), name: String) !@This() {
             return Dir(taggable){
+                .allocator = allocator,
                 .name = name,
                 .dirs = DirMap.init(allocator),
                 .files = FileMap.init(allocator),
@@ -494,6 +494,11 @@ pub fn Dir(comptime taggable: type) type {
 
         fn deinit(self: *@This()) void {
             self.dirs.deinit();
+            var it = self.files.valueIterator();
+            while (it.next()) |file| {
+                self.allocator.free(file.name);
+                file.targets.deinit();
+            }
             self.files.deinit();
         }
     };

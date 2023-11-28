@@ -60,6 +60,7 @@ pub fn build(b: *std.Build) !void {
     const option_embed_editor = b.option(bool, "embedEditor", "Embed VSCode editor into the library (default yes)") orelse true;
     const optionAdditionalLibraries = b.option([]const String, "customLibrary", "Names of additional libraroes to intercept");
     const optionInterceptionLog = b.option(bool, "logIntercept", "Log intercepted GL and VK procedure list to stdout") orelse false;
+    const optionMemoryTraceFrames = b.option(u32, "memoryFrames", "Number of frames in memory leak backtrace") orelse 7;
 
     const deshader_lib: *std.build.Step.Compile = if (optionLinkage == .Static) b.addStaticLibrary(deshaderCompileOptions) else b.addSharedLibrary(deshaderCompileOptions);
     const deshader_lib_name = try std.mem.concat(b.allocator, u8, &.{ "libdeshader", targetTarget.dynamicLibSuffix() });
@@ -131,6 +132,7 @@ pub fn build(b: *std.Build) !void {
     options.addOption(bool, "logIntercept", optionInterceptionLog);
     options.addOption(String, "deshaderLibName", deshader_lib_name);
     options.addOption(ObjectFormat, "ofmt", optionOfmt);
+    options.addOption(u32, "memoryFrames", optionMemoryTraceFrames);
     const version_result = try exec(.{ .allocator = b.allocator, .argv = &.{ "git", "describe", "--tags", "--always" } });
     options.addOption(String, "version", std.mem.trim(u8, version_result.stdout, " \n\t"));
 

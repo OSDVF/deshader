@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const options = @import("options");
 const c = @cImport({
     if (builtin.target.os.tag == .windows) //
         @cInclude("winbase.h") //SetEnvironmentVariable
@@ -13,7 +14,9 @@ const log = @import("log.zig").DeshaderLog;
 const String = []const u8;
 const CString = [*:0]const u8;
 
-pub var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+pub var gpa = std.heap.GeneralPurposeAllocator(.{
+    .stack_trace_frames = options.memoryFrames,
+}){};
 pub var allocator: std.mem.Allocator = undefined;
 pub var env: std.process.EnvMap = undefined;
 pub var initialized = false;
