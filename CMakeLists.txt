@@ -1,6 +1,5 @@
 cmake_minimum_required(VERSION 3.19) # string(JSON) functions are required
 project(deshader)
-list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/bootstrap/llvm-ir-cmake/cmake")
 
 #
 # Call Zig build system to compile Deshader
@@ -27,7 +26,7 @@ file(
 separate_arguments(SEPARATED_DESHADER_FLAGS UNIX_COMMAND "${DESHADER_BUILD_FLAGS}")
 
 add_custom_command(
-    OUTPUT lib/deshader.c lib/libdeshader.so include/deshader.hpp include/deshader.h include/deshader.zig
+    OUTPUT lib/deshader.c lib/libdeshader.so include/deshader.hpp include/deshader.h include/deshader.zig lib/deshader.ll lib/deshader.bc
     COMMAND zig build deshader ${SEPARATED_DESHADER_FLAGS} -p ${CMAKE_BINARY_DIR} # instruct zig to output into CMAKE_BINARY_DIR
     DEPENDS ${ZIG_SOURCES}
     BYPRODUCTS ${CMAKE_CURRENT_SOURCE_DIR}/zig-cache/
@@ -91,7 +90,7 @@ add_resource(example_glfw "${CMAKE_CURRENT_SOURCE_DIR}/examples/" vertex.vert)
 add_custom_target(rc ALL DEPENDS ${RC_DEPENDS})
 
 # Used for compiling Deshader C code
-function(deshader_external_dependencies)
+function(deshader_indirect_common_config)
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(WEBKIT2GTK REQUIRED IMPORTED_TARGET webkit2gtk-4.0)
     pkg_check_modules(GTK+3 REQUIRED IMPORTED_TARGET gtk+-3.0)
@@ -102,7 +101,8 @@ function(deshader_external_dependencies)
     if(WOLFSSL AND NOT NO_SYSTEM_WOLFSSL)
         target_link_libraries(deshader_indirect PUBLIC wolfssl)
     endif()
-endfunction(deshader_external_dependencies)
+    set_target_properties(deshader_indirect PROPERTIES OUTPUT_NAME deshader)
+endfunction(deshader_indirect_common_config)
 
 string(REGEX MATCH ".*\-Dofmt=(.?.).*" _ ${DESHADER_BUILD_FLAGS}) # -Dofmt= selects Zig output backend
 set(DESHADER_OFMT ${CMAKE_MATCH_1})
@@ -147,48 +147,65 @@ if(DESHADER_OFMT STREQUAL c- OR DESHADER_OFMT STREQUAL "c ") # Use these command
         strip_comments
         DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/lib/deshader.min.c
     )
-#    add_custom_command(
-#        TARGET strip_comments
-#        POST_BUILD
-#        COMMAND ${CMAKE_COMMAND} -E rm ${CMAKE_CURRENT_BINARY_DIR}/lib/deshader.c
-#    ) just for saving 50MBs of space :)
+
+    # add_custom_command(
+    # TARGET strip_comments
+    # POST_BUILD
+    # COMMAND ${CMAKE_COMMAND} -E rm ${CMAKE_CURRENT_BINARY_DIR}/lib/deshader.c
+    # ) just for saving 50MBs of space :)
     add_dependencies(deshader_indirect strip_comments)
     set_target_properties(deshader_indirect PROPERTIES OUTPUT_NAME deshader) # because Deshader interception mechanism expets the library SONAME to be libdeshader.so
     target_include_directories(deshader_indirect PUBLIC ${CMAKE_CURRENT_BINARY_DIR}/lib)
     target_include_directories(deshader_indirect PUBLIC ${CMAKE_CURRENT_BINARY_DIR}/include)
 
-    deshader_external_dependencies()
+    deshader_indirect_common_config()
 
     target_link_libraries(example_editor PUBLIC deshader_indirect)
-
-# target_link_libraries(example_glfw PUBLIC deshader_indirect)
 elseif(DESHADER_OFMT STREQUAL IR)
     message(STATUS "Using deshader as generated IR")
-    include(LLVMIRUtil)
+    add_custom_command(
+        OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/deshader.ll.o
+        COMMAND llc
+        ARGS -filetype=obj --relocation-model=pic ${CMAKE_CURRENT_BINARY_DIR}/lib/deshader.ll -o ${CMAKE_CURRENT_BINARY_DIR}/deshader.ll.o
+        DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/lib/deshader.ll
+    )
     add_library(
         deshader_indirect
-        STATIC
-        ${CMAKE_BINARY_DIR}/lib/deshader.ll
+        SHARED
+        ${CMAKE_CURRENT_SOURCE_DIR}/libs/positron/src/wv/webview.cpp
     )
+    add_custom_target(
+        deshader_ll
+        DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/deshader.ll.o
+    )
+    add_dependencies(deshader_indirect deshader_ll)
+    target_link_libraries(deshader_indirect PUBLIC ${CMAKE_CURRENT_BINARY_DIR}/deshader.ll.o)
 
-    deshader_external_dependencies()
+    deshader_indirect_common_config()
     target_link_libraries(example_editor PUBLIC deshader_indirect)
-    target_link_libraries(example_glfw PUBLIC deshader_indirect)
 elseif(DESHADER_OFMT STREQUAL BC)
     message(STATUS "Using deshader as generated BC")
-    include(LLVMIRUtil)
+    add_custom_command(
+        OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/deshader.bc.o
+        COMMAND llc
+        ARGS -filetype=obj --relocation-model=pic ${CMAKE_CURRENT_BINARY_DIR}/lib/deshader.bc -o ${CMAKE_CURRENT_BINARY_DIR}/deshader.bc.o
+        DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/lib/deshader.bc
+    )
     add_library(
         deshader_indirect
-        STATIC
-        ${CMAKE_BINARY_DIR}/lib/deshader.bc
+        SHARED
+        ${CMAKE_CURRENT_SOURCE_DIR}/libs/positron/src/wv/webview.cpp
     )
-    target_link_libraries(abi deshader_indirect)
+    add_custom_target(
+        deshader_bc
+        DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/deshader.bc.o
+    )
+    add_dependencies(deshader_indirect deshader_bc)
+    target_link_libraries(deshader_indirect PUBLIC ${CMAKE_CURRENT_BINARY_DIR}/deshader.bc.o)
 
-    deshader_external_dependencies()
+    deshader_indirect_common_config()
     target_link_libraries(example_editor PUBLIC deshader_indirect)
-    target_link_libraries(example_glfw PUBLIC deshader_indirect)
 else()
     message(STATUS "Using deshader compiled by Zig")
     target_link_libraries(example_editor PUBLIC deshader_zig)
-    target_link_libraries(example_glfw PUBLIC deshader_zig)
 endif()

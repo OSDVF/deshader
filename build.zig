@@ -37,7 +37,8 @@ pub fn build(b: *std.Build) !void {
         .macos => "libvulkan.dylib",
         else => "libvulkan.so",
     };
-    const optionOfmt = b.option(enum { Default, c, IR, BC }, "ofmt", "Compile into object format") orelse .Default;
+    const ObjectFormat = enum { Default, c, IR, BC };
+    const optionOfmt = b.option(ObjectFormat, "ofmt", "Compile into object format") orelse .Default;
     if (optionOfmt == .c) {
         target.ofmt = .c;
     }
@@ -53,7 +54,7 @@ pub fn build(b: *std.Build) !void {
     };
 
     // Compile options
-    const optionLinkage = b.option(Linkage, "linkage", "Select linkage type for deshader library") orelse Linkage.Dynamic;
+    const optionLinkage = b.option(Linkage, "linkage", "Select linkage type for deshader library. Cannot be combined with -Dofmt.") orelse Linkage.Dynamic;
     const optionIgnoreMissingLibs = b.option(bool, "ignoreMissingLibs", "Ignore missing VK and GL libraries. Defaultly GLX, EGL and VK will be required") orelse false;
     const optionWolfSSL = b.option(bool, "wolfSSL", "Link against WolfSSL available on this system (produces smaller binaries)") orelse false;
     const option_embed_editor = b.option(bool, "embedEditor", "Embed VSCode editor into the library (default yes)") orelse true;
@@ -68,11 +69,13 @@ pub fn build(b: *std.Build) !void {
             deshader_lib.generated_llvm_ir = try b.allocator.create(std.build.GeneratedFile);
             deshader_lib.generated_llvm_ir.?.* = .{ .step = &deshader_lib.step, .path = try b.cache_root.join(b.allocator, &.{ "llvm", "deshader.ll" }) };
             desahder_lib_cmd.dependOn(&b.addInstallFileWithDir(deshader_lib.getEmittedLlvmBc(), .lib, "deshader.bc").step);
+            deshader_lib.disable_stack_probing = true;
         },
         .IR => {
             deshader_lib.generated_llvm_bc = try b.allocator.create(std.build.GeneratedFile);
             deshader_lib.generated_llvm_bc.?.* = .{ .step = &deshader_lib.step, .path = try b.cache_root.join(b.allocator, &.{ "llvm", "deshader.bc" }) };
             desahder_lib_cmd.dependOn(&b.addInstallFileWithDir(deshader_lib.getEmittedLlvmIr(), .lib, "deshader.ll").step);
+            deshader_lib.disable_stack_probing = true;
         },
         else => {},
     }
@@ -127,6 +130,7 @@ pub fn build(b: *std.Build) !void {
     options.addOption(?String, "vkAddInstanceLoader", optionvkAddInstanceLoader);
     options.addOption(bool, "logIntercept", optionInterceptionLog);
     options.addOption(String, "deshaderLibName", deshader_lib_name);
+    options.addOption(ObjectFormat, "ofmt", optionOfmt);
     const version_result = try exec(.{ .allocator = b.allocator, .argv = &.{ "git", "describe", "--tags", "--always" } });
     options.addOption(String, "version", std.mem.trim(u8, version_result.stdout, " \n\t"));
 
