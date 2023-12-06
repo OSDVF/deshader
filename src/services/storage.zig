@@ -335,7 +335,7 @@ pub fn Storage(comptime Stored: type) type {
         };
 
         /// Gets an existing tag or directory, throws error is does not exist, or
-        /// create_new => if the path pointer does not exist, create it.
+        /// create_new => if the path pointer does not exist, create it (recursively).
         /// create_as_dir switches between creating a pointer for new Tag(payload) or Dir(payload)
         /// overwrite => return the path pointer even if it already exists and create_new is true (this means the function should always succeed).
         /// Caller should assign pointer from the content to the tag when the tag path pointer is created or changed.
@@ -346,16 +346,14 @@ pub fn Storage(comptime Stored: type) type {
             var root: String = "";
             var current_dir_entry: Dir(Stored).DirMap.Entry = .{ .value_ptr = &self.tagged, .key_ptr = &root };
 
-            var no_further_dirs = false;
-            var last_path_part = root;
             while (path_iterator.next()) |path_part| {
-                defer last_path_part = path_part;
-                if (no_further_dirs) {
-                    // we are at the last part of the path (the basename)
-                    // there was already the last directory match found
-                    if (path_iterator.peek() != null) { // there is another path part (directory) pending
-                        if (create_new) { // create_new creates recursive directory structure
-                            log.debug("Recursively creating directory {s}", .{path_part});
+                // traverse directories
+                if (current_dir_entry.value_ptr.dirs.getEntry(path_part)) |found| {
+                    current_dir_entry = .{ .value_ptr = found.value_ptr, .key_ptr = found.key_ptr };
+                } else {
+                    if (path_iterator.peek() != null) { // there is another path part (nested directory or file) pending
+                        if (create_new) { // create recursive directory structure
+                            log.debug("Recursively creating directory {s} in /{s}", .{ path_part, path_iterator.buffer[0 .. (path_iterator.index orelse (path_part.len + 1)) - path_part.len - 1] });
                             const new_dir = try Dir(Stored).init(self.allocator, current_dir_entry.value_ptr, path_part);
                             const new_dir_ptr = try current_dir_entry.value_ptr.dirs.getOrPut(path_part);
                             new_dir_ptr.value_ptr.* = new_dir;
@@ -367,18 +365,6 @@ pub fn Storage(comptime Stored: type) type {
                         return self.makePath(current_dir_entry.value_ptr, path_part, create_new, overwrite, create_as_dir);
                     }
                 }
-
-                // traverse directories
-                if (current_dir_entry.value_ptr.dirs.getEntry(path_part)) |found| {
-                    current_dir_entry = .{ .value_ptr = found.value_ptr, .key_ptr = found.key_ptr };
-                } else {
-                    no_further_dirs = true;
-                    log.debug("Directory {s} not found", .{path_part});
-                }
-            }
-
-            if (no_further_dirs) {
-                return self.makePath(current_dir_entry.value_ptr, last_path_part, create_new, overwrite, create_as_dir);
             }
 
             // at this point we have found a directory but not a file
@@ -482,14 +468,14 @@ pub fn Dir(comptime Taggable: type) type {
         allocator: std.mem.Allocator,
         dirs: DirMap,
         files: FileMap,
-        /// is not owned. Only needed for reverse path resolution for Tag(taggable)
+        /// is owned by Dir instance
         name: String,
         parent: ?*@This(),
 
         fn init(allocator: std.mem.Allocator, parent: ?*@This(), name: String) !@This() {
             return Dir(Taggable){
                 .allocator = allocator,
-                .name = name,
+                .name = try allocator.dupe(u8, name),
                 .dirs = DirMap.init(allocator),
                 .files = FileMap.init(allocator),
                 .parent = parent,
@@ -497,12 +483,18 @@ pub fn Dir(comptime Taggable: type) type {
         }
 
         fn deinit(self: *@This()) void {
+            var it = self.dirs.valueIterator();
+            while (it.next()) |dir| {
+                dir.deinit();
+            }
             self.dirs.deinit();
-            var it = self.files.valueIterator();
-            while (it.next()) |file| {
+
+            var it_f = self.files.valueIterator();
+            while (it_f.next()) |file| {
                 self.allocator.free(file.name);
                 file.targets.deinit();
             }
+            self.allocator.free(self.name);
             self.files.deinit();
         }
     };
