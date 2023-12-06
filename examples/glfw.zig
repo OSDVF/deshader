@@ -30,14 +30,37 @@ pub fn createShader(source: []const u8, typ: gl.GLenum) c_uint {
     gl.compileShader(shader);
 
     var info_length: gl.GLsizei = undefined;
-    const info_log: [*:0]gl.GLchar = undefined;
-    gl.getShaderInfoLog(shader, 0, &info_length, info_log);
-    if (info_length > 0) {
-        log.err("shader compilation failed: {s}", .{info_log});
-        gl.deleteShader(shader);
+    gl.getShaderiv(shader, gl.INFO_LOG_LENGTH, &info_length);
+    if (std.heap.page_allocator.allocSentinel(u8, @intCast(info_length), 0)) |info_log| {
+        defer std.heap.page_allocator.free(info_log);
+        gl.getShaderInfoLog(shader, info_length, &info_length, info_log.ptr);
+        if (info_length > 0) {
+            log.err("shader compilation failed: {s}", .{info_log});
+            gl.deleteShader(shader);
+            return 0;
+        }
+        return shader;
+    } else |err| {
+        log.err("failed to allocate memory for shader info log: {}", .{err});
         return 0;
     }
-    return shader;
+}
+
+pub fn linkProgram(program: gl.GLuint) void {
+    gl.linkProgram(program);
+
+    var info_length: gl.GLsizei = undefined;
+    gl.getProgramiv(program, gl.INFO_LOG_LENGTH, &info_length);
+    if (std.heap.page_allocator.allocSentinel(u8, @intCast(info_length), 0)) |info_log| {
+        defer std.heap.page_allocator.free(info_log);
+        gl.getProgramInfoLog(program, info_length, &info_length, info_log.ptr);
+        if (info_length > 0) {
+            log.err("program link failed: {s}", .{info_log});
+            gl.deleteShader(program);
+        }
+    } else |err| {
+        log.err("failed to allocate memory for program info log: {}", .{err});
+    }
 }
 
 pub fn onResize(window: glfw.Window, width: u32, height: u32) void {
@@ -113,21 +136,13 @@ pub fn main() !void {
     defer gl.deleteProgram(program);
     const vertex = createShader(vertex_source, gl.VERTEX_SHADER);
     const fragment = createShader(fragment_source, gl.FRAGMENT_SHADER);
-    gl.objectLabel(gl.SHADER, vertex, -1, "myvertex.vert");
-    gl.objectLabel(gl.SHADER, fragment, -1, "myfragment.frag");
+    //gl.objectLabel(gl.SHADER, vertex, -1, "myvertex.vert");
+    //gl.objectLabel(gl.SHADER, fragment, -1, "myfragment.frag");
     gl.attachShader(program, vertex);
     gl.attachShader(program, fragment);
-    gl.linkProgram(program);
+    linkProgram(program);
     gl.deleteShader(vertex);
     gl.deleteShader(fragment);
-    var info_length: gl.GLsizei = undefined;
-    const info_log: [*:0]gl.GLchar = undefined;
-    gl.getProgramInfoLog(program, 0, &info_length, info_log);
-    if (info_length > 0) {
-        log.err("program linking failed: {s}", .{info_log});
-        gl.deleteProgram(program);
-        return;
-    }
 
     var vertex_buffer: gl.GLuint = undefined;
     gl.createBuffers(1, &vertex_buffer);

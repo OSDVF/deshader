@@ -132,12 +132,12 @@ pub export fn deshaderPhysicalWorkspace(path: [*:0]const u8) usize {
     return 0;
 }
 
-pub export fn deshaderTaggedProgram(payload: ProgramPayload, overwrite_other: bool) usize {
+pub export fn deshaderTaggedProgram(payload: ProgramPayload, behavior: ExistsBehavior) usize {
     shaders.programCreateUntagged(payload) catch |err| {
         DeshaderLog.err(err_format, .{ @src().fn_name, err });
         return @intFromError(err);
     };
-    shaders.Programs.assignTag(payload.ref, 0, std.mem.span(payload.path.?), if (overwrite_other) .Overwrite else .Error) catch |err| {
+    shaders.Programs.assignTag(payload.ref, 0, std.mem.span(payload.path.?), behavior) catch |err| {
         DeshaderLog.err(err_format, .{ @src().fn_name, err });
         return @intFromError(err);
     };
@@ -179,8 +179,7 @@ fn runOnLoad() !void {
         DeshaderLog.warn("This process is ignored", .{});
         return;
     }
-    shaders.Programs = try @TypeOf(shaders.Programs).init(common.allocator);
-    shaders.Shaders = try @TypeOf(shaders.Shaders).init(common.allocator);
+    try shaders.init(common.allocator);
 
     const commands_port_string = common.env.get("DESHADER_COMMANDS_HTTP") orelse "8081";
     const commands_port_string_ws = common.env.get("DESHADER_COMMANDS_WS");

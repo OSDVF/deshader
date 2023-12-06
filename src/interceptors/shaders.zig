@@ -5,6 +5,7 @@ const decls = @import("../declarations/shaders.zig");
 const shaders = @import("../services/shaders.zig");
 const log = @import("../log.zig").DeshaderLog;
 const common = @import("../common.zig");
+const args = @import("args");
 
 const CString = [*:0]const u8;
 const String = []const u8;
@@ -61,6 +62,7 @@ pub export fn glCreateShader(shaderType: gl.GLenum) gl.GLuint {
         .type = @enumFromInt(shaderType),
         .compile = defaultCompileShader,
         .count = 1,
+        .language = decls.LanguageType.GLSL,
     }, 0) catch |err| {
         log.warn("Failed to add shader source {x} cache because of alocation: {any}", .{ new_platform_source, err });
         return new_platform_source;
@@ -97,6 +99,7 @@ pub export fn glCreateShaderProgramv(shaderType: gl.GLenum, count: gl.GLsizei, s
         .sources = sources,
         .lengths = lengths.ptr,
         .compile = defaultCompileShader,
+        .language = decls.LanguageType.GLSL,
     }) catch |err| {
         log.warn("Failed to add shader source {x} cache: {any}", .{ new_platform_sources[0], err });
     };
@@ -104,6 +107,42 @@ pub export fn glCreateShaderProgramv(shaderType: gl.GLenum, count: gl.GLsizei, s
     return new_platform_program;
 }
 
+/// For fast switch-branching on strings
+fn hashStr(str: String) u32 {
+    return std.hash.CityHash32.hash(str);
+}
+const ArgsIterator = struct {
+    i: usize = 0,
+    s: String,
+    pub fn next(self: *@This()) ?String {
+        var token: ?String = null;
+        if (self.i < self.s.len) {
+            if (self.s[self.i] == '\"') {
+                const end = std.mem.indexOfScalar(u8, self.s[self.i + 1 ..], '\"') orelse return null;
+                token = self.s[self.i + 1 .. self.i + 1 + end];
+                self.i += end + 2;
+            } else {
+                const end = std.mem.indexOfScalar(u8, self.s[self.i..], ' ') orelse (self.s.len - self.i);
+                token = self.s[self.i .. self.i + end];
+                self.i += end;
+            }
+            if (self.i < self.s.len and self.s[self.i] == ' ') {
+                self.i += 1;
+            }
+        }
+        return token;
+    }
+};
+
+const MAX_SHADER_PRAGMA_SCAN = 128;
+/// Supports pragmas:
+/// #pragma deshader [property] "[value1]" "[value2]"
+/// #pragma deshader source "path/to/virtual/or/workspace/relative/file.glsl"
+/// #pragma deshader source-link "path/to/etc/file.glsl" - link to previous source
+/// #pragma deshader source-purge-previous "path/to/etc/file.glsl" - purge previous source (if exists)
+/// #pragma deshader workspace "/another/real/path" "/virtual/path" - include real path in vitual workspace
+/// #pragma deshader workspace-overwrite "/absolute/real/path" "/virtual/path" - purge all previous virtual paths and include real path in vitual workspace
+/// Does not support multiline pragmas with \ at the end of line
 pub export fn glShaderSource(shader: gl.GLuint, count: gl.GLsizei, sources: [*][*:0]const gl.GLchar, lengths: ?[*]gl.GLint) void {
     std.debug.assert(count != 0);
     // convert from gl.GLint to usize array
@@ -118,15 +157,102 @@ pub export fn glShaderSource(shader: gl.GLuint, count: gl.GLsizei, sources: [*][
         }
     }
     defer if (lengths_wide) |l| common.allocator.free(l[0..wide_count]);
+
+    // Create untagged shader source
     shaders.sourceReplaceUntagged(decls.SourcesPayload{
         .ref = @intCast(shader),
         .count = @intCast(count),
         .sources = sources,
         .lengths = lengths_wide,
+        .language = decls.LanguageType.GLSL,
     }) catch |err| {
         log.warn("Failed to add shader source {x} cache: {any}", .{ shader, err });
     };
     gl.shaderSource(shader, count, sources, lengths);
+
+    // Maybe assign tag and create workspaces
+    // Scan for pragmas
+    for (sources[0..wide_count], lengths_wide.?[0..wide_count], 0..) |source, len, source_i| {
+        var it = std.mem.splitScalar(u8, source[0..len], '\n');
+        var in_block_comment = false;
+        while (it.next()) |line| {
+            // GLSL cannot have strings so we can just search for uncommented pragma
+            var pragma_found: usize = std.math.maxInt(usize);
+            var comment_found: usize = std.math.maxInt(usize);
+            const pragma_text = "#pragma deshader";
+            if (std.mem.indexOf(u8, line, pragma_text)) |i| {
+                pragma_found = i;
+            }
+            if (std.mem.indexOf(u8, line, "/*")) |i| {
+                if (i < pragma_found) {
+                    in_block_comment = true;
+                    comment_found = @min(comment_found, i);
+                }
+            }
+            if (std.mem.indexOf(u8, line, "*/")) |_| {
+                in_block_comment = false;
+            }
+            if (std.mem.indexOf(u8, line, "//")) |i| {
+                if (i < pragma_found) {
+                    comment_found = @min(comment_found, i);
+                }
+            }
+            if (pragma_found != std.math.maxInt(usize)) {
+                if (comment_found > pragma_found and !in_block_comment) {
+                    const arg_iter = ArgsIterator{ .s = line, .i = pragma_found + pragma_text.len };
+                    if (args.parseWithVerb(
+                        struct {},
+                        union(enum) {
+                            workspace: void,
+                            @"workspace-overwrite": void,
+                            source: void,
+                            @"source-link": void,
+                            @"source-purge-previous": void,
+                        },
+                        @constCast(&arg_iter),
+                        common.allocator,
+                        .print,
+                    )) |options| {
+                        defer options.deinit();
+                        if (options.verb) |v| {
+                            switch (v) {
+                                // Workspace include
+                                .workspace => {
+                                    shaders.addWorkspacePath(options.positionals[0], options.positionals[1]) catch |err| failedWorkspacePath(options.positionals[0], err);
+                                    return;
+                                },
+                                .@"workspace-overwrite" => {
+                                    if (shaders.workspace_paths.getPtr(options.positionals[0])) |w_paths| {
+                                        w_paths.clearAndFree();
+                                    }
+                                    shaders.addWorkspacePath(options.positionals[0], options.positionals[1]) catch |err| failedWorkspacePath(options.positionals[0], err);
+                                    return;
+                                },
+                                .source => {
+                                    shaders.Shaders.assignTag(@intCast(shader), source_i, options.positionals[0], .Error) catch |err| objLabErr(options.positionals[0], shader, source_i, err);
+                                    return;
+                                },
+                                .@"source-link" => {
+                                    shaders.Shaders.assignTag(@intCast(shader), source_i, options.positionals[0], .Link) catch |err| objLabErr(options.positionals[0], shader, source_i, err);
+                                    return;
+                                },
+                                .@"source-purge-previous" => {
+                                    shaders.Shaders.assignTag(@intCast(shader), source_i, options.positionals[0], .PurgePrevious) catch |err| objLabErr(options.positionals[0], shader, source_i, err);
+                                    return;
+                                },
+                            }
+                        } else {
+                            log.warn("Unknown pragma: {s}", .{line});
+                        }
+                    } else |err| {
+                        log.warn("Failed to parse pragma in shader source: {s}, because of {}", .{ line, err });
+                    }
+                } else {
+                    log.debug("Ignoring pragma in shader source: {s}, because is at {d} and comment at {d}, block: {any}", .{ line, pragma_found, comment_found, in_block_comment });
+                }
+            }
+        }
+    }
 }
 
 pub export fn glCreateProgram() gl.GLuint {
@@ -153,14 +279,25 @@ fn objLabErr(label: String, name: gl.GLuint, index: usize, err: anytype) void {
     log.err("Failed to assign tag {s} for {d} index {d}: {any}", .{ label, name, index, err });
 }
 
-/// Label expressed as 0:include.glsl;1:program.frag
+fn realLength(length: gl.GLsizei, label: ?CString) usize {
+    if (length < 0) {
+        // Then label is null-terminated and length is ignored.
+        return std.mem.len(label.?);
+    } else {
+        return @intCast(length);
+    }
+}
+
+/// Label expressed as fragment.frag or separately for each part like 0:include.glsl;1:program.frag
 /// 0 is index of shader source part
 /// include.glsl is tag for shader source part
 /// Tags for program parts are separated by ;
 ///
-/// To link shader source part to physical file use
-/// l:path/to/file.glsl
-/// the path is relative to workspace root. Use glDebugMessageInsert to set workspace root
+/// To permit using same virtual path for multiple shader sources use
+/// l0:path/to/file.glsl
+/// To purge all previous source parts linked with this path use
+/// p0:path/to/file.glsl
+/// To link with a physical file, use virtual path relative to some workspace root. Use glDebugMessageInsert or #pragma deshader workspace to set workspace roots.
 pub export fn glObjectLabel(identifier: gl.GLenum, name: gl.GLuint, length: gl.GLsizei, label: ?CString) void {
     if (label == null) {
         // Then the tag is meant to be removed.
@@ -174,50 +311,93 @@ pub export fn glObjectLabel(identifier: gl.GLenum, name: gl.GLuint, length: gl.G
             else => {}, // TODO support other objects?
         }
     } else {
-        var real_length: usize = undefined;
-        if (length < 0) {
-            // Then label is null-terminated and length is ignored.
-            real_length = std.mem.len(label.?);
-        } else {
-            real_length = @intCast(length);
-        }
+        const real_length = realLength(length, label);
         switch (identifier) {
             gl.SHADER => {
                 if (std.mem.indexOfScalar(u8, label.?[0..128], ':') != null) {
                     var it = std.mem.splitScalar(u8, label.?[0..real_length], ';');
                     while (it.next()) |current| {
                         var it2 = std.mem.splitScalar(u8, current, ':');
-                        const index = std.fmt.parseUnsigned(usize, it2.first(), 10) catch std.math.maxInt(usize);
+                        var first = it2.first();
+                        var behavior = decls.ExistsBehavior.Error;
+                        switch (first[0]) {
+                            'l' => {
+                                first = first[1..first.len];
+                                behavior = .Link;
+                            },
+                            'p' => {
+                                first = first[1..first.len];
+                                behavior = .PurgePrevious;
+                            },
+                            else => {},
+                        }
+                        const index = std.fmt.parseUnsigned(usize, first, 10) catch std.math.maxInt(usize);
                         const tag = it2.next();
                         if (tag == null or index == std.math.maxInt(usize)) {
                             log.err("Failed to parse tag {s} for shader {x}", .{ current, name });
                             continue;
                         }
-                        shaders.Shaders.assignTag(@intCast(name), index, tag.?, .Overwrite) catch |err| objLabErr(label.?[0..real_length], name, index, err);
-                        //TODO specify if-exists
+                        shaders.Shaders.assignTag(@intCast(name), index, tag.?, behavior) catch |err| objLabErr(label.?[0..real_length], name, index, err);
                     }
                 } else {
-                    shaders.Shaders.assignTag(@intCast(name), 0, label.?[0..real_length], .Overwrite) catch |err| objLabErr(label.?[0..real_length], name, 0, err);
+                    shaders.Shaders.assignTag(@intCast(name), 0, label.?[0..real_length], .Error) catch |err| objLabErr(label.?[0..real_length], name, 0, err);
                 }
             },
-            gl.PROGRAM => shaders.Programs.assignTag(@intCast(name), 0, label.?[0..real_length], .Overwrite) catch |err| objLabErr(label.?[0..real_length], name, 0, err),
+            gl.PROGRAM => shaders.Programs.assignTag(@intCast(name), 0, label.?[0..real_length], .Error) catch |err| objLabErr(label.?[0..real_length], name, 0, err),
             else => {}, // TODO support other objects?
         }
     }
 }
 
-/// use glDebugMessageInsert with these parameters to set workspace root
-/// source = GL_DEBUG_SOURCE_OTHER
-/// type = DEBUG_TYPE_OTHER
-/// id = 0
-pub export fn glDebugMessageInsert(source: gl.GLenum, _type: gl.GLenum, id: gl.GLuint, severity: gl.GLenum, length: gl.GLsizei, buf: [*c]const gl.GLchar) void {
-    _ = severity;
-    _ = length;
-    _ = buf;
+fn failedWorkspacePath(path: String, err: anytype) void {
+    log.warn("Failed to add workspace path {s}: {any}", .{ path, err });
+}
+fn failedRemoveWorkspacePath(path: String, err: anytype) void {
+    log.warn("Failed to remove workspace path {s}: {any}", .{ path, err });
+}
 
-    if (source == gl.DEBUG_SOURCE_OTHER and _type == gl.DEBUG_TYPE_OTHER) {
+/// use glDebugMessageInsert with these parameters to set workspace root
+/// source = GL_DEBUG_SOURCE_APPLICATION
+/// type = DEBUG_TYPE_OTHER
+/// severity = GL_DEBUG_SEVERITY_HIGH
+/// buf = /real/absolute/workspace/root<-/virtual/workspace/root
+///
+/// id = 0xde5ade4 == 233156068 => add workspace
+/// id = 0xde5ade5 == 233156069 => remove workspace or remove all
+/// buf == null => erase all workspace folders
+pub export fn glDebugMessageInsert(source: gl.GLenum, _type: gl.GLenum, id: gl.GLuint, severity: gl.GLenum, length: gl.GLsizei, buf: ?[*:0]const gl.GLchar) void {
+    if (source == gl.DEBUG_SOURCE_APPLICATION and _type == gl.DEBUG_TYPE_OTHER and severity == gl.DEBUG_SEVERITY_HIGH) {
         switch (id) {
-            0 => {},
+            0xde5ade4 => {
+                if (buf != null) { //Add
+                    const real_length = realLength(length, buf);
+                    var it = std.mem.split(u8, buf.?[0..real_length], "<-");
+                    if (it.next()) |real_path| {
+                        if (it.next()) |virtual_path| {
+                            shaders.addWorkspacePath(real_path, virtual_path) catch |err| failedWorkspacePath(buf.?[0..real_length], err);
+                        } else failedWorkspacePath(buf.?[0..real_length], error.@"No virtual path specified");
+                    } else failedWorkspacePath(buf.?[0..real_length], error.@"No real path specified");
+                }
+            },
+            0xde5ade5 => if (buf == null) { //Remove all
+                shaders.workspace_paths.clearRetainingCapacity();
+            } else { //Remove
+                const real_length = realLength(length, buf);
+                var it = std.mem.split(u8, buf.?[0..real_length], "<-");
+                if (it.next()) |real_path| {
+                    if (it.next()) |virtual_path| {
+                        if (shaders.workspace_paths.getPtr(real_path)) |w_paths| {
+                            if (!w_paths.remove(virtual_path)) {
+                                failedRemoveWorkspacePath(buf.?[0..real_length], error.@"No such virtual path in workspace");
+                            }
+                        }
+                    } else {
+                        if (!shaders.workspace_paths.remove(real_path)) {
+                            failedRemoveWorkspacePath(buf.?[0..real_length], error.@"No such real path in workspace");
+                        }
+                    }
+                }
+            },
             else => {},
         }
     }

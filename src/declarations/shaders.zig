@@ -1,16 +1,22 @@
+/// Both API specific and agnostic declarations that will be included verbatim in the exported deshader.zig header file
 const CString = [*:0]const u8;
 
 pub const ExistsBehavior = enum(c_int) {
-    /// Link to existing tag. When the target tag is deleted, this tag will be deleted too
-    Link,
-    /// Overwrite contents of the target tag. Tags that pointed to that content will be linked to the new content.
-    Overwrite,
+    /// Link to and existing tag. Does not write any content. When the target tag is deleted, this tag will be deleted too.
+    Link = 0,
     /// Do not permit collisions
-    Error,
+    Error = 1,
+    /// Overwrite contents of the target tag. Removes any targeted previous links to other tags. Tags which pointed to previous content will be linked to the new content.
+    PurgePrevious = 2,
 };
 
-pub const SourceType = enum(c_int) { // works with GL and VK :)
-    unknown = 0,
+/// Non-exhaustive enumeration type
+/// Shader language can be graphics API backend agnostic so it is stored separately
+pub const LanguageType = enum(c_int) { GLSL = 1, _ };
+
+/// Non-exhaustive enumeration type
+/// Specifies both shader type and API backend type
+pub const SourceType = enum(c_int) {
     gl_vertex = 0x8b31,
     gl_fragment = 0x8b30,
     gl_geometry = 0x8dd9,
@@ -33,6 +39,7 @@ pub const SourceType = enum(c_int) { // works with GL and VK :)
     vk_callable = 0x2000,
     vk_task = 0x4000,
     vk_mesh = 0x8000,
+    _,
 
     pub fn toExtension(typ: SourceType) []const u8 {
         return switch (typ) {
@@ -56,6 +63,7 @@ pub const SourceType = enum(c_int) { // works with GL and VK :)
 };
 
 /// Mutiple shader source codes which are meant to be compiled together as a single shader
+/// Used for communicating through ABI boundaries
 pub const SourcesPayload = extern struct {
     /// Graphics API level shader reference.
     /// Will be GLuint for OpenGL, pointer to VkShaderModule on Vulkan
@@ -71,10 +79,13 @@ pub const SourcesPayload = extern struct {
     lengths: ?[*]usize = null,
     /// User-specified contexts. Can be anything. Has the size of 'count'
     /// Contexts are never duplicated or freed
-    contexts: ?[*]?*const anyopaque = null, // so much ?questions?? :)
+    contexts: ?[*]?*const anyopaque = null,
     // Count of paths/sources/contexts
     count: usize = 0,
-    type: SourceType = SourceType.unknown,
+    /// Represents both type of the shader (vertex, fragment, etc) and the graphics backend (GL, VK)
+    type: SourceType = @enumFromInt(0), // Default to unknown (_) value
+    /// Represents the language of the shader source (GLSL ...)
+    language: LanguageType = @enumFromInt(0), // Default to unknown (_) value
     /// Non-null user-specified or defaultly set compile function to be executed when Deshader inejcts something and wants to apply it
     compile: ?*const fn (source: SourcesPayload) callconv(.C) u8 = null,
     /// Function to execute when user wants to save a source in the Deshader editor
@@ -82,14 +93,6 @@ pub const SourcesPayload = extern struct {
 
     pub fn toString(self: *const @This()) []const u8 {
         return self.type.toExtension();
-    }
-
-    pub fn deinit(self: *@This()) void {
-        const common = @import("../common.zig");
-        self.sources = null;
-        if (self.lengths != null) {
-            common.allocator.free(self.lengths.?[0..self.count]);
-        }
     }
 };
 
@@ -100,8 +103,4 @@ pub const ProgramPayload = extern struct {
     count: usize = 0,
     context: ?*const anyopaque = null,
     link: ?*const fn (ref: usize, path: ?CString, sources: [*]SourcesPayload, count: usize, context: ?*const anyopaque) callconv(.C) u8,
-
-    pub fn deinit(self: *@This()) void {
-        _ = self;
-    }
 };

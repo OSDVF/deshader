@@ -83,6 +83,17 @@ pub fn build(b: *std.Build) !void {
     const deshaderLibInstall = b.addInstallArtifact(deshader_lib, .{});
     desahder_lib_cmd.dependOn(&deshaderLibInstall.step);
 
+    // CTRegex
+    const ctregex_mod = b.addModule("ctregex", .{
+        .source_file = .{ .path = "libs/ctregex/ctregex.zig" },
+    });
+    deshader_lib.addModule("ctregex", ctregex_mod);
+    // Args parser
+    const args_mod = b.addModule("args", .{
+        .source_file = .{ .path = "libs/positron/vendor/args/args.zig" },
+    });
+    deshader_lib.addModule("args", args_mod);
+
     // WolfSSL
     var wolfssl: *std.build.Step.Compile = undefined;
     if (optionWolfSSL) {

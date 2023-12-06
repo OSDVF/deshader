@@ -1,3 +1,4 @@
+/// Graphics API agnostic storage and interface for shader sources and programs
 const std = @import("std");
 const builtin = @import("builtin");
 
@@ -12,12 +13,33 @@ const Tag = storage.Tag;
 
 pub var Shaders: Storage(*Shader.SourceInterface) = undefined;
 pub var Programs: Storage(Shader.Program) = undefined;
+var g_allocator: std.mem.Allocator = undefined;
+/// Maps real absolute paths to virtual workspace paths
+/// Warning: when unsetting or setting this variable, no path resolution is done, no paths in storage are updated or synced
+/// Serves just as a reference when reading and writing files
+pub var workspace_paths: std.StringHashMap(std.StringHashMap(void)) = undefined;
+pub fn addWorkspacePath(real: String, virtual: String) !void {
+    var entry = try workspace_paths.getOrPut(real);
+    if (entry.found_existing) {
+        try entry.value_ptr.put(virtual, {});
+    } else {
+        entry.value_ptr.* = std.StringHashMap(void).init(g_allocator);
+        try entry.value_ptr.put(virtual, {});
+    }
+}
+
+pub fn init(a: std.mem.Allocator) !void {
+    Programs = try @TypeOf(Programs).init(a);
+    Shaders = try @TypeOf(Shaders).init(a);
+    workspace_paths = @TypeOf(workspace_paths).init(a);
+    g_allocator = a;
+}
 
 // Used just for type resolution
 const SourcePayload: decls.SourcesPayload = undefined;
 const ProgramPayload: decls.ProgramPayload = undefined;
 
-pub fn mergeObj(comptime T: type, self: T, payload: T) !void {
+pub fn mergePayload(comptime T: type, self: T, payload: T) !void {
     comptime var inner = @typeInfo(@TypeOf(payload));
     inline while (inner == .Optional or inner == .Pointer) {
         if (inner == .Optional) {
@@ -42,11 +64,14 @@ pub fn mergeObj(comptime T: type, self: T, payload: T) !void {
 }
 
 pub const Shader = struct {
-    // Zig does not have inheritance so this is quite ugly
+    /// Interface for interacting with a single source code part
+    /// Note: this is not a source code itself, but a wrapper around it
     pub const SourceInterface = struct {
         ref: @TypeOf(SourcePayload.ref) = 0,
         tag: ?*Tag(*@This()) = null,
-        type: @TypeOf(SourcePayload.type) = decls.SourceType.unknown,
+        type: @TypeOf(SourcePayload.type) = @enumFromInt(0),
+        language: @TypeOf(SourcePayload.language) = @enumFromInt(0),
+        /// Can be anything that is needed for the host application
         context: ?*const anyopaque = null,
         compile: @TypeOf(SourcePayload.compile) = null,
         save: @TypeOf(SourcePayload.save) = null,
@@ -199,7 +224,7 @@ pub fn sourceReplaceUntagged(sources: decls.SourcesPayload) !void {
         for (e_sources.items, 0..) |*item, i| {
             const data = try Shader.MemorySource.fromPayload(Shaders.allocator, sources, i);
             defer data.deinit();
-            try mergeObj(@TypeOf(item.*), item.*, data.super);
+            try mergePayload(@TypeOf(item.*), item.*, data.super);
         }
     }
 }

@@ -15,14 +15,18 @@ const Programs = shaders.Programs;
 
 /// Welcome to Deshader virtual shader tagging storage hell.
 /// All detected shaders are stored here with their tags.
-/// Stored type must have a .tag field with the type ?*Tag(Stored) and a merge(Payload) method
-/// Both the types must have
+/// This is not standart filesystem structure because tags can point to more than one shader.
+/// Also tags can point to shaders which already have a different tag, so there is both M:N relationship between [Tag]-[Tag] and between [Tag]-[Stored].
+/// This can lead to orphans, cycles or many other difficulties but this is not a real filesystem so we ignore the downsides for now.
+/// Stored type must have a .tag field of type ?*Tag(Stored) and a merge(Payload) method
+/// Both the types must have property
 ///    .ref: usize
 /// Some code is specialized for Shader.Program or Shader.Source so it is not competely generic
 pub fn Storage(comptime Stored: type) type {
     return struct {
 
         // The capacity is 8 by default so it is no such a big deal to treat it as a hash-list hybrid
+        /// Stores a list of untagged shader parts
         pub const RefMap = std.AutoHashMap(usize, std.ArrayList(Stored));
         /// programs / source parts mapped by tag
         tagged: Dir(Stored),
@@ -177,7 +181,7 @@ pub fn Storage(comptime Stored: type) type {
                 }
                 // assign "reverse pointer" (from the content to the tag)
                 ptr.value_ptr.items[index].tag = target.content.Tag;
-                if (if_exists == .Overwrite) {
+                if (if_exists == .PurgePrevious) {
                     target.content.Tag.targets.clearAndFree();
                 }
                 try target.content.Tag.targets.put(&ptr.value_ptr.items[index], {});
@@ -471,10 +475,10 @@ pub fn Storage(comptime Stored: type) type {
 
 pub const Error = error{ NotUntagged, NotTagged, TagExists, DirExists, AlreadyTagged, DirectoryNotFound, TargetNotFound };
 
-pub fn Dir(comptime taggable: type) type {
+pub fn Dir(comptime Taggable: type) type {
     return struct {
-        const DirMap = std.StringHashMap(Dir(taggable));
-        const FileMap = std.StringHashMap(Tag(taggable));
+        const DirMap = std.StringHashMap(Dir(Taggable));
+        const FileMap = std.StringHashMap(Tag(Taggable));
         allocator: std.mem.Allocator,
         dirs: DirMap,
         files: FileMap,
@@ -483,7 +487,7 @@ pub fn Dir(comptime taggable: type) type {
         parent: ?*@This(),
 
         fn init(allocator: std.mem.Allocator, parent: ?*@This(), name: String) !@This() {
-            return Dir(taggable){
+            return Dir(Taggable){
                 .allocator = allocator,
                 .name = name,
                 .dirs = DirMap.init(allocator),
@@ -510,6 +514,9 @@ pub fn Tag(comptime taggable: type) type {
         name: String,
         parent: *Dir(taggable),
         // TODO should ideally be a iterable continuously growwing hash-set
+        /// Reverse pointer to the tag from the content.
+        /// the pointer is not owned.
+        /// When more shaders are symlinked the hashmap will have more than one entry
         targets: Targets,
 
         pub fn getPathAlloc(self: *const @This(), allocator: std.mem.Allocator) !String {
