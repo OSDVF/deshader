@@ -76,7 +76,7 @@ pub fn checkIgnoredProcess() void {
     } else |e| {
         DeshaderLog.err("Failed to get self path: {any}", .{e});
     }
-    ignored = ignored_this or common.env.get("DESHADER_DLOPENED") != null;
+    ignored = ignored_this or common.env.get("DESHADER_HOOKED") != null;
 }
 
 export fn dlopen(name: ?[*:0]u8, mode: c_int) callconv(.C) ?*const anyopaque {
@@ -106,8 +106,7 @@ export fn dlopen(name: ?[*:0]u8, mode: c_int) callconv(.C) ?*const anyopaque {
                     DeshaderLog.debug("Intercepting dlopen for API {s}", .{name_span});
                     if (!already_intercepted) {
                         already_intercepted = true;
-                        // Prevent recursive hooking
-                        common.setenv("DESHADER_DLOPENED", "1");
+                        common.env.put("DESHADER_HOOKED", "1") catch unreachable;
                     }
                     return APIs.originalDlopen.?(@ptrCast(options.deshaderLibName ++ &[_]u8{0}), mode);
                 }

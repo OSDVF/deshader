@@ -5,4 +5,5 @@ pub fn main() !void {
     std.log.info("Showing Deshader Editor window on demand", .{});
 
     _ = deshader.editorWindowShow();
+    _ = deshader.editorWindowWait();
 }

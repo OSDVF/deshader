@@ -58,8 +58,20 @@ pub export fn deshaderEditorWindowShow() usize {
             DeshaderLog.err(err_format, .{ @src().fn_name, err });
             return @intFromError(err);
         };
+        return 0;
     }
-    return 0;
+    return 1;
+}
+
+pub export fn deshaderEditorWindowWait() usize {
+    if (options.embedEditor) {
+        editor.windowWait() catch |err| {
+            DeshaderLog.err(err_format, .{ @src().fn_name, err });
+            return @intFromError(err);
+        };
+        return 0;
+    }
+    return 1;
 }
 
 pub export fn deshaderEditorWindowTerminate() usize {
@@ -68,8 +80,9 @@ pub export fn deshaderEditorWindowTerminate() usize {
             DeshaderLog.err(err_format, .{ @src().fn_name, err });
             return @intFromError(err);
         };
+        return 0;
     }
-    return 0;
+    return 1;
 }
 
 pub export fn deshaderFreeList(list: [*]const [*:0]const u8, count: usize) void {
@@ -175,10 +188,34 @@ fn runOnLoad() !void {
         // maybe it was not checked yet
         loaders.checkIgnoredProcess();
     }
+
+    // Should this be the editor subprocess?
+    const url = common.env.get(editor.DESHADER_EDITOR_PROCESS);
+    if (url != null and common.env.get("DESHADER_EDITOR_SHOWN") == null) {
+        common.setenv("DESHADER_EDITOR_SHOWN", "1");
+        // Prevent recursive hooking
+        common.setenv("DESHADER_HOOKED", "1");
+        const preload = common.env.get("LD_PRELOAD") orelse "";
+        var replaced = std.ArrayList(u8).init(common.allocator);
+        var it = std.mem.splitAny(u8, preload, ": ");
+        while (it.next()) |part| {
+            if (std.mem.indexOf(u8, part, options.deshaderLibName) == null) {
+                try replaced.appendSlice(part);
+            }
+        }
+        common.setenv("LD_PRELOAD", replaced.items);
+
+        try editor.editorProcess(url.?);
+        replaced.deinit();
+        std.process.exit(0xde); // Do not continue to original program main()
+    }
+
     if (loaders.ignored) {
         DeshaderLog.warn("This process is ignored", .{});
         return;
     }
+    // Prevent recursive hooking
+    common.setenv("DESHADER_HOOKED", "1");
     try shaders.init(common.allocator);
 
     const commands_port_string = common.env.get("DESHADER_COMMANDS_HTTP") orelse "8081";
@@ -217,7 +254,7 @@ fn finalize() callconv(.C) void {
         common.allocator.destroy(command_listener.?);
     }
     if (options.embedEditor) {
-        if (editor.global_app != null) {
+        if (editor.editor_process != null) {
             editor.windowTerminate() catch |err| {
                 DeshaderLog.err("{any}", .{err});
             };

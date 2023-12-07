@@ -169,11 +169,11 @@ Name                  | Values                        | Description
 Runtime settings can be specified by environment variables.
 All names start with DESHADER_ prefix e.g. `DESHADER_PORT`
 ### Deshader runner
-Name      | Default                                                                                | Description
-----------|----------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------
-LIB_ROOT  | `/usr/lib` / `C:\Windows\System32`                                                     | Override the default path to the folder where the original libraries are located
-LIB       | \[current working dir\]/`libdeshader.so` / `deshader.dll` / `deshader.dylib`           | Location/name of Deshader shared libraray
-HOOK_LIBS | `opengl32.dll, vulkan-1.dll, libvulkan.dylib, libGLX.so (+vendor variants), libEGL.so` | Set to comma separated list of **additional** libraries to be replaced with Deshader library (defaults will be always included)
+Name      | Default                                                   | Description
+----------|-----------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------
+LIB_ROOT  | `/usr/lib` / `C:\Windows\System32`                        | Override the default path to the folder where the original libraries are located
+LIB       | \[app work dir\]/`libdeshader.so`/`.dylib`/`deshader.dll` | Location/name of Deshader shared libraray
+HOOK_LIBS | combined values of `GL_LIBS` and `VK_LIB`                 | Set to comma separated list of **additional** libraries to replace with Deshader library (defaults always included)
 ### Deshader library
 Name                | Default                                            | Description
 --------------------|----------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------
@@ -188,7 +188,9 @@ SUBSTITUTE_LOADER   | `false`                                            | Speci
 VK_LIB              | `libvulkan.so` / `vulkan-1.dll`/ `libvulkan.dylib` | Path to library from which the original Vulkan functions will be loaded
 VK_DEV_PROC_LOADER  | none                                               | Specify original device procedure address loader function for Vulkan
 VK_INST_PROC_LOADER | none                                               | Specify original instance procedure address loader function for Vulkan
-DLOPENED            | reserved                                           | Do not set this variable. IT is used by Deshader internally
+HOOKED              | reserved                                           | Do not set this variable. IT is used by Deshader internally as a flag of already hooked app
+EDITOR_PROCESS      | reserved                                           | Used internally as a startup URL for embedded webview
+EDITOR_SHOWN        | reserved                                           |
 IGNORE_PROCESS      | none                                               | Comma separated list of process name postfixes that won't be intercepted. You often need to ignore `gdb,sh,bash,zsh,code`
 PROCESS             | none                                               | Comma separated list of process name postfixes that will be intercepted. If set, `DESHADER_IGNORE_PROCESS` is ignored.
 

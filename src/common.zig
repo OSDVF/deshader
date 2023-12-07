@@ -59,6 +59,9 @@ pub fn setenv(name: String, value: String) void {
             log.err("Failed to set env {s}={s}: {s}", .{ name, value, c.strerror(@intFromEnum(std.os.errno(result))) });
         }
     }
+    env.put(name, value) catch |err| {
+        log.err("Failed to set env {s}={s}: {any}", .{ name, value, err });
+    };
 }
 
 pub fn joinInnerZ(alloc: std.mem.Allocator, separator: []const u8, slices: []const CString) std.mem.Allocator.Error![]u8 {
@@ -94,4 +97,14 @@ pub fn joinInnerZ(alloc: std.mem.Allocator, separator: []const u8, slices: []con
 
 pub fn copyForwardsZ(comptime T: type, dest: []T, source: [*]const T, source_len: usize) void {
     for (dest[0..source_len], source) |*d, s| d.* = s;
+}
+
+pub fn isPortFree(address: ?String, port: u16) !bool {
+    var check = std.net.StreamServer.init(.{ .reuse_address = true });
+    defer check.deinit();
+    _ = check.listen(try std.net.Address.parseIp4(address orelse "0.0.0.0", port)) catch |err| switch (err) {
+        error.AddressInUse => return false,
+        else => check.close(),
+    };
+    return true;
 }

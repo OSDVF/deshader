@@ -43,12 +43,12 @@
             "cwd": "${workspaceRoot}",
             "valuesFormatting": "parseText",
             "preLaunchTask": "Build Example",
-            "autorun": [
-                "set environment LD_PRELOAD ${workspaceRoot}/zig-out/lib/libdeshader.so"
-            ],
             "env": {
                 "DESHADER_LIB_ROOT": "/usr/lib/",
-                "DESHADER_COMMANDS_WS": "8082"
+                "DESHADER_COMMANDS_WS": "8082",
+                "DESHADER_IGNORE_PROCESS": "gdb,zsh",
+                "G_DEBUG":"all",
+                "GDK_DEBUG":"all",
             }
         },
         {
@@ -66,6 +66,8 @@
                 "DESHADER_IGNORE_PROCESS": "gdb,zsh",
                 "DESHADER_LIB_ROOT": "/usr/lib/",
                 "DESHADER_COMMANDS_WS": "8082",
+                "G_DEBUG":"all",
+                "GDK_DEBUG":"all",
             }
         },
         {

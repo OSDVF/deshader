@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const positron = @import("positron");
 const common = @import("../common.zig");
 const options = @import("options");
@@ -111,21 +112,12 @@ pub fn serverStop() EditorProviderError!void {
     global_provider = null;
 }
 
-const AppState = struct {
-    provider: *positron.Provider,
-    view: *positron.View,
-
-    shutdown_lock: std.Thread.Mutex,
-
-    pub fn getWebView(app: *AppState) *positron.View {
-        _ = app;
-        return global_app.?.view;
-    }
-};
-pub var global_app: ?AppState = null;
-
+pub var editor_process: ?std.process.Child = null;
 const EditorErrors = error{EditorNotEmbedded};
+pub const DESHADER_EDITOR_PROCESS = "DESHADER_EDITOR_PROCESS";
 
+/// Spawns a new thread that runs the editor
+/// This function will block until the editor is ready to be used
 pub fn windowShow() !void {
     if (!options.embedEditor) {
         DeshaderLog.err("Editor not embedded in this Deshader distribution. Cannot show it.", .{});
@@ -135,44 +127,91 @@ pub fn windowShow() !void {
     if (global_provider == null) {
         try serverStart();
     }
-    if (global_app != null) {
+    if (editor_process != null or common.env.get(DESHADER_EDITOR_PROCESS) != null) {
         DeshaderLog.err("Editor already running", .{});
         return error.AlreadyRunning;
     }
 
-    const view = try positron.View.create((@import("builtin").mode == .Debug), null);
-    defer {
-        view.destroy();
-        global_app.?.shutdown_lock.unlock();
-        global_app = null;
-    }
-    global_app = AppState{
-        .provider = global_provider.?,
-        .view = view,
-        .shutdown_lock = std.Thread.Mutex{},
-    };
-    global_app.?.shutdown_lock.lock();
-    DeshaderLog.info("Editor URL: {s}", .{global_app.?.provider.base_url});
-    global_app.?.view.setTitle("Deshader Editor");
-    global_app.?.view.setSize(500, 300, .none);
+    const base = global_provider.?.getUri("/index.html").?;
+    DeshaderLog.info("Editor URL: {s}", .{base});
 
-    global_app.?.view.navigate(global_app.?.provider.getUri("/index.html").?);
+    const exe_path = try std.fs.selfExePathAlloc(global_provider.?.allocator);
+    defer global_provider.?.allocator.free(exe_path);
+    // Duplicate self but set env vars to indicate that the child should be the editor
+    editor_process = std.process.Child.init(&.{ exe_path, "editor" }, common.allocator); // the "editor" parameter is really ignored but it is here for reference to be found easily
+    try common.env.put(DESHADER_EDITOR_PROCESS, base);
+    editor_process.?.env_map = &common.env;
+    editor_process.?.stdout_behavior = .Inherit;
+    editor_process.?.stderr_behavior = .Inherit;
+    editor_process.?.stdin_behavior = .Close;
+    try editor_process.?.spawn();
 
-    const injected_code = try std.mem.concatWithSentinel(global_app.?.provider.allocator, u8, &.{ "globalThis.deshader = ", global_app.?.provider.base_url }, 0);
-    defer global_app.?.provider.allocator.free(injected_code);
-    global_app.?.view.eval(injected_code);
-
-    global_app.?.view.run();
-    DeshaderLog.debug("Editor terminated", .{});
+    // Watch the child process and inform about its end
+    const watcher = try std.Thread.spawn(.{ .allocator = common.allocator }, struct {
+        fn watch() !void {
+            if (builtin.os.tag == .windows) {
+                _ = try editor_process.?.wait();
+            } else { //Must be called separately because Zig std library contains extra security check which would crash
+                var status: u32 = undefined;
+                while (blk: {
+                    const result = std.os.system.waitpid(editor_process.?.id, @ptrCast(&status), std.os.W.UNTRACED);
+                    DeshaderLog.debug("Editor PID {d} watcher result {}", .{ editor_process.?.id, std.os.system.getErrno(result) });
+                    break :blk !(std.os.W.IFEXITED(status) or std.os.W.IFSTOPPED(status) or std.os.W.IFSIGNALED(status));
+                }) {}
+            }
+            editor_process = null;
+            common.env.remove(DESHADER_EDITOR_PROCESS);
+        }
+    }.watch, .{});
+    try watcher.setName("EditorWatch");
+    watcher.detach();
 }
 
 pub fn windowTerminate() !void {
-    if (global_app != null) {
-        global_app.?.view.terminate();
-        global_app.?.shutdown_lock.lock();
-        DeshaderLog.debug("Terminating editor", .{});
+    if (editor_process) |*p| {
+        if (builtin.os.tag == .windows) {
+            _ = try p.kill();
+        } else {
+            try std.os.kill(p.id, std.os.SIG.TERM);
+        }
+        DeshaderLog.debug("Editor terminated", .{});
     } else {
         DeshaderLog.err("Editor not running", .{});
         return error.NotRunning;
     }
+}
+
+pub fn windowWait() !void {
+    if (editor_process) |*p| {
+        if (builtin.os.tag == .windows) {
+            _ = try p.wait();
+        } else {
+            _ = std.os.system.waitpid(p.id, null, 0);
+        }
+    } else {
+        DeshaderLog.err("Editor not running", .{});
+        return error.NotRunning;
+    }
+}
+
+//
+// The following code should exist only in the editor subprocess
+//
+pub fn editorProcess(url: String) !void {
+    const view = try positron.View.create((@import("builtin").mode == .Debug), null);
+    defer view.destroy();
+    view.setTitle("Deshader Editor");
+    view.setSize(500, 300, .none);
+
+    // Inform the deshader-editor VSCode extension that it is running inside embdedded editor
+    const urlZ = try common.allocator.dupeZ(u8, url);
+    defer common.allocator.free(urlZ);
+    view.navigate(urlZ);
+
+    const injected_code = try std.mem.concatWithSentinel(common.allocator, u8, &.{ "globalThis.deshader = \"", url, "\"" }, 0);
+    defer common.allocator.free(injected_code);
+
+    // Inform the deshader-editor VSCode extension that it is running inside embdedded editor
+    view.init(injected_code);
+    view.run();
 }

@@ -37,6 +37,10 @@ pub const CommandListener = struct {
 
         self.server_arena = std.heap.ArenaAllocator.init(allocator);
         if (ws_port != null) {
+            if (!try common.isPortFree(null, ws_port.?)) {
+                return error.AddressInUse;
+            }
+
             self.websocket_thread = try std.Thread.spawn(
                 .{},
                 struct {
@@ -309,7 +313,9 @@ pub const CommandListener = struct {
                     else => unreachable,
                 }
             } else |err| {
-                try self.conn.writeText(try std.fmt.allocPrint(common.allocator, "Error: {any}", .{err}));
+                const text = try std.fmt.allocPrint(common.allocator, "Error: {any}\n", .{err});
+                defer common.allocator.free(text);
+                try self.conn.writeText(text);
             }
         }
 
