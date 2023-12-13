@@ -55,7 +55,7 @@ pub fn build(b: *std.Build) !void {
 
     // Compile options
     const optionLinkage = b.option(Linkage, "linkage", "Select linkage type for deshader library. Cannot be combined with -Dofmt.") orelse Linkage.Dynamic;
-    const optionIgnoreMissingLibs = b.option(bool, "ignoreMissingLibs", "Ignore missing VK and GL libraries. Defaultly GLX, EGL and VK will be required") orelse false;
+    const optionIgnoreMissingLibs = b.option(bool, "ignoreMissingLibs", "Ignore missing VK and GL libraries. GLX, EGL and VK will be required by default") orelse false;
     const optionWolfSSL = b.option(bool, "wolfSSL", "Link against WolfSSL available on this system (produces smaller binaries)") orelse false;
     const option_embed_editor = b.option(bool, "embedEditor", "Embed VSCode editor into the library (default yes)") orelse true;
     const optionAdditionalLibraries = b.option([]const String, "customLibrary", "Names of additional libraroes to intercept");
@@ -98,11 +98,11 @@ pub fn build(b: *std.Build) !void {
     var wolfssl: *std.build.Step.Compile = undefined;
     if (optionWolfSSL) {
         deshader_lib.linkSystemLibrary("wolfssl");
-        deshader_lib.addIncludePath(.{ .path = ZigServe.sdkPath("/vendor/wolfssl/") });
     } else {
-        wolfssl = ZigServe.createWolfSSL(b, target);
+        wolfssl = ZigServe.createWolfSSL(b, target, optimize);
         deshader_lib.linkLibrary(wolfssl);
     }
+    deshader_lib.addIncludePath(.{ .path = ZigServe.sdkPath("/vendor/wolfssl/") });
 
     // Websocket
     const websocket = b.addModule("websocket", .{
@@ -189,7 +189,9 @@ pub fn build(b: *std.Build) !void {
         runSymbolEnum.addArg(std.fmt.allocPrint(b.allocator, "/usr/lib/{s}", .{VulkanLibName}) catch unreachable);
     }
     runSymbolEnum.expectExitCode(0);
-    runSymbolEnum.expectStdErrEqual("");
+    if (targetTarget != .windows and builtin.target.os.tag != .windows) { //wine returns a lot of fixme:dbghelp errors
+        runSymbolEnum.expectStdErrEqual("");
+    }
     var allLibraries = std.ArrayList(String).init(b.allocator);
     allLibraries.appendSlice(GlLibNames) catch unreachable;
     allLibraries.append(VulkanLibName) catch unreachable;
@@ -238,7 +240,7 @@ pub fn build(b: *std.Build) !void {
         // Add all files names in the editor dist folder to `files`
         const editor_directory = "editor";
         if (option_embed_editor) {
-            const editor_files = try std.fs.cwd().readFileAlloc(b.allocator, editor_directory ++ "/required.txt", 1024 * 1024);
+            const editor_files = try b.build_root.handle.readFileAlloc(b.allocator, editor_directory ++ "/required.txt", 1024 * 1024);
             var editor_files_lines = std.mem.splitScalar(u8, editor_files, '\n');
             editor_files_lines.reset();
             while (editor_files_lines.next()) |line| {
@@ -262,10 +264,10 @@ pub fn build(b: *std.Build) !void {
         const stubGenSrc = @import("src/tools/generate_stubs.zig");
         var stub_gen: *stubGenSrc.GenerateStubsStep = try b.allocator.create(stubGenSrc.GenerateStubsStep);
         {
-            try std.fs.cwd().makePath(std.fs.path.dirname(stubs_path).?);
+            try b.build_root.handle.makePath(std.fs.path.dirname(stubs_path).?);
             std.fs.accessAbsolute(stubs_path, .{}) catch |err| {
                 if (err == error.FileNotFound) {
-                    _ = try std.fs.cwd().createFile(stubs_path, .{});
+                    _ = try b.build_root.handle.createFile(stubs_path, .{});
                 }
             };
             stub_gen.* = stubGenSrc.GenerateStubsStep.init(b, try std.fs.openFileAbsolute(stubs_path, .{ .mode = .write_only }), true);
@@ -387,7 +389,7 @@ pub fn build(b: *std.Build) !void {
                 const result = try exec(.{
                     .allocator = b.allocator,
                     .argv = &.{ "ld", "--relocatable", "--format", "binary", "--output", output, shader },
-                    .cwd_dir = try std.fs.cwd().openDir("examples", .{}),
+                    .cwd_dir = try b.build_root.handle.openDir("examples", .{}),
                 });
                 if (result.term.Exited == 0) {
                     example_glfw_cpp.addObjectFile(.{ .path = output });

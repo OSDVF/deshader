@@ -4,9 +4,9 @@ const options = @import("options");
 const builtin = @import("builtin");
 const DeshaderLog = @import("../log.zig").DeshaderLog;
 const common = @import("../common.zig");
-const c = @cImport({
+const c = if (builtin.target.os.tag == .linux) @cImport({
     @cInclude("dlfcn.h");
-});
+}) else undefined;
 
 const shaders = @import("../interceptors/shaders.zig");
 
@@ -79,45 +79,51 @@ pub fn checkIgnoredProcess() void {
     ignored = ignored_this or common.env.get("DESHADER_HOOKED") != null;
 }
 
-export fn dlopen(name: ?[*:0]u8, mode: c_int) callconv(.C) ?*const anyopaque {
-    // Check for initialization
-    if (APIs.originalDlopen == null) {
-        APIs.originalDlopen = @ptrCast(std.c.dlsym(c.RTLD_NEXT, "dlopen"));
-        if (APIs.originalDlopen == null) {
-            DeshaderLog.err("Failed to find original dlopen: {s}", .{c.dlerror()});
-        }
-
-        if (!common.initialized) {
-            common.init() catch |err| {
-                DeshaderLog.err("Failed to initialize: {any}", .{err});
-            };
-        }
-        checkIgnoredProcess();
-    }
-    if (name != null and !ignored) {
-        var name_span = std.mem.span(name.?);
-        if (name_span[name_span.len - 1] == '?') {
-            name_span[name_span.len - 1] = 0;
-            return APIs.originalDlopen.?(@ptrCast(name_span), mode);
-        }
-        inline for (.{ APIs.gl.glX, APIs.gl.egl, APIs.gl.wgl, APIs.vk }) |lib| {
-            inline for (lib.names) |possible_name| {
-                if (std.mem.startsWith(u8, name_span, possible_name)) {
-                    DeshaderLog.debug("Intercepting dlopen for API {s}", .{name_span});
-                    if (!already_intercepted) {
-                        already_intercepted = true;
-                        common.env.put("DESHADER_HOOKED", "1") catch unreachable;
+comptime {
+    if (builtin.target.os.tag == .windows) {} else {
+        @export(struct {
+            fn dlopen(name: ?[*:0]u8, mode: c_int) callconv(.C) ?*const anyopaque {
+                // Check for initialization
+                if (APIs.originalDlopen == null) {
+                    APIs.originalDlopen = @ptrCast(std.c.dlsym(c.RTLD_NEXT, "dlopen"));
+                    if (APIs.originalDlopen == null) {
+                        DeshaderLog.err("Failed to find original dlopen: {s}", .{c.dlerror()});
                     }
-                    return APIs.originalDlopen.?(@ptrCast(options.deshaderLibName ++ &[_]u8{0}), mode);
+
+                    if (!common.initialized) {
+                        common.init() catch |err| {
+                            DeshaderLog.err("Failed to initialize: {any}", .{err});
+                        };
+                    }
+                    checkIgnoredProcess();
                 }
+                if (name != null and !ignored) {
+                    var name_span = std.mem.span(name.?);
+                    if (name_span[name_span.len - 1] == '?') {
+                        name_span[name_span.len - 1] = 0;
+                        return APIs.originalDlopen.?(@ptrCast(name_span), mode);
+                    }
+                    inline for (.{ APIs.gl.glX, APIs.gl.egl, APIs.gl.wgl, APIs.vk }) |lib| {
+                        inline for (lib.names) |possible_name| {
+                            if (std.mem.startsWith(u8, name_span, possible_name)) {
+                                DeshaderLog.debug("Intercepting dlopen for API {s}", .{name_span});
+                                if (!already_intercepted) {
+                                    already_intercepted = true;
+                                    common.env.put("DESHADER_HOOKED", "1") catch unreachable;
+                                }
+                                return APIs.originalDlopen.?(@ptrCast(options.deshaderLibName ++ &[_]u8{0}), mode);
+                            }
+                        }
+                    }
+                }
+                const result = APIs.originalDlopen.?(name, mode);
+                if (result == null) {
+                    DeshaderLog.debug("Failed dlopen {?s}: {?s}", .{ name, @as(?[*:0]const u8, c.dlerror()) });
+                }
+                return result;
             }
-        }
+        }.dlopen, .{ .name = "dlopen" });
     }
-    const result = APIs.originalDlopen.?(name, mode);
-    if (result == null) {
-        DeshaderLog.debug("Failed dlopen {?s}: {?s}", .{ name, @as(?[*:0]const u8, c.dlerror()) });
-    }
-    return result;
 }
 
 const _known_gl_loaders = APIs.gl.glX.default_loaders ++ APIs.gl.egl.default_loaders ++ APIs.gl.wgl.default_loaders ++ [_]?String{options.glAddLoader};
@@ -129,7 +135,7 @@ pub const intercepted = blk: {
     comptime var procs: [decls.len]std.meta.Tuple(&.{ String, gl.FunctionPointer }) = undefined;
     comptime var names2: [decls.len]?String = undefined;
 
-    inline for (decls, 0..) |proc, i| {
+    for (decls, 0..) |proc, i| {
         names2[i] = proc.name;
         procs[i] = .{
             proc.name,
@@ -257,8 +263,8 @@ pub fn loadVkLib() !void {
             APIs.vk.device_loader = @ptrCast(proc);
             DeshaderLog.debug("Found device procedure loader {s}", .{vkGetDeviceProcAddrName});
         }
-        const vkGetInstanceProcAddrName = std.os.getenv("DESHADER_VK_INST_PROC_LOADER") orelse "vkGetInstanceProcAddr";
-        if (APIs.vk.lib.?.lookup(gl.FunctionPointer, vkGetInstanceProcAddrName)) |proc| {
+        const vkGetInstanceProcAddrName = common.env.get("DESHADER_VK_INST_PROC_LOADER") orelse "vkGetInstanceProcAddr";
+        if (APIs.vk.lib.?.lookup(gl.FunctionPointer, @ptrCast(vkGetInstanceProcAddrName))) |proc| {
             APIs.vk.instance_loader = @ptrCast(proc);
             DeshaderLog.debug("Found instance procedure loader {s}", .{vkGetInstanceProcAddrName});
         }
@@ -330,8 +336,8 @@ pub fn deshaderGetProcAddress(procedure: [*:0]const u8) callconv(.C) *align(@ali
 
 // Export the interceptors
 comptime {
-    inline for (.{ APIs.gl.wgl, APIs.gl.egl, APIs.gl.glX }) |lib| {
-        inline for (lib.default_loaders) |gl_loader| {
+    for (.{ APIs.gl.wgl, APIs.gl.egl, APIs.gl.glX }) |lib| {
+        for (lib.default_loaders) |gl_loader| {
             const r = LoaderInterceptor(lib, gl_loader);
             @export(r.loaderReplacement, .{ .name = gl_loader });
         }
@@ -340,10 +346,10 @@ comptime {
         @export(deshaderGetProcAddress, .{ .name = name });
     }
 
-    inline for (APIs.vk.device_loaders) |original_name_maybe| {
+    for (APIs.vk.device_loaders) |original_name_maybe| {
         if (original_name_maybe) |originalName| @export(deshaderGetVkDeviceProcAddr, .{ .name = originalName });
     }
-    inline for (APIs.vk.instance_loaders) |original_name_maybe| {
+    for (APIs.vk.instance_loaders) |original_name_maybe| {
         if (original_name_maybe) |originalName| @export(deshaderGetVkInstanceProcAddr, .{ .name = originalName });
     }
 } // end comptime

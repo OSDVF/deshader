@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const positron = @import("positron");
 const common = @import("../common.zig");
+const commands = @import("../commands.zig");
 const options = @import("options");
 
 const DeshaderLog = @import("../log.zig").DeshaderLog;
@@ -42,7 +43,7 @@ pub fn getProductJson(allocator: std.mem.Allocator, https: bool, port: u16) !Str
 var provide_thread: ?std.Thread = null;
 
 // basicaly a HTTP server
-pub fn createEditorProvider() !*positron.Provider {
+pub fn createEditorProvider(command_listener: ?*const commands.CommandListener) !*positron.Provider {
     var port: u16 = undefined;
     if (common.env.get("DESHADER_PORT")) |portString| {
         if (std.fmt.parseInt(u16, portString, 10)) |parsedPort| {
@@ -57,6 +58,12 @@ pub fn createEditorProvider() !*positron.Provider {
     }
 
     var provider = try positron.Provider.create(common.allocator, port);
+    provider.allowed_origins = std.BufSet.init(provider.allocator);
+    inline for (.{ "localhost", "127.0.0.1" }) |origin| {
+        const concatOrigin = try std.fmt.allocPrint(provider.allocator, "{s}://{s}:{d}", .{ if (provider.server.bindings.getLast().tls == null) "http" else "https", origin, port });
+        defer provider.allocator.free(concatOrigin);
+        try provider.allowed_origins.?.insert(concatOrigin);
+    }
     inline for (options.files) |file| {
         const lastDot = std.mem.lastIndexOf(u8, file, &[_]u8{@as(u8, '.')});
         const fileExt = if (lastDot != null) file[lastDot.? + 1 ..] else "";
@@ -70,8 +77,44 @@ pub fn createEditorProvider() !*positron.Provider {
             .json => "application/json",
         };
         // assume all paths start with `options.editorDir`
+        const compressed_content = @embedFile(file);
+        const f_name = file[options.editorDir.len..];
+        if (comptime std.mem.eql(u8, f_name, "/deshader-vscode/dist/web/extension.js")) {
+            // Inject editor config into Deshader extension
+            // Construct editor base url and config JSON
+            var editor_config: ?String = null;
+            const editor_config_fmt = "{s}\nglobalThis.deshader={{{s}:{{address:\"";
+            if (command_listener) |cl| {
+                var decompressed_data: String = undefined;
+                if (cl.ws != null or cl.http != null) {
+                    var stream = std.io.fixedBufferStream(compressed_content);
+                    var decompressor = try std.compress.zlib.decompressStream(provider.allocator, stream.reader());
+                    defer decompressor.deinit();
+                    var decompressed = decompressor.reader();
+                    decompressed_data = try decompressed.readAllAlloc(provider.allocator, 10 * 1024 * 1024);
+                    defer provider.allocator.free(decompressed_data);
 
-        try provider.addContentDeflated(file[options.editorDir.len..], mimeType, @embedFile(file));
+                    if (cl.ws) |_| {
+                        editor_config = try std.fmt.allocPrint(provider.allocator, editor_config_fmt ++ "{s}\",port:{d}}}}}\n", .{ decompressed_data, if (cl.secure) "wss" else "ws", cl.ws_config.address, cl.ws_config.port });
+                    } else {
+                        if (cl.http) |http| {
+                            if (http.server.bindings.getLastOrNull()) |bind| {
+                                editor_config = try std.fmt.allocPrint(provider.allocator, editor_config_fmt ++ "{}\",port:{d}}}}}\n", .{ decompressed_data, if (cl.secure) "https" else "http", bind.address, bind.port });
+                            }
+                        }
+                    }
+                }
+            }
+            if (editor_config) |c| {
+                defer provider.allocator.free(c);
+                DeshaderLog.debug("Injecting editor config: {s}", .{c});
+                try provider.addContent(f_name, mimeType, c);
+            } else {
+                try provider.addContentDeflatedNoAlloc(f_name, mimeType, compressed_content);
+            }
+        } else {
+            try provider.addContentDeflatedNoAlloc(f_name, mimeType, compressed_content);
+        }
     }
 
     // Generate product.json according to current settings
@@ -87,14 +130,14 @@ pub fn createEditorProvider() !*positron.Provider {
 pub const EditorProviderError = error{ AlreadyRunning, NotRunning };
 
 pub var global_provider: ?*positron.Provider = null;
-pub fn serverStart() !void {
+pub fn serverStart(command_listener: ?*const commands.CommandListener) !void {
     if (global_provider != null) {
         for (global_provider.?.server.bindings.items) |binding| {
             DeshaderLog.err("Editor server already running on port {d}", .{binding.port});
         }
         return error.AlreadyRunning;
     }
-    global_provider = try createEditorProvider();
+    global_provider = try createEditorProvider(command_listener);
     errdefer {
         global_provider.?.destroy();
         global_provider = null;
@@ -114,32 +157,34 @@ pub fn serverStop() EditorProviderError!void {
 
 pub var editor_process: ?std.process.Child = null;
 const EditorErrors = error{EditorNotEmbedded};
-pub const DESHADER_EDITOR_PROCESS = "DESHADER_EDITOR_PROCESS";
+pub const DESHADER_EDITOR_URL = "DESHADER_EDITOR_URL";
 
 /// Spawns a new thread that runs the editor
 /// This function will block until the editor is ready to be used
-pub fn windowShow() !void {
+pub fn windowShow(command_listener: ?*const commands.CommandListener) !void {
     if (!options.embedEditor) {
         DeshaderLog.err("Editor not embedded in this Deshader distribution. Cannot show it.", .{});
         return error.EditorNotEmbedded;
     }
 
     if (global_provider == null) {
-        try serverStart();
+        try serverStart(command_listener);
     }
-    if (editor_process != null or common.env.get(DESHADER_EDITOR_PROCESS) != null) {
+    if (editor_process != null or common.env.get(DESHADER_EDITOR_URL) != null) {
         DeshaderLog.err("Editor already running", .{});
         return error.AlreadyRunning;
     }
 
-    const base = global_provider.?.getUri("/index.html").?;
+    const base = global_provider.?.getUri("/").?;
     DeshaderLog.info("Editor URL: {s}", .{base});
 
     const exe_path = try std.fs.selfExePathAlloc(global_provider.?.allocator);
     defer global_provider.?.allocator.free(exe_path);
     // Duplicate self but set env vars to indicate that the child should be the editor
     editor_process = std.process.Child.init(&.{ exe_path, "editor" }, common.allocator); // the "editor" parameter is really ignored but it is here for reference to be found easily
-    try common.env.put(DESHADER_EDITOR_PROCESS, base);
+
+    try common.env.put(DESHADER_EDITOR_URL, base);
+
     editor_process.?.env_map = &common.env;
     editor_process.?.stdout_behavior = .Inherit;
     editor_process.?.stderr_behavior = .Inherit;
@@ -160,7 +205,7 @@ pub fn windowShow() !void {
                 }) {}
             }
             editor_process = null;
-            common.env.remove(DESHADER_EDITOR_PROCESS);
+            common.env.remove(DESHADER_EDITOR_URL);
         }
     }.watch, .{});
     try watcher.setName("EditorWatch");
@@ -201,17 +246,12 @@ pub fn editorProcess(url: String) !void {
     const view = try positron.View.create((@import("builtin").mode == .Debug), null);
     defer view.destroy();
     view.setTitle("Deshader Editor");
-    view.setSize(500, 300, .none);
+    view.setSize(600, 400, .none);
 
     // Inform the deshader-editor VSCode extension that it is running inside embdedded editor
     const urlZ = try common.allocator.dupeZ(u8, url);
     defer common.allocator.free(urlZ);
     view.navigate(urlZ);
 
-    const injected_code = try std.mem.concatWithSentinel(common.allocator, u8, &.{ "globalThis.deshader = \"", url, "\"" }, 0);
-    defer common.allocator.free(injected_code);
-
-    // Inform the deshader-editor VSCode extension that it is running inside embdedded editor
-    view.init(injected_code);
     view.run();
 }

@@ -86,9 +86,9 @@ pub const TransitiveSymbols = struct {
             {
                 @setEvalBranchQuota(150000); // Really a lot of functions to export
                 var i = 0;
-                eachRecursiveProc: inline for (recursive_procs_decls) |decl| {
+                eachRecursiveProc: for (recursive_procs_decls) |decl| {
                     const symbol_name = decl.name;
-                    inline for (loaders.all_exported_names) |exported| {
+                    for (loaders.all_exported_names) |exported| {
                         if (exported != null and std.mem.eql(u8, exported.?, symbol_name)) {
                             continue :eachRecursiveProc;
                         }
@@ -112,9 +112,9 @@ pub const TransitiveSymbols = struct {
                 names = &new_names;
 
                 comptime var i = 0;
-                eachRecursiveProc: inline for (recursive_procs_decls) |decl| {
+                eachRecursiveProc: for (recursive_procs_decls) |decl| {
                     const symbol_name = decl.name;
-                    inline for (loaders.all_exported_names) |exported| {
+                    for (loaders.all_exported_names) |exported| {
                         if (exported != null and std.mem.eql(u8, exported.?, symbol_name)) {
                             continue :eachRecursiveProc;
                         }

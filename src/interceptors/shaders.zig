@@ -402,3 +402,5 @@ pub export fn glDebugMessageInsert(source: gl.GLenum, _type: gl.GLenum, id: gl.G
         }
     }
 }
+
+//TODO: glSpecializeShader glShaderBinary

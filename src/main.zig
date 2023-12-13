@@ -34,7 +34,7 @@ const ExistsBehavior = shader_decls.ExistsBehavior;
 
 pub export fn deshaderEditorServerStart() usize {
     if (options.embedEditor) {
-        editor.serverStart() catch |err| {
+        editor.serverStart(command_listener) catch |err| {
             DeshaderLog.err(err_format, .{ @src().fn_name, err });
             return @intFromError(err);
         };
@@ -54,7 +54,7 @@ pub export fn deshaderEditorServerStop() usize {
 
 pub export fn deshaderEditorWindowShow() usize {
     if (options.embedEditor) {
-        editor.windowShow() catch |err| {
+        editor.windowShow(command_listener) catch |err| {
             DeshaderLog.err(err_format, .{ @src().fn_name, err });
             return @intFromError(err);
         };
@@ -179,7 +179,7 @@ pub export fn deshaderTaggedSource(payload: SourcesPayload, if_exists: ExistsBeh
 
 export const init_array linksection(".init_array") = &wrapErrorRunOnLoad;
 export const fini_array linksection(".fini_array") = &finalize;
-var command_listener: ?*commands.CommandListener = null;
+pub var command_listener: ?*commands.CommandListener = null;
 
 /// Run this functions at Deshader shared library load
 fn runOnLoad() !void {
@@ -190,7 +190,7 @@ fn runOnLoad() !void {
     }
 
     // Should this be the editor subprocess?
-    const url = common.env.get(editor.DESHADER_EDITOR_PROCESS);
+    const url = common.env.get(editor.DESHADER_EDITOR_URL);
     if (url != null and common.env.get("DESHADER_EDITOR_SHOWN") == null) {
         common.setenv("DESHADER_EDITOR_SHOWN", "1");
         // Prevent recursive hooking

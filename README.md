@@ -58,6 +58,7 @@ Deshader consists of several (mostly third party; mostly forked) components that
 - Bun 1.0.6 [Install](https://github.com/oven-sh/bun#install)
 - Dotnet
 - C libraries
+    - GLEW
     - Linux
         - gtk-3 and webkit2gtk
     - Windows
@@ -189,7 +190,7 @@ VK_LIB              | `libvulkan.so` / `vulkan-1.dll`/ `libvulkan.dylib` | Path 
 VK_DEV_PROC_LOADER  | none                                               | Specify original device procedure address loader function for Vulkan
 VK_INST_PROC_LOADER | none                                               | Specify original instance procedure address loader function for Vulkan
 HOOKED              | reserved                                           | Do not set this variable. IT is used by Deshader internally as a flag of already hooked app
-EDITOR_PROCESS      | reserved                                           | Used internally as a startup URL for embedded webview
+EDITOR_URL          | reserved                                           | Used internally as a startup URL for embedded Editor
 EDITOR_SHOWN        | reserved                                           |
 IGNORE_PROCESS      | none                                               | Comma separated list of process name postfixes that won't be intercepted. You often need to ignore `gdb,sh,bash,zsh,code`
 PROCESS             | none                                               | Comma separated list of process name postfixes that will be intercepted. If set, `DESHADER_IGNORE_PROCESS` is ignored.

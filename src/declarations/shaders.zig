@@ -86,7 +86,7 @@ pub const SourcesPayload = extern struct {
     type: SourceType = @enumFromInt(0), // Default to unknown (_) value
     /// Represents the language of the shader source (GLSL ...)
     language: LanguageType = @enumFromInt(0), // Default to unknown (_) value
-    /// Non-null user-specified or defaultly set compile function to be executed when Deshader inejcts something and wants to apply it
+    /// Non-null user-specified or default compile function to be executed when Deshader inejcts something and wants to apply it
     compile: ?*const fn (source: SourcesPayload) callconv(.C) u8 = null,
     /// Function to execute when user wants to save a source in the Deshader editor
     save: ?*const fn (source: SourcesPayload) callconv(.C) u8 = null,

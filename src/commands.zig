@@ -25,10 +25,12 @@ pub const CommandListener = struct {
     // various command providers
     http: ?*positron.Provider = null,
     ws: ?*websocket.Conn = null,
+    ws_config: websocket.Config.Server = undefined,
     provide_thread: ?std.Thread = null,
     websocket_thread: ?std.Thread = null,
     server_arena: std.heap.ArenaAllocator = undefined,
     provider_allocator: std.mem.Allocator = undefined,
+    secure: bool = false, //TODO use SSL
 
     pub fn start(allocator: std.mem.Allocator, http_port: ?u16, ws_port: ?u16) !*@This() {
         const self = try allocator.create(@This());
@@ -36,33 +38,39 @@ pub const CommandListener = struct {
         errdefer allocator.destroy(self);
 
         self.server_arena = std.heap.ArenaAllocator.init(allocator);
+        // WS Listener
         if (ws_port != null) {
             if (!try common.isPortFree(null, ws_port.?)) {
                 return error.AddressInUse;
             }
 
+            self.ws_config = .{
+                .port = ws_port.?,
+                .max_headers = 10,
+                .address = "127.0.0.1",
+            };
             self.websocket_thread = try std.Thread.spawn(
                 .{},
                 struct {
-                    fn listen(list: *CommandListener, alloc: std.mem.Allocator, port: u16) void {
-                        websocket.listen(WSHandler, alloc, list, .{
-                            .port = port,
-                            .max_headers = 10,
-                            .address = "127.0.0.1",
-                        }) catch |err| {
+                    fn listen(list: *CommandListener, alloc: std.mem.Allocator, conf: websocket.Config.Server) void {
+                        websocket.listen(WSHandler, alloc, list, conf) catch |err| {
                             DeshaderLog.err("Error while listening for websocket commands: {any}", .{err});
                         };
                     }
                 }.listen,
-                .{ self, self.server_arena.allocator(), ws_port.? },
+                .{ self, self.server_arena.allocator(), self.ws_config },
             );
             try self.websocket_thread.?.setName("CmdListWS");
         }
 
+        // HTTP listener
         if (http_port != null) {
             self.provider_allocator = self.server_arena.allocator();
             self.http = try positron.Provider.create(self.provider_allocator, http_port.?);
-            errdefer self.http.?.destroy();
+            errdefer {
+                self.http.?.destroy();
+                self.http = null;
+            }
             self.http.?.not_found_text = "Unknown command";
 
             inline for (@typeInfo(commands.simple).Struct.decls) |function| {
@@ -86,12 +94,16 @@ pub const CommandListener = struct {
             self.http.?.destroy();
             self.provide_thread.?.join();
             self.provider_allocator.destroy(self.http.?);
+            self.provide_thread = null;
+            self.http = null;
         }
         if (self.ws != null) {
             self.ws.?.writeText("432: Closing connection\n") catch {};
             self.ws.?.writeClose() catch {};
             self.ws.?.close();
             self.websocket_thread.?.detach();
+            self.ws = null;
+            self.websocket_thread = null;
         }
         self.server_arena.deinit();
     }
@@ -235,7 +247,7 @@ pub const CommandListener = struct {
         const decls = @typeInfo(commands.simple).Struct.decls;
         const comInfo = struct { r: CommandReturnType, a: usize, c: *const anyopaque };
         comptime var command_array: [decls.len]std.meta.Tuple(&.{ String, comInfo }) = undefined;
-        inline for (decls, 0..) |function, i| {
+        for (decls, 0..) |function, i| {
             const command = @field(commands.simple, function.name);
             const return_type = @typeInfo(@TypeOf(command)).Fn.return_type.?;
             const error_union = @typeInfo(return_type).ErrorUnion;
@@ -400,7 +412,7 @@ pub const CommandListener = struct {
 
             pub fn editorWindowShow() !void {
                 if (options.embedEditor) {
-                    return editor.windowShow();
+                    return editor.windowShow(main.command_listener);
                 }
             }
 
@@ -412,7 +424,7 @@ pub const CommandListener = struct {
 
             pub fn editorServerStart() !void {
                 if (options.embedEditor) {
-                    return editor.serverStart();
+                    return editor.serverStart(main.command_listener);
                 }
             }
 
@@ -465,7 +477,7 @@ pub const CommandListener = struct {
                     comptime var settings_enum_fields: [settings_decls.len]std.builtin.Type.EnumField = undefined;
 
                     comptime {
-                        inline for (settings_decls, 0..) |decl, i| {
+                        for (settings_decls, 0..) |decl, i| {
                             settings_enum_fields[i] = .{
                                 .name = decl.name,
                                 .value = i,

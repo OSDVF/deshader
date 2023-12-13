@@ -2,10 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const options = @import("options");
 const c = @cImport({
-    if (builtin.target.os.tag == .windows) //
-        @cInclude("winbase.h") //SetEnvironmentVariable
-    else
-        @cInclude("stdlib.h"); //setenv
+    @cInclude("stdlib.h"); //setenv or _putenv_s
     @cInclude("string.h"); //strerror
 });
 
@@ -48,10 +45,9 @@ pub fn setenv(name: String, value: String) void {
     };
     defer allocator.free(with_sentinel_value);
     if (builtin.target.os.tag == .windows) {
-        const result = c.SetEnvironmentVariable(with_sentinel_name, with_sentinel_value);
-        if (result == 0) {
-            const err = c.GetLastError();
-            log.err("Failed to set env {s}={s}: {d}", .{ name, value, err });
+        const result = c._putenv_s(with_sentinel_name, with_sentinel_value);
+        if (result != 0) {
+            log.err("Failed to set env {s}={s}: {d}", .{ name, value, result });
         }
     } else {
         const result = c.setenv(with_sentinel_name, with_sentinel_value, 1);

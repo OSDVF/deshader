@@ -113,6 +113,6 @@
             "cwd": "${workspaceRoot}",
             "valuesFormatting": "parseText",
             "preLaunchTask": "Build Headers Generator",
-        }        
+        }
     ]
 }
