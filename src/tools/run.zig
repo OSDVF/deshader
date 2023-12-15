@@ -4,13 +4,11 @@ const options = @import("options");
 const path = std.fs.path;
 const String = []const u8;
 const c = @cImport({
-    if (builtin.target.os.tag == .windows) @cInclude("libloaderapi.h") else @cInclude("dlfcn.h");
+    if (builtin.target.os.tag != .windows) @cInclude("dlfcn.h");
 });
 const common = @import("../common.zig");
 
 const RunLogger = std.log.scoped(.DeshaderRun);
-const PathContainer = [std.fs.MAX_PATH_BYTES - 2:0]u8;
-var deshader_path: []u8 = undefined;
 var specified_libs_dir: ?String = null;
 const OriginalLibDir = switch (builtin.os.tag) {
     .macos => "/usr/lib",
@@ -52,8 +50,12 @@ pub fn main() !u8 {
         }
     }
 
-    const deshader_lib_name = common.env.get("DESHADER_LIB") orelse options.deshaderLibName;
-    var deshader_lib: std.DynLib = std.DynLib.open(deshader_lib_name) catch
+    const deshader_lib_name = common.env.get("DESHADER_LIB") orelse options.deshaderLibRoot ++ std.fs.path.sep_str ++ options.deshaderLibName;
+    var deshader_lib: std.DynLib = std.DynLib.open(deshader_lib_name) catch fallback: {
+        const lib_name_in_dir = try std.fs.path.join(common.allocator, &.{ common.env.get("DESHADER_LIB") orelse options.deshaderLibRoot, options.deshaderLibName });
+        defer common.allocator.free(lib_name_in_dir);
+        break :fallback std.DynLib.open(lib_name_in_dir);
+    } catch
         fallback: {
         if (builtin.os.tag == .linux and builtin.link_libc) {
             RunLogger.debug("Failed to open global deshader: {s}", .{c.dlerror()});
@@ -74,27 +76,22 @@ pub fn main() !u8 {
         break :fallback try std.DynLib.open(at_cwd);
     };
     defer deshader_lib.close();
-    const deshader_dir_name: [*:0]u8 = try common.allocator.create(PathContainer);
-    defer common.allocator.free(@as(*[std.fs.MAX_PATH_BYTES - 1:0]u8, @ptrCast(deshader_dir_name)));
+    var deshader_path_buffer = try common.allocator.alloc(if (builtin.os.tag == .windows) u16 else u8, std.fs.MAX_NAME_BYTES);
+    var deshader_dir_name: String = undefined;
+    defer common.allocator.free(deshader_path_buffer);
 
-    if (builtin.target.os.tag == .windows) {
-        if (c.GetModuleFileNameA(deshader_lib.handle, deshader_dir_name, std.fs.MAX_PATH_BYTES - 1) == 0) {
-            const err = c.GetLastError();
-            RunLogger.err("Failed to get deshader library path: {d}", .{err});
-            errors += 1;
-            return errors;
-        }
+    if (builtin.os.tag == .windows) {
+        deshader_dir_name = try std.unicode.utf16leToUtf8Alloc(common.allocator, try std.os.windows.GetModuleFileNameW(deshader_lib.dll, @ptrCast(deshader_path_buffer), std.fs.MAX_PATH_BYTES - 1));
     } else {
-        if (c.dlinfo(deshader_lib.handle, c.RTLD_DI_ORIGIN, deshader_dir_name) != 0) {
+        if (c.dlinfo(deshader_lib.handle, c.RTLD_DI_ORIGIN, @ptrCast(deshader_path_buffer)) != 0) {
             const err = c.dlerror();
             RunLogger.err("Failed to get deshader library path: {s}", .{err});
             errors += 1;
             return errors;
         }
     }
-    const deshader_dir_name_span = std.mem.span(deshader_dir_name);
-    deshader_path = if (builtin.target.os.tag == .windows) deshader_dir_name_span else try path.join(common.allocator, &[_]String{ deshader_dir_name_span, options.deshaderLibName });
-    defer if (builtin.os.tag != .windows) common.allocator.free(deshader_path);
+    const deshader_path = if (builtin.target.os.tag == .windows) deshader_dir_name else try path.join(common.allocator, &[_]String{ deshader_path_buffer[0..std.mem.indexOfScalar(u8, deshader_path_buffer, 0).?], options.deshaderLibName });
+    defer common.allocator.free(deshader_path);
 
     RunLogger.info("Using deshader at {s}", .{deshader_path});
 

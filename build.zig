@@ -325,8 +325,10 @@ pub fn build(b: *std.Build) !void {
     });
     const runnerOptions = b.addOptions();
     runnerOptions.addOption(String, "deshaderLibName", deshader_lib_name);
+    runnerOptions.addOption(u32, "memoryFrames", optionMemoryTraceFrames);
     runnerExe.addOptions("options", runnerOptions);
     runnerExe.defineCMacro("_GNU_SOURCE", null); // To access dlinfo
+    runnerOptions.addOption(String, "deshaderLibRoot", try std.fs.path.join(b.allocator, &.{ b.install_path, "lib" }));
 
     const runnerInstall = b.addInstallArtifact(runnerExe, .{});
     _ = b.step("runner", "Build a utility to run any application with Deshader").dependOn(&runnerInstall.step);
@@ -335,7 +337,7 @@ pub fn build(b: *std.Build) !void {
     // Example usages demonstration applications
     //
     {
-        const examplesStep = b.step("example", "Build example OpenGL app");
+        const examplesStep = b.step("examples", "Build example OpenGL apps");
         examplesStep.dependOn(desahder_lib_cmd);
 
         const example_bootstraper = b.addExecutable(.{
@@ -363,6 +365,7 @@ pub fn build(b: *std.Build) !void {
             };
             // GLFW
             const example_glfw = try exampleSubProgram(example_bootstraper, sub_examples.glfw, "examples/" ++ sub_examples.glfw ++ ".zig", exampleModules);
+            try example_glfw.addVcpkgPaths(.dynamic);
 
             // Use mach-glfw
             const glfw_dep = b.dependency("mach_glfw", .{
@@ -381,20 +384,38 @@ pub fn build(b: *std.Build) !void {
             example_glfw_cpp.addIncludePath(.{ .path = header_dir });
             example_glfw_cpp.linkLibCpp();
             //example_glfw_cpp.linkLibrary(deshader_lib);
-            example_glfw_cpp.linkSystemLibrary("glew");
+            if (targetTarget == .windows) {
+                try example_glfw_cpp.addVcpkgPaths(.dynamic);
+                try addVcpkgInstalledPaths(example_glfw_cpp);
+            }
+            if (targetTarget == .windows) {
+                example_glfw_cpp.linkSystemLibrary("glew32");
+                example_glfw_cpp.linkSystemLibrary("opengl32");
+            } else {
+                example_glfw_cpp.linkSystemLibrary("glew");
+            }
             @import("mach_glfw").link(glfw_dep.builder, example_glfw_cpp);
-            inline for (.{ "fragment.frag", "vertex.vert" }) |shader| {
-                const output = try std.fs.path.join(b.allocator, &.{ b.cache_root.path.?, "shaders", shader ++ ".o" });
-                b.cache_root.handle.access("shaders", .{}) catch try std.fs.makeDirAbsolute(std.fs.path.dirname(output).?);
-                const result = try exec(.{
-                    .allocator = b.allocator,
-                    .argv = &.{ "ld", "--relocatable", "--format", "binary", "--output", output, shader },
-                    .cwd_dir = try b.build_root.handle.openDir("examples", .{}),
-                });
-                if (result.term.Exited == 0) {
-                    example_glfw_cpp.addObjectFile(.{ .path = output });
-                } else {
-                    std.log.err("Failed to compile shader {s}: {s}", .{ shader, result.stderr });
+
+            if (targetTarget == .windows) {
+                example_glfw_cpp.addWin32ResourceFile(.{ .file = .{ .path = try std.fs.path.join(b.allocator, &.{
+                    b.build_root.path.?,
+                    "examples",
+                    "shaders.rc",
+                }) } });
+            } else {
+                inline for (.{ "fragment.frag", "vertex.vert" }) |shader| {
+                    const output = try std.fs.path.join(b.allocator, &.{ b.cache_root.path.?, "shaders", shader ++ ".o" });
+                    b.cache_root.handle.access("shaders", .{}) catch try std.fs.makeDirAbsolute(std.fs.path.dirname(output).?);
+                    const result = try exec(.{
+                        .allocator = b.allocator,
+                        .argv = &.{ "ld", "--relocatable", "--format", "binary", "--output", output, shader },
+                        .cwd_dir = try b.build_root.handle.openDir("examples", .{}),
+                    });
+                    if (result.term.Exited == 0) {
+                        example_glfw_cpp.addObjectFile(.{ .path = output });
+                    } else {
+                        std.log.err("Failed to compile shader {s}: {s}", .{ shader, result.stderr });
+                    }
                 }
             }
 
@@ -506,10 +527,10 @@ fn appendFilesRecursive(
     }
 }
 
-fn exampleSubProgram(bootstraper: *std.build.Step.Compile, name: String, path: String, modules: anytype) !*std.build.Step.Compile {
+fn exampleSubProgram(bootstraper: *std.build.Step.Compile, comptime name: String, path: String, modules: anytype) !*std.build.Step.Compile {
     var step = &bootstraper.step;
     const subExe = step.owner.addExecutable(.{
-        .name = name,
+        .name = "deshader-" ++ name,
         .root_source_file = .{ .path = path },
         .main_mod_path = .{ .path = "examples" },
         .target = bootstraper.target,
@@ -538,4 +559,10 @@ fn fileWithPrefixExists(allocator: std.mem.Allocator, dirname: String, basename:
         }
     }
     return null;
+}
+
+fn addVcpkgInstalledPaths(c: *std.build.Step.Compile) !void {
+    c.addIncludePath(.{ .path = try c.step.owner.build_root.join(c.step.owner.allocator, &.{ "build", "vcpkg_installed", "x64-windows-cross", "include" }) });
+    c.addLibraryPath(.{ .path = try c.step.owner.build_root.join(c.step.owner.allocator, &.{ "build", "vcpkg_installed", "x64-windows-cross", "bin" }) });
+    c.addLibraryPath(.{ .path = try c.step.owner.build_root.join(c.step.owner.allocator, &.{ "build", "vcpkg_installed", "x64-windows-cross", "lib" }) });
 }

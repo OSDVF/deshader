@@ -4,6 +4,21 @@
 #include <cstring>
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
+#ifdef WIN32
+#include <windows.h>
+#include "resources.h"
+
+// https://stackoverflow.com/questions/2933295/embed-text-file-in-a-resource-in-a-native-windows-application
+void LoadFileInResource(int name, int type, DWORD& size, const char*& data)
+{
+    HMODULE handle = ::GetModuleHandle(NULL);
+    HRSRC rc = ::FindResource(handle, MAKEINTRESOURCE(name),
+        MAKEINTRESOURCE(type));
+    HGLOBAL rcData = ::LoadResource(handle, rc);
+    size = ::SizeofResource(handle, rc);
+    data = static_cast<const char*>(::LockResource(rcData));
+}
+#endif
 
 void GLAPIENTRY
 MessageCallback(GLenum source,
@@ -86,12 +101,23 @@ int main(int argc, char** argv) {
         -1, 1,
         1,  1,
     };
+    #ifdef WIN32
+    DWORD vert_size = 0;
+    DWORD frag_size = 0;
+    const char* vertex_vert_start = NULL;
+    const char* fragment_frag_start = NULL;
+    LoadFileInResource(VERTEX_VERT, TEXTFILE, vert_size, vertex_vert_start);
+    LoadFileInResource(FRAGMENT_FRAG, TEXTFILE, frag_size, fragment_frag_start);
+    const GLint vert_size_int = static_cast<GLint>(vert_size);
+    const GLint frag_size_int = static_cast<GLint>(frag_size);
+    #else
     extern const char vertex_vert_start[] asm("_binary_vertex_vert_start");//created by LD --relocatable --format=binary --output=vertex.vert.o vertex.vert
     extern const char vertex_vert_end[]   asm("_binary_vertex_vert_end");
     extern const char fragment_frag_start[] asm("_binary_fragment_frag_start");
     extern const char fragment_frag_end[]   asm("_binary_fragment_frag_end");
     const GLint vert_size_int = static_cast<GLint>(vertex_vert_end - vertex_vert_start);
     const GLint frag_size_int = static_cast<GLint>(fragment_frag_end - fragment_frag_start);
+    #endif
 
     GLuint vertex_shader = glCreateShader(GL_VERTEX_SHADER);
     glShaderSource(vertex_shader, 1, std::array<const GLchar*, 1>({ vertex_vert_start }).data(), &vert_size_int);

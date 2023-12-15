@@ -177,8 +177,9 @@ pub export fn deshaderTaggedSource(payload: SourcesPayload, if_exists: ExistsBeh
 // Private logic
 //
 
-export const init_array linksection(".init_array") = &wrapErrorRunOnLoad;
-export const fini_array linksection(".fini_array") = &finalize;
+// https://www.cnblogs.com/sunkang/archive/2011/05/24/2055635.html
+export const init_array linksection(if (builtin.os.tag == .windows) ".CRT$XIU" else ".init_array") = &wrapErrorRunOnLoad;
+export const fini_array linksection(if (builtin.os.tag == .windows) ".CRT$XPU" else ".fini_array") = &finalize;
 pub var command_listener: ?*commands.CommandListener = null;
 
 /// Run this functions at Deshader shared library load

@@ -1,0 +1,3 @@
+#include "resources.h"
+VERTEX_VERT TEXTFILE "vertex.vert"
+FRAGMENT_FRAG TEXTFILE "fragment.frag"

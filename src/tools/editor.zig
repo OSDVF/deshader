@@ -107,7 +107,6 @@ pub fn createEditorProvider(command_listener: ?*const commands.CommandListener) 
             }
             if (editor_config) |c| {
                 defer provider.allocator.free(c);
-                DeshaderLog.debug("Injecting editor config: {s}", .{c});
                 try provider.addContent(f_name, mimeType, c);
             } else {
                 try provider.addContentDeflatedNoAlloc(f_name, mimeType, compressed_content);
@@ -175,13 +174,16 @@ pub fn windowShow(command_listener: ?*const commands.CommandListener) !void {
         return error.AlreadyRunning;
     }
 
-    const base = global_provider.?.getUri("/").?;
+    const base = global_provider.?.getUri("/index.html").?;
     DeshaderLog.info("Editor URL: {s}", .{base});
 
-    const exe_path = try std.fs.selfExePathAlloc(global_provider.?.allocator);
-    defer global_provider.?.allocator.free(exe_path);
+    const exe_or_dll_path = try if (builtin.os.tag == .windows) common.selfDllPathAlloc(global_provider.?.allocator, ",deshaderEditorWindowShow") else std.fs.selfExePathAlloc(global_provider.?.allocator);
+    defer global_provider.?.allocator.free(exe_or_dll_path);
     // Duplicate self but set env vars to indicate that the child should be the editor
-    editor_process = std.process.Child.init(&.{ exe_path, "editor" }, common.allocator); // the "editor" parameter is really ignored but it is here for reference to be found easily
+    editor_process = std.process.Child.init(if (builtin.os.tag == .windows)
+        &.{ "rundll32.exe", exe_or_dll_path }
+    else
+        &.{ exe_or_dll_path, "editor" }, common.allocator); // the "editor" parameter is really ignored but it is here for reference to be found easily
 
     try common.env.put(DESHADER_EDITOR_URL, base);
 

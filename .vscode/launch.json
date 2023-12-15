@@ -8,10 +8,9 @@
             "cwd": "${workspaceRoot}",
             "target": "./zig-out/bin/deshader-run",
             "preLaunchTask": "Build Runner",
-            "arguments": "zig-out/bin/example < zig-out/yes.txt",
+            "arguments": "zig-out/bin/examples",
             "env": {
-                "DESHADER_REPLACE_ROOT": "zig-out/lib",
-                "DESHADER_LIB_ROOT": "/usr/lib/",
+                "DESHADER_LIB": "zig-out/lib",
             },
         },
         {
@@ -29,7 +28,7 @@
             "target": "./zig-out/bin/examples",
             "cwd": "${workspaceRoot}",
             "valuesFormatting": "parseText",
-            "preLaunchTask": "Build Example",
+            "preLaunchTask": "Build Examples",
             "env": {
                 "LD_PRELOAD": "${workspaceRoot}/zig-out/lib/libdeshader.so",
                 "DESHADER_LIB_ROOT": "/usr/lib/",
@@ -42,7 +41,7 @@
             "target": "./zig-out/bin/example/editor",
             "cwd": "${workspaceRoot}",
             "valuesFormatting": "parseText",
-            "preLaunchTask": "Build Example",
+            "preLaunchTask": "Build Examples",
             "env": {
                 "DESHADER_LIB_ROOT": "/usr/lib/",
                 "DESHADER_COMMANDS_WS": "8082",
@@ -58,7 +57,7 @@
             "target": "./zig-out/bin/example/glfw",
             "cwd": "${workspaceRoot}",
             "valuesFormatting": "parseText",
-            "preLaunchTask": "Build Example",
+            "preLaunchTask": "Build Examples",
             "autorun": [
                 "set environment LD_PRELOAD ${workspaceRoot}/zig-out/lib/libdeshader.so"
             ],
@@ -77,7 +76,7 @@
             "target": "./zig-out/bin/example/editor_cpp",
             "cwd": "${workspaceRoot}",
             "valuesFormatting": "parseText",
-            "preLaunchTask": "Build Example",
+            "preLaunchTask": "Build Examples",
         },
         {
             "type": "gdb",
@@ -86,7 +85,7 @@
             "target": "./zig-out/bin/example/glfw_cpp",
             "cwd": "${workspaceRoot}",
             "valuesFormatting": "parseText",
-            "preLaunchTask": "Build Example",
+            "preLaunchTask": "Build Examples",
         },
         {
             "type": "cppdbg",

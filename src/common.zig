@@ -4,6 +4,10 @@ const options = @import("options");
 const c = @cImport({
     @cInclude("stdlib.h"); //setenv or _putenv_s
     @cInclude("string.h"); //strerror
+    if (builtin.os.tag == .windows) {
+        @cInclude("windows.h");
+        @cInclude("libloaderapi.h");
+    }
 });
 
 const log = @import("log.zig").DeshaderLog;
@@ -103,4 +107,24 @@ pub fn isPortFree(address: ?String, port: u16) !bool {
         else => check.close(),
     };
     return true;
+}
+
+/// Gets the path of the Deshader DLL
+pub fn selfDllPathAlloc(a: std.mem.Allocator, concat_with: String) !String {
+    var path: [std.fs.MAX_PATH_BYTES]u8 = undefined;
+    var hm: [*c]c.struct_HINSTANCE__ = undefined;
+    if (c.GetModuleHandleExW(c.GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+        c.GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, @ptrCast(&options.version), &hm) != 0)
+    {
+        const length = c.GetModuleFileNameA(hm, &path, std.fs.MAX_PATH_BYTES);
+        if (length == 0) {
+            return std.os.windows.unexpectedError(std.os.windows.kernel32.GetLastError());
+        } else {
+            return try std.mem.concat(a, u8, &.{ path[0..length], concat_with });
+        }
+    } else {
+        return std.os.windows.unexpectedError(std.os.windows.kernel32.GetLastError());
+    }
+
+    return path;
 }

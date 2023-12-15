@@ -1,0 +1,8 @@
+{
+    "overlay-triplets": [
+        "./bootstrap/triplets"
+    ],
+    "overlay-ports": [
+        "./bootstrap/ports"
+    ]
+}

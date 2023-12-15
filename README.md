@@ -58,14 +58,20 @@ Deshader consists of several (mostly third party; mostly forked) components that
 - Bun 1.0.6 [Install](https://github.com/oven-sh/bun#install)
 - Dotnet
 - C libraries
-    - GLEW
+    - GLEW (can be installed by VCPKG)
     - Linux
         - gtk-3 and webkit2gtk
     - Windows
+        - [VCPKG](https://vcpkg.io)
         - [Edge Dev Channel](https://www.microsoftedgeinsider.com/download)
-- For using CMake
-    - pkg-config
+    - Cross-compilation under Linux
+        - [VCPKG](https://vcpkg.io)
+        - add VCPKG path to `~/.local/share/vcpkg/vcpkg.path.txt` (e.g. `echo $(which vcpkg) > ~/.local/share/vcpkg/vcpkg.path.txt`)
+        - `vcpkg install --triplet x64-windows-cross --x-install-root=build/vcpkg_installed`
+- For using CMake to compile C++ examples
+    - `pkg-config`
     - glfw 3.3
+    - `ld` from `binutils` package
 
 ## How to
 After you install all the required frameworks, clone this repository with submodules, open terminal in its folder and create a debug build by

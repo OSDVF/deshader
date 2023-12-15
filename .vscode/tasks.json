@@ -83,11 +83,11 @@
             }
         },
         {
-            "label": "Build Example",
+            "label": "Build Examples",
             "command": "zig",
             "args": [
                 "build",
-                "example",
+                "examples",
                 "-DwolfSSL=true",
                 "-freference-trace",
                 "-DlogIntercept=true",
