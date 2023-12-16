@@ -3,6 +3,7 @@
     "version": "0.0.1",
     "dependencies": [
       "glew",
-      "glfw3"
+      "glfw3",
+      "wolfssl"
     ]
   }

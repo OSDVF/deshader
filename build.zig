@@ -61,6 +61,8 @@ pub fn build(b: *std.Build) !void {
     const optionAdditionalLibraries = b.option([]const String, "customLibrary", "Names of additional libraroes to intercept");
     const optionInterceptionLog = b.option(bool, "logIntercept", "Log intercepted GL and VK procedure list to stdout") orelse false;
     const optionMemoryTraceFrames = b.option(u32, "memoryFrames", "Number of frames in memory leak backtrace") orelse 7;
+    const optionIncludeDir = b.option(String, "include", "Path to directory with additional headers to include");
+    const optionLibDir = b.option(String, "lib", "Path to directory with additional libraries to link");
 
     const deshader_lib: *std.build.Step.Compile = if (optionLinkage == .Static) b.addStaticLibrary(deshaderCompileOptions) else b.addSharedLibrary(deshaderCompileOptions);
     const deshader_lib_name = try std.mem.concat(b.allocator, u8, &.{ "libdeshader", targetTarget.dynamicLibSuffix() });
@@ -83,6 +85,12 @@ pub fn build(b: *std.Build) !void {
     const deshaderLibInstall = b.addInstallArtifact(deshader_lib, .{});
     desahder_lib_cmd.dependOn(&deshaderLibInstall.step);
     deshader_lib.addIncludePath(.{ .path = try b.build_root.join(b.allocator, &.{ "src", "declarations" }) });
+    if(optionIncludeDir) |includeDir| {
+		deshader_lib.addIncludePath(.{ .path = includeDir });
+	}
+    if(optionLibDir) |libDir| {
+		deshader_lib.addLibraryPath(.{ .path = libDir });
+    }
 
     // CTRegex
     const ctregex_mod = b.addModule("ctregex", .{

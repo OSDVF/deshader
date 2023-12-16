@@ -27,7 +27,7 @@ separate_arguments(SEPARATED_DESHADER_FLAGS UNIX_COMMAND "${DESHADER_BUILD_FLAGS
 
 add_custom_command(
     OUTPUT lib/deshader.c lib/libdeshader.so include/deshader.hpp include/deshader.h include/deshader.zig lib/deshader.ll lib/deshader.bc
-    COMMAND zig build deshader ${SEPARATED_DESHADER_FLAGS} -p ${CMAKE_BINARY_DIR} # instruct zig to output into CMAKE_BINARY_DIR
+    COMMAND zig build deshader ${SEPARATED_DESHADER_FLAGS} -p ${CMAKE_BINARY_DIR} -Dlib="${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/lib" # instruct zig to output into CMAKE_BINARY_DIR
     DEPENDS ${ZIG_SOURCES}
     BYPRODUCTS ${CMAKE_CURRENT_SOURCE_DIR}/zig-cache/
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
@@ -65,7 +65,10 @@ set(CMAKE_C_STANDARD 99)
 include_directories(${CMAKE_BINARY_DIR}/include/) # here is deshader.hpp
 
 # Editor
-add_executable(example_editor examples/editor.cpp)
+add_executable(example_editor examples/editor_linked.cpp)
+
+# Debug Commands
+add_executable(example_debug_commands examples/debug_commands.cpp)
 
 # GLFW
 add_executable(example_glfw examples/glfw.cpp)
@@ -73,6 +76,7 @@ find_package(glfw3 3.3)
 find_package(GLEW)
 find_package(OpenGL)
 target_link_libraries(example_glfw PUBLIC GLEW::GLEW glfw OpenGL::GL)
+target_link_libraries(example_debug_commands PUBLIC GLEW::GLEW glfw OpenGL::GL)
 
 # include binary resources https://copyprogramming.com/howto/embed-resources-eg-shader-code-images-into-executable-library-with-cmake
 set(RC_DEPENDS "")
