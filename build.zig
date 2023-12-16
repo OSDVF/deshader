@@ -82,6 +82,7 @@ pub fn build(b: *std.Build) !void {
     }
     const deshaderLibInstall = b.addInstallArtifact(deshader_lib, .{});
     desahder_lib_cmd.dependOn(&deshaderLibInstall.step);
+    deshader_lib.addIncludePath(.{ .path = try b.build_root.join(b.allocator, &.{ "src", "declarations" }) });
 
     // CTRegex
     const ctregex_mod = b.addModule("ctregex", .{
@@ -218,6 +219,8 @@ pub fn build(b: *std.Build) !void {
     //
     const stubs_path = try std.fs.path.join(b.allocator, &.{ header_dir, "deshader.zig" });
     var stub_gen_cmd = b.step("generate_stubs", "Generate .zig file with function stubs for deshader library");
+    const header_gen_cmd = b.step("generate_headers", "Generate C header file for deshader library");
+
     const deshader_stubs = b.addModule("deshader", .{
         .source_file = .{ .path = stubs_path }, //future file, may not exist
     });
@@ -278,12 +281,11 @@ pub fn build(b: *std.Build) !void {
         //
         // Emit H File
         //
-        const header_gen_cmd = b.step("generate_header", "Generate C header file for deshader library");
         var header_gen_target = target;
         header_gen_target.ofmt = null;
         var header_gen = b.addExecutable(.{
-            .name = "generate_header",
-            .root_source_file = .{ .path = "src/tools/generate_header.zig" },
+            .name = "generate_headers",
+            .root_source_file = .{ .path = "src/tools/generate_headers.zig" },
             .main_mod_path = .{ .path = "src" },
             .target = header_gen_target,
             .optimize = optimize,
@@ -308,6 +310,8 @@ pub fn build(b: *std.Build) !void {
         }
         const header_gen_install = b.addInstallArtifact(header_gen, .{});
         header_gen_cmd.dependOn(&header_gen_install.step);
+        header_gen_cmd.dependOn(&b.addInstallHeaderFile("src/declarations/macros.h", "deshader/macros.h").step);
+        header_gen_cmd.dependOn(&b.addInstallHeaderFile("src/declarations/commands.h", "deshader/commands.h").step);
         // automatically create header when building the library
         desahder_lib_cmd.dependOn(&b.addRunArtifact(header_gen_install.artifact).step);
     }
@@ -351,11 +355,13 @@ pub fn build(b: *std.Build) !void {
             const glfw = "glfw";
             const editor = "editor";
             const glfw_cpp = "glfw_cpp";
-            const editor_cpp = "editor_cpp";
+            const debug_commands = "debug_commands";
+            const editor_linked_cpp = "editor_linked_cpp";
         };
         const example_options = b.addOptions();
-        example_options.addOption([]const String, "exampleNames", &.{ sub_examples.glfw, sub_examples.editor, sub_examples.editor_cpp, sub_examples.glfw_cpp });
+        example_options.addOption([]const String, "exampleNames", &.{ sub_examples.glfw, sub_examples.editor, sub_examples.debug_commands, sub_examples.glfw_cpp });
         example_bootstraper.addOptions("options", example_options);
+        example_bootstraper.step.dependOn(header_gen_cmd);
 
         // Various example applications
         {
@@ -384,16 +390,7 @@ pub fn build(b: *std.Build) !void {
             example_glfw_cpp.addIncludePath(.{ .path = header_dir });
             example_glfw_cpp.linkLibCpp();
             //example_glfw_cpp.linkLibrary(deshader_lib);
-            if (targetTarget == .windows) {
-                try example_glfw_cpp.addVcpkgPaths(.dynamic);
-                try addVcpkgInstalledPaths(example_glfw_cpp);
-            }
-            if (targetTarget == .windows) {
-                example_glfw_cpp.linkSystemLibrary("glew32");
-                example_glfw_cpp.linkSystemLibrary("opengl32");
-            } else {
-                example_glfw_cpp.linkSystemLibrary("glew");
-            }
+            try linkGlew(example_glfw_cpp, targetTarget);
             @import("mach_glfw").link(glfw_dep.builder, example_glfw_cpp);
 
             if (targetTarget == .windows) {
@@ -420,9 +417,15 @@ pub fn build(b: *std.Build) !void {
             }
 
             // Editor in C++
-            const example_editor_cpp = try exampleSubProgram(example_bootstraper, sub_examples.editor_cpp, "examples/editor.cpp", .{});
-            example_editor_cpp.addIncludePath(.{ .path = header_dir });
-            example_editor_cpp.linkLibrary(deshader_lib);
+            const example_editor_linked_cpp = try exampleSubProgram(example_bootstraper, sub_examples.editor_linked_cpp, "examples/editor_linked.cpp", .{});
+            example_editor_linked_cpp.addIncludePath(.{ .path = header_dir });
+            example_editor_linked_cpp.linkLibrary(deshader_lib);
+
+            const example_debug_commands = try exampleSubProgram(example_bootstraper, sub_examples.debug_commands, "examples/debug_commands.cpp", .{});
+            example_debug_commands.addIncludePath(.{ .path = header_dir });
+            example_debug_commands.linkLibCpp();
+            try linkGlew(example_debug_commands, targetTarget);
+            @import("mach_glfw").link(glfw_dep.builder, example_debug_commands);
         }
         examplesStep.dependOn(stub_gen_cmd);
         const exampleInstall = b.addInstallArtifact(example_bootstraper, .{});
@@ -540,9 +543,10 @@ fn exampleSubProgram(bootstraper: *std.build.Step.Compile, comptime name: String
         subExe.addModule(mod.name, mod.module);
     }
 
+    const sep = std.fs.path.sep_str;
     const install = step.owner.addInstallArtifact(
         subExe,
-        .{ .dest_sub_path = try std.fs.path.join(step.owner.allocator, &.{ "example", name }) },
+        .{ .dest_sub_path = try std.mem.concat(step.owner.allocator, u8, &.{ "example", sep, name, if (bootstraper.target.os_tag == .windows) ".exe" else "" }) },
     );
     step.dependOn(&install.step);
     return subExe;
@@ -565,4 +569,15 @@ fn addVcpkgInstalledPaths(c: *std.build.Step.Compile) !void {
     c.addIncludePath(.{ .path = try c.step.owner.build_root.join(c.step.owner.allocator, &.{ "build", "vcpkg_installed", "x64-windows-cross", "include" }) });
     c.addLibraryPath(.{ .path = try c.step.owner.build_root.join(c.step.owner.allocator, &.{ "build", "vcpkg_installed", "x64-windows-cross", "bin" }) });
     c.addLibraryPath(.{ .path = try c.step.owner.build_root.join(c.step.owner.allocator, &.{ "build", "vcpkg_installed", "x64-windows-cross", "lib" }) });
+}
+
+fn linkGlew(c: *std.build.Step.Compile, target: std.Target.Os.Tag) !void {
+    if (target == .windows) {
+        try c.addVcpkgPaths(.dynamic);
+        try addVcpkgInstalledPaths(c);
+        c.linkSystemLibrary("glew32");
+        c.linkSystemLibrary("opengl32");
+    } else {
+        c.linkSystemLibrary("glew");
+    }
 }

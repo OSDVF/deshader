@@ -124,7 +124,9 @@ pub fn main() !void {
     glfw.makeContextCurrent(window);
 
     const proc: glfw.GLProc = undefined;
-    try gl.load(proc, glGetProcAddress);
+    gl.load(proc, glGetProcAddress) catch |err| {
+        log.err("failed to load some OpenGL functions: {}", .{err});
+    };
 
     gl.debugMessageCallback(glDebugMessageCallback, null);
 

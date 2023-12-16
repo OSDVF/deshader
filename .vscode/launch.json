@@ -73,10 +73,34 @@
             "type": "gdb",
             "request": "launch",
             "name": "Editor in C++",
-            "target": "./zig-out/bin/example/editor_cpp",
+            "target": "./zig-out/bin/example/editor_linked_cpp",
             "cwd": "${workspaceRoot}",
             "valuesFormatting": "parseText",
             "preLaunchTask": "Build Examples",
+        },
+        {
+            "type": "gdb",
+            "request": "launch",
+            "name": "Debug Commands",
+            "target": "./zig-out/bin/example/debug_commands",
+            "cwd": "${workspaceRoot}",
+            "valuesFormatting": "parseText",
+            "preLaunchTask": "Build Examples",
+            "autorun": [
+                "set environment LD_PRELOAD ${workspaceRoot}/zig-out/lib/libdeshader.so"
+            ],
+            "env": {
+                "DESHADER_IGNORE_PROCESS": "gdb,zsh",
+            }
+        },
+        {
+            "type": "gdb",
+            "request": "launch",
+            "name": "Glfw in Wine",
+            "target": "./zig-out/bin/example/glfw.exe",
+            "cwd": "${workspaceRoot}",
+            "valuesFormatting": "parseText",
+            "preLaunchTask": "Cross-compile Examples",
         },
         {
             "type": "gdb",
@@ -108,7 +132,7 @@
             "type": "gdb",
             "request": "launch",
             "name": "Header Generator",
-            "target": "./zig-out/bin/generate_header",
+            "target": "./zig-out/bin/generate_headers",
             "cwd": "${workspaceRoot}",
             "valuesFormatting": "parseText",
             "preLaunchTask": "Build Headers Generator",

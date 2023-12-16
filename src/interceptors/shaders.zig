@@ -6,6 +6,8 @@ const shaders = @import("../services/shaders.zig");
 const log = @import("../log.zig").DeshaderLog;
 const common = @import("../common.zig");
 const args = @import("args");
+const main = @import("../main.zig");
+const ids = @cImport(@cInclude("commands.h"));
 
 const CString = [*:0]const u8;
 const String = []const u8;
@@ -363,12 +365,11 @@ fn failedRemoveWorkspacePath(path: String, err: anytype) void {
 /// buf = /real/absolute/workspace/root<-/virtual/workspace/root
 ///
 /// id = 0xde5ade4 == 233156068 => add workspace
-/// id = 0xde5ade5 == 233156069 => remove workspace or remove all
-/// buf == null => erase all workspace folders
+/// id = 0xde5ade5 == 233156069 => remove workspace with the name specified in `buf` or remove all (when buf == null)
 pub export fn glDebugMessageInsert(source: gl.GLenum, _type: gl.GLenum, id: gl.GLuint, severity: gl.GLenum, length: gl.GLsizei, buf: ?[*:0]const gl.GLchar) void {
     if (source == gl.DEBUG_SOURCE_APPLICATION and _type == gl.DEBUG_TYPE_OTHER and severity == gl.DEBUG_SEVERITY_HIGH) {
         switch (id) {
-            0xde5ade4 => {
+            ids.COMMAND_WORKSPACE_ADD => {
                 if (buf != null) { //Add
                     const real_length = realLength(length, buf);
                     var it = std.mem.split(u8, buf.?[0..real_length], "<-");
@@ -379,7 +380,7 @@ pub export fn glDebugMessageInsert(source: gl.GLenum, _type: gl.GLenum, id: gl.G
                     } else failedWorkspacePath(buf.?[0..real_length], error.@"No real path specified");
                 }
             },
-            0xde5ade5 => if (buf == null) { //Remove all
+            ids.COMMAND_WORKSPACE_REMOVE => if (buf == null) { //Remove all
                 shaders.workspace_paths.clearRetainingCapacity();
             } else { //Remove
                 const real_length = realLength(length, buf);
@@ -398,9 +399,44 @@ pub export fn glDebugMessageInsert(source: gl.GLenum, _type: gl.GLenum, id: gl.G
                     }
                 }
             },
+            ids.COMMAND_EDITOR_SHOW => _ = main.deshaderEditorWindowShow(),
+            ids.COMMAND_EDITOR_TERMINATE => _ = main.deshaderEditorWindowTerminate(),
+            ids.COMMAND_EDITOR_WAIT => _ = main.deshaderEditorWindowWait(),
             else => {},
         }
     }
+    gl.debugMessageInsert(source, _type, id, severity, length, buf);
+}
+const ids_array = blk: {
+    const ids_decls = @typeInfo(ids).Struct.decls;
+    var command_count = 0;
+    @setEvalBranchQuota(2000);
+    for (ids_decls) |decl| {
+        if (std.mem.startsWith(u8, decl.name, "COMMAND_")) {
+            command_count += 1;
+        }
+    }
+    var vals: [command_count]c_uint = undefined;
+    var i = 0;
+    @setEvalBranchQuota(3000);
+    for (ids_decls) |decl| {
+        if (std.mem.startsWith(u8, decl.name, "COMMAND_")) {
+            vals[i] = @field(ids, decl.name);
+            i += 1;
+        }
+    }
+    break :blk vals;
+};
+
+/// Fallback for compatibility with OpenGL < 4.3
+/// Used from C when DESHADER_COMPATIBILITY is set
+pub export fn transformFeedbackVaryings(_program: gl.GLuint, length: gl.GLsizei, buf: ?[*:0]const gl.GLchar, id: gl.GLenum) void {
+    if (_program == 0) {
+        if (std.mem.indexOfScalar(c_uint, &ids_array, id) != null) {
+            glDebugMessageInsert(gl.DEBUG_SOURCE_APPLICATION, gl.DEBUG_TYPE_OTHER, id, gl.DEBUG_SEVERITY_HIGH, length, buf);
+        }
+    }
+    gl.transformFeedbackVaryings(_program, length, @alignCast(@ptrCast(buf)), id);
 }
 
 //TODO: glSpecializeShader glShaderBinary

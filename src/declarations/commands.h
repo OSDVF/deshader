@@ -1,0 +1,7 @@
+#pragma once
+#define COMMAND_DEBUG_FRAME 0xde5ade3
+#define COMMAND_WORKSPACE_ADD 0xde5ade4
+#define COMMAND_WORKSPACE_REMOVE 0xde5ade5
+#define COMMAND_EDITOR_SHOW 0xde5ade6
+#define COMMAND_EDITOR_WAIT 0xde5ade7
+#define COMMAND_EDITOR_TERMINATE 0xde5ade8

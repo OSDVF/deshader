@@ -107,7 +107,7 @@ Output files will be placed at `./zig-out/`:
 - `bin/`
     - `deshader-run`
     - (internal tools)
-        - `generate_header`
+        - `generate_headers`
         - `generate_stubs`
         - `symbol_enumerator`
     - `example/`
@@ -160,8 +160,9 @@ Name                  | Values                        | Description
 ## Frequently Seen Errors
 - Cannot compile
     - Something with `struct_XSTAT` inside WolfSSL
-        - fix by `./fix_wolfssl.sh`  
-        **CAUTION**: The script searches the whole `zls` global cache and deletes lines with `struct_XSTAT` so be careful.
+    - no field named `hex` in enum `zig.c_translation.CIntLiteralBase`
+        - fix by `./fix_c_import.sh`
+        **CAUTION**: The script searches the whole `zls` global cache in `~/.cache/zls` and deletes lines with `struct_XSTAT` so be careful.
 - Editor window is blank
     - This is a known issue between WebKit and vendor GL drivers
     - Disable GPU acceleration

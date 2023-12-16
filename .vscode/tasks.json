@@ -107,11 +107,22 @@
             }
         },
         {
+            "label": "Cross-compile Examples",
+            "command": "zig",
+            "args": [
+                "build",
+                "examples",
+                "-fwine",
+                "-Dtarget=x86_64-windows-gnu",
+                "-freference-trace",
+            ]
+        },
+        {
             "label": "Build Headers Generator",
             "command": "zig",
             "args": [
                 "build",
-                "generate_header"
+                "generate_headers"
             ],
             "problemMatcher": "$zig",
             "group": "build",

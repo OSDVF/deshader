@@ -51,7 +51,10 @@ add_library(
     deshader_zig
     SHARED IMPORTED
 )
-set_target_properties(deshader_zig PROPERTIES IMPORTED_LOCATION ${CMAKE_BINARY_DIR}/lib/libdeshader.so)
+set_target_properties(deshader_zig PROPERTIES IMPORTED_LOCATION ${CMAKE_BINARY_DIR}/lib/${CMAKE_SHARED_LIBRARY_PREFIX}deshader${CMAKE_SHARED_LIBRARY_SUFFIX})
+if(WIN32)
+    set_target_properties(deshader_zig PROPERTIES IMPORTED_IMPLIB ${CMAKE_BINARY_DIR}/lib/${CMAKE_IMPORT_LIBRARY_PREFIX}deshader${CMAKE_IMPORT_LIBRARY_SUFFIX})
+endif()
 add_dependencies(deshader_zig deshader)
 
 #
@@ -85,9 +88,13 @@ function(add_resource target directory input)
     set(RC_DEPENDS ${RC_DEPENDS} ${output} PARENT_SCOPE)
 endfunction()
 
-add_resource(example_glfw "${CMAKE_CURRENT_SOURCE_DIR}/examples/" fragment.frag)
-add_resource(example_glfw "${CMAKE_CURRENT_SOURCE_DIR}/examples/" vertex.vert)
-add_custom_target(rc ALL DEPENDS ${RC_DEPENDS})
+if(WIN32)
+	target_sources(example_glfw PRIVATE examples/shaders.rc)
+else()
+    add_resource(example_glfw "${CMAKE_CURRENT_SOURCE_DIR}/examples/" fragment.frag)
+    add_resource(example_glfw "${CMAKE_CURRENT_SOURCE_DIR}/examples/" vertex.vert)
+    add_custom_target(rc ALL DEPENDS ${RC_DEPENDS})
+endif()
 
 # Used for compiling Deshader C code
 function(deshader_indirect_common_config)
@@ -104,7 +111,7 @@ function(deshader_indirect_common_config)
     set_target_properties(deshader_indirect PROPERTIES OUTPUT_NAME deshader)
 endfunction(deshader_indirect_common_config)
 
-string(REGEX MATCH ".*\-Dofmt=(.?.).*" _ ${DESHADER_BUILD_FLAGS}) # -Dofmt= selects Zig output backend
+string(REGEX MATCH ".*\-Dofmt=(.?.).*" _ ${DESHADER_BUILD_FLAGS} "") # -Dofmt= selects Zig output backend
 set(DESHADER_OFMT ${CMAKE_MATCH_1})
 
 if(DESHADER_OFMT STREQUAL c- OR DESHADER_OFMT STREQUAL "c ") # Use these commands to compile an application with deshader generated as C code
