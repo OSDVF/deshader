@@ -6,9 +6,13 @@
 
 #ifdef DESHADER_COMPATIBILITY
 // For contexts older than 4.3 or without GL_ARB_debug_output support
-#define DESHADER_STRING_COMMAND(ID, BUF, LEN) transformFeedbackVaryings(0, (GLsizei)LEN, (void*)BUF, ID)
+#define DESHADER_STRING_COMMAND(ID, BUF, LEN) glTransformFeedbackVaryings(0, (GLsizei)LEN, (void*)BUF, ID)
 #else
+#ifdef DESHADER_DEBUG
 #define DESHADER_STRING_COMMAND(ID, BUF, LEN) glDebugMessageInsert(GL_DEBUG_SOURCE_APPLICATION, GL_DEBUG_TYPE_OTHER, ID, GL_DEBUG_SEVERITY_HIGH, LEN, BUF)
+#else 
+#define DESHADER_STRING_COMMAND(ID, BUF, LEN)
+#endif //TODO
 #endif
 #define DESHADER_COMMAND(ID) DESHADER_STRING_COMMAND(COMMAND_##ID, #ID, sizeof(#ID))
 

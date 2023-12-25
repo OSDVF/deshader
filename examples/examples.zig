@@ -8,7 +8,7 @@ pub fn main() !void {
     const base_dir = try std.fs.selfExeDirPathAlloc(allocator);
 
     for (options.exampleNames) |example_name| {
-        const example_path = try std.fs.path.join(allocator, &.{ base_dir, "example", example_name });
+        const example_path = try std.fs.path.join(allocator, &.{ base_dir, "deshader-examples", example_name });
         std.log.debug("spawning {s}", .{example_path});
         var child_process = std.ChildProcess.init(&.{example_path}, allocator);
 

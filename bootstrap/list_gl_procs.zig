@@ -1,14 +1,16 @@
 const std = @import("std");
 const String = []const u8;
 
+/// Parse output from `nm` or `dumpbin` and generate a list of symbols.
 pub const ListGlProcsStep = struct {
     step: std.build.Step,
     libNames: []const String,
     symbolPrefixes: []const String,
     symbolsOutput: std.build.LazyPath,
     generated_file: std.Build.GeneratedFile,
+    target: std.Target.Os.Tag,
 
-    pub fn init(b: *std.build.Builder, name: String, libNames: []const String, symbolPrefixes: []const String, symbolEnumeratorOutput: std.build.LazyPath) *@This() {
+    pub fn init(b: *std.build.Builder, target: std.Target.Os.Tag, name: String, libNames: []const String, symbolPrefixes: []const String, symbolEnumeratorOutput: std.build.LazyPath) *@This() {
         const self = b.allocator.create(ListGlProcsStep) catch @panic("OOM");
         self.* = @This(){
             .step = std.build.Step.init(.{
@@ -21,6 +23,7 @@ pub const ListGlProcsStep = struct {
             .generated_file = undefined,
             .libNames = libNames,
             .symbolPrefixes = symbolPrefixes,
+            .target = target,
         };
         self.generated_file = .{ .step = &self.step };
         return self;
@@ -36,17 +39,33 @@ pub const ListGlProcsStep = struct {
         defer glProcs.deinit();
         while (try reader.readUntilDelimiterOrEofAlloc(self.step.owner.allocator, '\n', 1024 * 1024)) |symbolsLine| {
             defer self.step.owner.allocator.free(symbolsLine);
-            var tokens = std.mem.splitScalar(u8, symbolsLine, ' ');
+            var tokens = std.mem.tokenizeScalar(u8, symbolsLine, ' ');
             const libName = tokens.next();
-            const symbolName = tokens.next();
-            if (libName == null or symbolName == null) {
+            const symbolNameLinux = tokens.next();
+            if (self.target == .windows) {
+                const offset = tokens.next();
+                if (offset == null) { //one more not needed token for windows
+                    continue;
+                }
+            }
+            if (libName == null or symbolNameLinux == null) {
                 continue;
             }
-            for (self.libNames) |selfLibName| {
+            if (self.target == .windows) {
+                const symbolNameWindows = tokens.next();
+                if (symbolNameWindows == null) {
+                    continue;
+                }
+                for (self.symbolPrefixes) |prefix| {
+                    if (std.mem.startsWith(u8, symbolNameWindows.?, prefix)) {
+                        try glProcs.put(self.step.owner.fmt("pub var {s}", .{symbolNameWindows.?}), {});
+                    }
+                }
+            } else for (self.libNames) |selfLibName| {
                 if (std.mem.indexOf(u8, libName.?, selfLibName) != null) {
                     for (self.symbolPrefixes) |prefix| {
-                        if (std.mem.startsWith(u8, symbolName.?, prefix)) {
-                            try glProcs.put(self.step.owner.fmt("pub var {s}", .{symbolName.?}), {});
+                        if (std.mem.startsWith(u8, symbolNameLinux.?, prefix)) {
+                            try glProcs.put(self.step.owner.fmt("pub var {s}", .{symbolNameLinux.?}), {});
                         }
                     }
                 }
@@ -61,7 +80,7 @@ pub const ListGlProcsStep = struct {
         var hash = step.owner.cache.hash;
         // Random bytes to make unique. Refresh this with new random bytes when
         // implementation is modified in a non-backwards-compatible way.
-        hash.add(@as(u32, 0xad95e925));
+        hash.add(@as(u32, 0xad95e921));
         hash.addBytes(output);
         const h = hash.final();
         const sub_path = "c" ++ std.fs.path.sep_str ++ h ++ std.fs.path.sep_str ++ basename;

@@ -45,7 +45,7 @@ var provide_thread: ?std.Thread = null;
 // basicaly a HTTP server
 pub fn createEditorProvider(command_listener: ?*const commands.CommandListener) !*positron.Provider {
     var port: u16 = undefined;
-    if (common.env.get("DESHADER_PORT")) |portString| {
+    if (common.env.get(common.env_prefix ++ "PORT")) |portString| {
         if (std.fmt.parseInt(u16, portString, 10)) |parsedPort| {
             port = parsedPort;
         } else |err| {
@@ -53,7 +53,7 @@ pub fn createEditorProvider(command_listener: ?*const commands.CommandListener) 
             port = 8080;
         }
     } else {
-        DeshaderLog.warn("DESHADER_PORT not set, using default port 8080", .{});
+        DeshaderLog.warn(common.env_prefix ++ "PORT not set, using default port 8080", .{});
         port = 8080;
     }
 
@@ -154,9 +154,12 @@ pub fn serverStop() EditorProviderError!void {
     global_provider = null;
 }
 
-pub var editor_process: ?std.process.Child = null;
+pub var editor_process: if (builtin.os.tag == .windows) ?std.Thread else ?std.process.Child = null;
+var editor_mutex = std.Thread.Mutex{};
+var editor_shutdown = std.Thread.Condition{};
+var editor_view: if (builtin.os.tag == .windows) *positron.View else undefined = undefined;
 const EditorErrors = error{EditorNotEmbedded};
-pub const DESHADER_EDITOR_URL = "DESHADER_EDITOR_URL";
+pub const DESHADER_EDITOR_URL = common.env_prefix ++ "EDITOR_URL";
 
 /// Spawns a new thread that runs the editor
 /// This function will block until the editor is ready to be used
@@ -177,47 +180,50 @@ pub fn windowShow(command_listener: ?*const commands.CommandListener) !void {
     const base = global_provider.?.getUri("/index.html").?;
     DeshaderLog.info("Editor URL: {s}", .{base});
 
-    const exe_or_dll_path = try if (builtin.os.tag == .windows) common.selfDllPathAlloc(global_provider.?.allocator, ",deshaderEditorWindowShow") else std.fs.selfExePathAlloc(global_provider.?.allocator);
-    defer global_provider.?.allocator.free(exe_or_dll_path);
-    // Duplicate self but set env vars to indicate that the child should be the editor
-    editor_process = std.process.Child.init(if (builtin.os.tag == .windows)
-        &.{ "rundll32.exe", exe_or_dll_path }
-    else
-        &.{ exe_or_dll_path, "editor" }, common.allocator); // the "editor" parameter is really ignored but it is here for reference to be found easily
+    if (builtin.os.tag == .windows) {
+        editor_process = try std.Thread.spawn(.{ .allocator = common.allocator }, editorProcess, .{base});
+        try editor_process.?.setName("Editor");
+        editor_process.?.detach();
+    } else {
+        const exe_or_dll_path = try common.selfExePathAlloc(global_provider.?.allocator);
+        defer global_provider.?.allocator.free(exe_or_dll_path);
+        // Duplicate the current process and set env vars to indicate that the child should act as the Editor Window
+        editor_process = std.process.Child.init(&.{ exe_or_dll_path, "editor" }, common.allocator); // the "editor" parameter is really ignored but it is here for reference to be found easily
 
-    try common.env.put(DESHADER_EDITOR_URL, base);
+        try common.env.put(DESHADER_EDITOR_URL, base);
 
-    editor_process.?.env_map = &common.env;
-    editor_process.?.stdout_behavior = .Inherit;
-    editor_process.?.stderr_behavior = .Inherit;
-    editor_process.?.stdin_behavior = .Close;
-    try editor_process.?.spawn();
+        editor_process.?.env_map = &common.env;
+        editor_process.?.stdout_behavior = .Inherit;
+        editor_process.?.stderr_behavior = .Inherit;
+        editor_process.?.stdin_behavior = .Close;
+        try editor_process.?.spawn();
 
-    // Watch the child process and inform about its end
-    const watcher = try std.Thread.spawn(.{ .allocator = common.allocator }, struct {
-        fn watch() !void {
-            if (builtin.os.tag == .windows) {
-                _ = try editor_process.?.wait();
-            } else { //Must be called separately because Zig std library contains extra security check which would crash
-                var status: u32 = undefined;
-                while (blk: {
-                    const result = std.os.system.waitpid(editor_process.?.id, @ptrCast(&status), std.os.W.UNTRACED);
-                    DeshaderLog.debug("Editor PID {d} watcher result {}", .{ editor_process.?.id, std.os.system.getErrno(result) });
-                    break :blk !(std.os.W.IFEXITED(status) or std.os.W.IFSTOPPED(status) or std.os.W.IFSIGNALED(status));
-                }) {}
+        // Watch the child process and inform about its end
+        const watcher = try std.Thread.spawn(.{ .allocator = common.allocator }, struct {
+            fn watch() !void {
+                if (builtin.os.tag == .windows) {
+                    _ = try editor_process.?.wait();
+                } else { //Must be called separately because Zig std library contains extra security check which would crash
+                    var status: u32 = undefined;
+                    while (blk: {
+                        const result = std.os.system.waitpid(editor_process.?.id, @ptrCast(&status), std.os.W.UNTRACED);
+                        DeshaderLog.debug("Editor PID {d} watcher result {}", .{ editor_process.?.id, std.os.system.getErrno(result) });
+                        break :blk !(std.os.W.IFEXITED(status) or std.os.W.IFSTOPPED(status) or std.os.W.IFSIGNALED(status));
+                    }) {}
+                }
+                editor_process = null;
+                common.env.remove(DESHADER_EDITOR_URL);
             }
-            editor_process = null;
-            common.env.remove(DESHADER_EDITOR_URL);
-        }
-    }.watch, .{});
-    try watcher.setName("EditorWatch");
-    watcher.detach();
+        }.watch, .{});
+        try watcher.setName("EditorWatch");
+        watcher.detach();
+    }
 }
 
 pub fn windowTerminate() !void {
     if (editor_process) |*p| {
         if (builtin.os.tag == .windows) {
-            _ = try p.kill();
+            editor_view.terminate();
         } else {
             try std.os.kill(p.id, std.os.SIG.TERM);
         }
@@ -231,7 +237,9 @@ pub fn windowTerminate() !void {
 pub fn windowWait() !void {
     if (editor_process) |*p| {
         if (builtin.os.tag == .windows) {
-            _ = try p.wait();
+            editor_mutex.lock();
+            editor_shutdown.wait(&editor_mutex);
+            editor_mutex.unlock();
         } else {
             _ = std.os.system.waitpid(p.id, null, 0);
         }
@@ -247,6 +255,9 @@ pub fn windowWait() !void {
 pub fn editorProcess(url: String) !void {
     const view = try positron.View.create((@import("builtin").mode == .Debug), null);
     defer view.destroy();
+    if (builtin.os.tag == .windows) {
+        editor_view = view;
+    }
     view.setTitle("Deshader Editor");
     view.setSize(600, 400, .none);
 
@@ -256,4 +267,10 @@ pub fn editorProcess(url: String) !void {
     view.navigate(urlZ);
 
     view.run();
+    editor_mutex.lock();
+    editor_shutdown.signal();
+    if (builtin.os.tag == .windows) {
+        editor_process = null;
+    }
+    editor_mutex.unlock();
 }

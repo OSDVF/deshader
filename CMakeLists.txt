@@ -7,8 +7,20 @@ project(deshader)
 find_library(WOLFSSL wolfssl)
 
 if(WOLFSSL AND NOT NO_SYSTEM_WOLFSSL)
-    set(DESHADER_BUILD_FLAGS ${DESHADER_BUILD_FLAGS} -DwolfSSL=true)
+    set(DESHADER_BUILD_FLAGS ${DESHADER_BUILD_FLAGS} -DwolfSSL)
     message(STATUS "Using system wolfssl")
+endif()
+
+if(CMAKE_BUILD_TYPE AND NOT DESHADER_BUILD_FLAGS MATCHES ".*\-Doptimize.*")
+    if(CMAKE_BUILD_TYPE STREQUAL Release OR CMAKE_BUILD_TYPE STREQUAL RelWithDebInfo)
+        set(DESHADER_BUILD_FLAGS ${DESHADER_BUILD_FLAGS} -Doptimize=ReleaseSafe)
+    elseif(CMAKE_BUILD_TYPE STREQUAL MinSizeRel)
+        set(DESHADER_BUILD_FLAGS ${DESHADER_BUILD_FLAGS} -Doptimize=ReleaseSmall)
+    endif()
+endif()
+
+if(VCPKG_TARGET_TRIPLET STREQUAL "x64-windows-cross" AND NOT DESHADER_BUILD_FLAGS MATCHES ".*\-Dtarget.*" AND NOT DESHADER_BUILD_FLAGS MATCHES ".*\-fwine.*")
+    set(DESHADER_BUILD_FLAGS ${DESHADER_BUILD_FLAGS} -Dtarget=x64-windows-gnu -fwine)
 endif()
 
 file(
@@ -25,8 +37,19 @@ file(
 
 separate_arguments(SEPARATED_DESHADER_FLAGS UNIX_COMMAND "${DESHADER_BUILD_FLAGS}")
 
+set(DESHADER_OUTPUTS 
+    lib/deshader.c
+    lib/${CMAKE_SHARED_LIBRARY_PREFIX}deshader${CMAKE_SHARED_LIBRARY_SUFFIX}
+    lib/${CMAKE_IMPORT_LIBRARY_PREFIX}deshader${CMAKE_IMPORT_LIBRARY_SUFFIX}
+    include/deshader.hpp
+    include/deshader.h
+    include/deshader.zig
+    lib/deshader.ll
+    lib/deshader.bc
+)
+
 add_custom_command(
-    OUTPUT lib/deshader.c lib/libdeshader.so include/deshader.hpp include/deshader.h include/deshader.zig lib/deshader.ll lib/deshader.bc
+    OUTPUT ${DESHADER_OUTPUTS}
     COMMAND zig build deshader ${SEPARATED_DESHADER_FLAGS} -p ${CMAKE_BINARY_DIR} -Dlib="${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/lib" # instruct zig to output into CMAKE_BINARY_DIR
     DEPENDS ${ZIG_SOURCES}
     BYPRODUCTS ${CMAKE_CURRENT_SOURCE_DIR}/zig-cache/
@@ -37,7 +60,7 @@ add_custom_command(
 add_custom_target(
     deshader
     ALL
-    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/include/deshader.hpp
+    DEPENDS ${DESHADER_OUTPUTS}
 )
 execute_process(
     COMMAND zig env
@@ -52,6 +75,7 @@ add_library(
     SHARED IMPORTED
 )
 set_target_properties(deshader_zig PROPERTIES IMPORTED_LOCATION ${CMAKE_BINARY_DIR}/lib/${CMAKE_SHARED_LIBRARY_PREFIX}deshader${CMAKE_SHARED_LIBRARY_SUFFIX})
+
 if(WIN32)
     set_target_properties(deshader_zig PROPERTIES IMPORTED_IMPLIB ${CMAKE_BINARY_DIR}/lib/${CMAKE_IMPORT_LIBRARY_PREFIX}deshader${CMAKE_IMPORT_LIBRARY_SUFFIX})
 endif()
@@ -69,14 +93,14 @@ add_executable(example_editor examples/editor_linked.cpp)
 
 # Debug Commands
 add_executable(example_debug_commands examples/debug_commands.cpp)
+add_dependencies(example_debug_commands deshader)
 
 # GLFW
 add_executable(example_glfw examples/glfw.cpp)
 find_package(glfw3 3.3)
 find_package(GLEW)
-find_package(OpenGL)
-target_link_libraries(example_glfw PUBLIC GLEW::GLEW glfw OpenGL::GL)
-target_link_libraries(example_debug_commands PUBLIC GLEW::GLEW glfw OpenGL::GL)
+target_link_libraries(example_glfw PUBLIC GLEW::GLEW glfw)
+target_link_libraries(example_debug_commands PUBLIC GLEW::GLEW glfw)
 
 # include binary resources https://copyprogramming.com/howto/embed-resources-eg-shader-code-images-into-executable-library-with-cmake
 set(RC_DEPENDS "")

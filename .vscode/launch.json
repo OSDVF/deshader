@@ -2,19 +2,28 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Runner",
+            "name": "GDB - Runner",
             "type": "gdb",
             "request": "launch",
             "cwd": "${workspaceRoot}",
             "target": "./zig-out/bin/deshader-run",
             "preLaunchTask": "Build Runner",
-            "arguments": "zig-out/bin/examples",
+            "arguments": "-y zig-out/bin/deshader-examples/glfw",
             "env": {
                 "DESHADER_LIB": "zig-out/lib",
             },
         },
         {
-            "name": "Generate Stubs",
+            "name": "CPPDBG - Runner",
+            "request": "launch",
+            "type": "cppvsdbg",
+            "program": "${workspaceRoot}/zig-out/bin/deshader-run",
+            "args": ["-y", "zig-out/bin/deshader-examples/glfw.exe"],
+            "preLaunchTask": "Build Runner",
+            "cwd": "${workspaceRoot}"
+        },
+        {
+            "name": "GDB - Generate Stubs",
             "type": "gdb",
             "request": "launch",
             "cwd": "${workspaceRoot}",
@@ -24,7 +33,7 @@
         {
             "type": "gdb",
             "request": "launch",
-            "name": "Examples",
+            "name": "GDB - Examples",
             "target": "./zig-out/bin/examples",
             "cwd": "${workspaceRoot}",
             "valuesFormatting": "parseText",
@@ -37,8 +46,8 @@
         {
             "type": "gdb",
             "request": "launch",
-            "name": "Editor",
-            "target": "./zig-out/bin/example/editor",
+            "name": "GDB - Editor",
+            "target": "./zig-out/bin/deshader-examples/editor",
             "cwd": "${workspaceRoot}",
             "valuesFormatting": "parseText",
             "preLaunchTask": "Build Examples",
@@ -53,8 +62,8 @@
         {
             "type": "gdb",
             "request": "launch",
-            "name": "GLFW",
-            "target": "./zig-out/bin/example/glfw",
+            "name": "GDB - GLFW",
+            "target": "./zig-out/bin/deshader-examples/glfw",
             "cwd": "${workspaceRoot}",
             "valuesFormatting": "parseText",
             "preLaunchTask": "Build Examples",
@@ -70,10 +79,34 @@
             }
         },
         {
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "glfw.exe",
+            "name": "CPPDBG - GLFW",
+            "cwd": "${workspaceRoot}/zig-out/bin/deshader-examples/",
+            "preLaunchTask": "Build Examples",
+        },
+        {
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "editor_linked_cpp.exe",
+            "name": "CPPDBG - Editor Linked",
+            "cwd": "${workspaceRoot}/zig-out/bin/deshader-examples/",
+            "preLaunchTask": "Build Examples",
+        },
+        {
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "debug_commands.exe",
+            "name": "CPPDBG - Debug Commands",
+            "cwd": "${workspaceRoot}/zig-out/bin/deshader-examples/",
+            "preLaunchTask": "Build Examples",
+        },
+        {
             "type": "gdb",
             "request": "launch",
-            "name": "Editor in C++",
-            "target": "./zig-out/bin/example/editor_linked_cpp",
+            "name": "GDB - Editor in C++",
+            "target": "./zig-out/bin/deshader-examples/editor_linked_cpp",
             "cwd": "${workspaceRoot}",
             "valuesFormatting": "parseText",
             "preLaunchTask": "Build Examples",
@@ -81,8 +114,8 @@
         {
             "type": "gdb",
             "request": "launch",
-            "name": "Debug Commands",
-            "target": "./zig-out/bin/example/debug_commands",
+            "name": "GDB - Debug Commands",
+            "target": "./zig-out/bin/deshader-examples/debug_commands",
             "cwd": "${workspaceRoot}",
             "valuesFormatting": "parseText",
             "preLaunchTask": "Build Examples",
@@ -94,44 +127,56 @@
             }
         },
         {
+            "name": "GDB Attach",
             "type": "gdb",
-            "request": "launch",
-            "name": "Glfw in Wine",
-            "target": "./zig-out/bin/example/glfw.exe",
+            "request": "attach",
+            "executable": "${workspaceRoot}/zig-out/bin/deshader-examples/glfw.exe",
+            "remote": true,
+            "target": "localhost:42887",
             "cwd": "${workspaceRoot}",
-            "valuesFormatting": "parseText",
-            "preLaunchTask": "Cross-compile Examples",
         },
+        {
+            "name": "LLDB Attach",// Use for Wine debugging
+            "type": "lldb",// Execute add-dsym zig-out/bin/deshader-glfw.pdb afterwards to get smybols
+            "request": "attach",
+            "pid": "${command:pickMyProcess}",
+            "initCommands": [
+                "platform select remote-linux",
+                "platform connect connect://localhost:1234",
+            ]
+        },
+        
         {
             "type": "gdb",
             "request": "launch",
-            "name": "GLFW in C++",
-            "target": "./zig-out/bin/example/glfw_cpp",
+            "name": "GDB - GLFW in C++",
+            "target": "./zig-out/bin/deshader-examples/glfw_cpp",
             "cwd": "${workspaceRoot}",
             "valuesFormatting": "parseText",
             "preLaunchTask": "Build Examples",
         },
         {
-            "type": "cppdbg",
+            "type": "gdb",
             "request": "launch",
-            "name": "Editor in C++ from CMake",
-            "program": "${workspaceRoot}/build/example_editor",
+            "name": "GDB - Editor in C++ from CMake",
+            "target": "${workspaceRoot}/build/example_editor",
             "cwd": "${workspaceRoot}",
         },
         {
             "type": "gdb",
             "request": "launch",
-            "name": "GLFW in C++ from CMake",
+            "name": "GDB - GLFW in C++ from CMake",
             "target": "${workspaceRoot}/build/example_glfw",
             "cwd": "${workspaceRoot}",
             "autorun": [
-                "set environment LD_PRELOAD ${workspaceRoot}/build/libdeshader.so"
+                "set environment LD_PRELOAD ${workspaceRoot}/build/lib/libdeshader.so",
+                "set environment DESHADER_PROCESS example_glfw"
             ],
         },
         {
             "type": "gdb",
             "request": "launch",
-            "name": "Header Generator",
+            "name": "GDB - Header Generator",
             "target": "./zig-out/bin/generate_headers",
             "cwd": "${workspaceRoot}",
             "valuesFormatting": "parseText",

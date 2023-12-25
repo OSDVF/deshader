@@ -21,6 +21,7 @@ pub var gpa = std.heap.GeneralPurposeAllocator(.{
 pub var allocator: std.mem.Allocator = undefined;
 pub var env: std.process.EnvMap = undefined;
 pub var initialized = false;
+pub const env_prefix = "DESHADER_";
 pub fn init() !void {
     if (!initialized) {
         allocator = gpa.allocator();
@@ -127,4 +128,64 @@ pub fn selfDllPathAlloc(a: std.mem.Allocator, concat_with: String) !String {
     }
 
     return path;
+}
+
+/// Wraps std.fs.selfExePathAlloc or gets argv[0] on Windows to workaround Wine bug
+pub fn selfExePathAlloc(alloc: std.mem.Allocator) !String {
+    if (builtin.os.tag == .windows) // Wine fails on realpath
+    {
+        var arg = try std.process.argsWithAllocator(alloc);
+        defer arg.deinit();
+        return alloc.dupe(u8, arg.next().?);
+    } else {
+        return std.fs.selfExePathAlloc(alloc);
+    }
+}
+
+pub fn LoadLibraryEx(path_or_name: String, only_system: bool) !std.os.windows.HMODULE {
+    if (!only_system) {
+        if (std.fs.path.dirname(path_or_name)) |dirname| {
+            const dir = try std.unicode.utf8ToUtf16LeWithNull(allocator, dirname);
+            defer allocator.free(dir);
+            if (c.AddDllDirectory(dir) == null) {
+                log.err("Failed to add DLL directory {s}: {}", .{ dirname, std.os.windows.kernel32.GetLastError() });
+            }
+        }
+    }
+    const path_w = (try std.os.windows.sliceToPrefixedFileW(null, std.fs.path.basename(path_or_name))).span().ptr;
+    var offset: usize = 0;
+    if (path_w[0] == '\\' and path_w[1] == '?' and path_w[2] == '?' and path_w[3] == '\\') {
+        // + 4 to skip over the \??\
+        offset = 4;
+    }
+    const handle = c.LoadLibraryExW(path_w + offset, null, if (only_system) c.LOAD_LIBRARY_SEARCH_SYSTEM32 else c.LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+    if (handle == null) {
+        return std.os.windows.unexpectedError(std.os.windows.kernel32.GetLastError());
+    }
+    return @ptrCast(handle.?);
+}
+
+/// Handles WINE workaround
+pub fn symlinkOrCopy(cwd: std.fs.Dir, target_path: String, symlink_path: String) !void {
+    (blk: {
+        if (env.get("WINELOADER") != null) {
+            break :blk error.Wine;
+        }
+        break :blk cwd.symLink(target_path, symlink_path, .{});
+    }) catch |err| {
+        if (err == error.Unexpected or err == error.Wine or err == error.PathAlreadyExists) {
+            // Workaround for Wine bugs
+            if (cwd.updateFile(target_path, cwd, symlink_path, .{})) |status| {
+                if (status == .stale) {
+                    log.info("Copied from {s} to {s}", .{ target_path, symlink_path });
+                } else {
+                    log.debug("{s} is still fresh.", .{symlink_path});
+                }
+            } else |_| {
+                try cwd.copyFile(target_path, cwd, symlink_path, .{});
+            }
+        } else {
+            return err;
+        }
+    };
 }

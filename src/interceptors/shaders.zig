@@ -430,7 +430,7 @@ const ids_array = blk: {
 
 /// Fallback for compatibility with OpenGL < 4.3
 /// Used from C when DESHADER_COMPATIBILITY is set
-pub export fn transformFeedbackVaryings(_program: gl.GLuint, length: gl.GLsizei, buf: ?[*:0]const gl.GLchar, id: gl.GLenum) void {
+pub export fn glTransformFeedbackVaryings(_program: gl.GLuint, length: gl.GLsizei, buf: ?[*:0]const gl.GLchar, id: gl.GLenum) void {
     if (_program == 0) {
         if (std.mem.indexOfScalar(c_uint, &ids_array, id) != null) {
             glDebugMessageInsert(gl.DEBUG_SOURCE_APPLICATION, gl.DEBUG_TYPE_OTHER, id, gl.DEBUG_SEVERITY_HIGH, length, buf);

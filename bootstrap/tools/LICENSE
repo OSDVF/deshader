@@ -1,0 +1,5 @@
+Extracted from VS Community 2022
+dumpbin.exe, link.exe, mspdbcore.dll:
+https://visualstudio.microsoft.com/license-terms/mt644918/
+tbbmalloc.dll:
+https://github.com/oneapi-src/oneTBB/tree/master?tab=Apache-2.0-1-ov-file

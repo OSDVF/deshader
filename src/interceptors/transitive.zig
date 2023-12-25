@@ -133,7 +133,7 @@ pub const TransitiveSymbols = struct {
         inline for (names) |symbol_name| {
             const prefix = symbol_name[0];
             var lib = switch (prefix) { // TODO specify different mapping discriminator than a prefix
-                'g' => APIs.gl.glX.lib,
+                'g' => if (builtin.os.tag == .windows) APIs.gl.wgl.lib else APIs.gl.glX.lib,
                 'v' => APIs.vk.lib.?,
                 'e' => APIs.gl.egl.lib,
                 'w' => APIs.gl.wgl.lib,
@@ -141,12 +141,13 @@ pub const TransitiveSymbols = struct {
             };
             const with_null = try common.allocator.dupeZ(u8, symbol_name);
             defer common.allocator.free(with_null);
-
-            const symbol_target = lib.?.lookup(gl.FunctionPointer, with_null);
-            if (symbol_target != null) {
-                @field(transitive_procs, symbol_name) = symbol_target.?;
-            } else {
-                DeshaderLog.err("Failed to find symbol {s}", .{symbol_name});
+            if(lib != null) {
+                const symbol_target = lib.?.lookup(gl.FunctionPointer, with_null);
+                if (symbol_target != null) {
+                    @field(transitive_procs, symbol_name) = symbol_target.?;
+                } else {
+                    DeshaderLog.err("Failed to find symbol {s}", .{symbol_name});
+                }
             }
         }
     }

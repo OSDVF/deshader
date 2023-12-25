@@ -1,6 +1,8 @@
 {
     "C_Cpp.default.compileCommands": "${workspaceFolder}/build/compile_commands.json",
     "files.associations": {
+        "*.frag": "c",
+        "*.glsl": "c",
         "array": "cpp",
         "cctype": "cpp",
         "clocale": "cpp",
@@ -81,6 +83,34 @@
         "__tree": "cpp",
         "__verbose_abort": "cpp",
         "ios": "cpp",
-        "locale": "cpp"
+        "locale": "cpp",
+        "charconv": "cpp",
+        "codecvt": "cpp",
+        "coroutine": "cpp",
+        "format": "cpp",
+        "future": "cpp",
+        "xfacet": "cpp",
+        "xhash": "cpp",
+        "xiosbase": "cpp",
+        "xlocale": "cpp",
+        "xlocbuf": "cpp",
+        "xlocinfo": "cpp",
+        "xlocmes": "cpp",
+        "xlocmon": "cpp",
+        "xlocnum": "cpp",
+        "xloctime": "cpp",
+        "xmemory": "cpp",
+        "xstring": "cpp",
+        "xtr1common": "cpp",
+        "xtree": "cpp",
+        "xutility": "cpp"
     },
+    "C_Cpp.dimInactiveRegions": false,
+    "cmake.configureSettings": {
+        "VCPKG_TARGET_TRIPLET": "x64-windows-cross",
+        "CMAKE_TOOLCHAIN_FILE": "/opt/vcpkg/scripts/buildsystems/vcpkg.cmake",
+        "CMAKE_SYSTEM_NAME": "Windows"
+    },
+    "cmake.configureOnEdit": false,
+    "cmake.configureOnOpen": false,
 }

@@ -1,4 +1,5 @@
 #include <iostream>
+#define DESHADER_DEBUG // not really necessary here, because DESHADER_DEBUG_ONLY is not defined
 #include <deshader/macros.h>
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>

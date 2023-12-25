@@ -174,17 +174,37 @@ pub export fn deshaderTaggedSource(payload: SourcesPayload, if_exists: ExistsBeh
 }
 
 //
-// Private logic
+// Startup logic
 //
+pub fn DllMain(instance: std.os.windows.HINSTANCE, reason: std.os.windows.DWORD, reserved: std.os.windows.LPVOID) callconv(std.os.windows.WINAPI) std.os.windows.BOOL {
+    _ = instance;
+    _ = reserved;
 
-// https://www.cnblogs.com/sunkang/archive/2011/05/24/2055635.html
-export const init_array linksection(if (builtin.os.tag == .windows) ".CRT$XIU" else ".init_array") = &wrapErrorRunOnLoad;
-export const fini_array linksection(if (builtin.os.tag == .windows) ".CRT$XPU" else ".fini_array") = &finalize;
+    if (builtin.os.tag == .windows) {
+        const windows = @cImport(if (builtin.os.tag == .windows) @cInclude("windows.h"));
+        switch (reason) {
+            windows.DLL_PROCESS_ATTACH => wrapErrorRunOnLoad(),
+            windows.DLL_PROCESS_DETACH => finalize(),
+            else => {},
+        }
+    }
+    return std.os.windows.TRUE;
+}
+comptime {
+    if (builtin.os.tag != .windows) {
+        const i = &wrapErrorRunOnLoad;
+        const f = &finalize;
+        @export(i, .{ .name = "init_array", .section = ".init_array" });
+        @export(f, .{ .name = "fini_array", .section = ".fini_array" });
+    }
+}
 pub var command_listener: ?*commands.CommandListener = null;
 
 /// Run this functions at Deshader shared library load
 fn runOnLoad() !void {
-    try common.init(); // init allocator and env
+    if (!common.initialized) { // races with dlopen but should be on the same thread
+        try common.init(); // init allocator and env
+    }
     if (!loaders.ignored) {
         // maybe it was not checked yet
         loaders.checkIgnoredProcess();
@@ -192,10 +212,10 @@ fn runOnLoad() !void {
 
     // Should this be the editor subprocess?
     const url = common.env.get(editor.DESHADER_EDITOR_URL);
-    if (url != null and common.env.get("DESHADER_EDITOR_SHOWN") == null) {
-        common.setenv("DESHADER_EDITOR_SHOWN", "1");
+    if (builtin.os.tag != .windows and url != null and common.env.get(common.env_prefix ++ "EDITOR_SHOWN") == null) {
+        common.setenv(common.env_prefix ++ "EDITOR_SHOWN", "1");
         // Prevent recursive hooking
-        common.setenv("DESHADER_HOOKED", "1");
+        common.setenv(common.env_prefix ++ "HOOKED", "1");
         const preload = common.env.get("LD_PRELOAD") orelse "";
         var replaced = std.ArrayList(u8).init(common.allocator);
         var it = std.mem.splitAny(u8, preload, ": ");
@@ -216,11 +236,11 @@ fn runOnLoad() !void {
         return;
     }
     // Prevent recursive hooking
-    common.setenv("DESHADER_HOOKED", "1");
+    common.setenv(common.env_prefix ++ "HOOKED", "1");
     try shaders.init(common.allocator);
 
-    const commands_port_string = common.env.get("DESHADER_COMMANDS_HTTP") orelse "8081";
-    const commands_port_string_ws = common.env.get("DESHADER_COMMANDS_WS");
+    const commands_port_string = common.env.get(common.env_prefix ++ "COMMANDS_HTTP") orelse "8081";
+    const commands_port_string_ws = common.env.get(common.env_prefix ++ "COMMANDS_WS");
     const commands_port_http = try std.fmt.parseInt(u16, commands_port_string, 10);
     const commands_port_ws = if (commands_port_string_ws == null) null else try std.fmt.parseInt(u16, commands_port_string_ws.?, 10);
     command_listener = try commands.CommandListener.start(common.allocator, commands_port_http, commands_port_ws);
@@ -233,7 +253,7 @@ fn runOnLoad() !void {
     try loaders.loadVkLib();
     try transitive.TransitiveSymbols.loadOriginal();
 
-    const editor_at_startup = common.env.get("DESHADER_SHOW") orelse "0";
+    const editor_at_startup = common.env.get(common.env_prefix ++ "SHOW") orelse "0";
     const l = try std.ascii.allocLowerString(common.allocator, editor_at_startup);
     defer common.allocator.free(l);
     const showOpts = enum { yes, no, @"1", @"0", true, false, unknown };
@@ -268,6 +288,7 @@ fn finalize() callconv(.C) void {
     }
     shaders.Programs.deinit();
     shaders.Shaders.deinit();
+    loaders.deinit();
 }
 
 fn wrapErrorRunOnLoad() callconv(.C) void {

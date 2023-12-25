@@ -21,13 +21,33 @@
             }
         },
         {
+            "label": "Create zig-out ramdisk",
+            "type": "shell",
+            "command": "sudo",
+            "args": [
+                "sh",
+                "-c",
+                "mkdir -p ${workspaceFolder}/zig-out && mount -t ramfs -o size=256m ramfs ${workspaceFolder}/zig-out && chmod 777 ${workspaceFolder}/zig-out"
+            ],
+            "problemMatcher": [],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": true,
+                "panel": "shared",
+                "showReuseMessage": true,
+                "clear": false
+            }
+        },
+        {
             "label": "Build Library",
             "command": "zig",
             "args": [
                 "build",
                 "deshader",
-                "-DwolfSSL=true",
-                "-DlogIntercept=true",
+                "-DwolfSSL",
+                "-Ddeps",
+                "-DlogIntercept",
                 "-freference-trace",
                 "--summary",
                 "none"
@@ -36,7 +56,7 @@
             "group": "build",
             "presentation": {
                 "echo": false,
-                "reveal": "silent",
+                "reveal": "always",
                 "focus": false,
                 "panel": "shared",
                 "showReuseMessage": true,
@@ -49,14 +69,14 @@
             "args": [
                 "build",
                 "runner",
-                "-DwolfSSL=true",
+                "-DwolfSSL",
                 "-freference-trace"
             ],
             "problemMatcher": "$zig",
             "group": "build",
             "presentation": {
                 "echo": false,
-                "reveal": "silent",
+                "reveal": "always",
                 "focus": false,
                 "panel": "shared",
                 "showReuseMessage": true,
@@ -69,13 +89,13 @@
             "args": [
                 "build",
                 "examples-run",
-                "-DwolfSSL=true",
+                "-DwolfSSL",
                 "-freference-trace"
             ],
             "problemMatcher": "$zig",
             "presentation": {
                 "echo": false,
-                "reveal": "silent",
+                "reveal": "always",
                 "focus": false,
                 "panel": "shared",
                 "showReuseMessage": true,
@@ -88,9 +108,10 @@
             "args": [
                 "build",
                 "examples",
-                "-DwolfSSL=true",
+                "-Ddeps",
+                "-DwolfSSL",
                 "-freference-trace",
-                "-DlogIntercept=true",
+                "-DlogIntercept",
                 "-DmemoryFrames=10",
                 "--summary",
                 "none"
@@ -99,7 +120,7 @@
             "group": "build",
             "presentation": {
                 "echo": false,
-                "reveal": "silent",
+                "reveal": "always",
                 "focus": false,
                 "panel": "shared",
                 "showReuseMessage": true,
@@ -114,8 +135,77 @@
                 "examples",
                 "-fwine",
                 "-Dtarget=x86_64-windows-gnu",
-                "-freference-trace",
-            ]
+                "-DwolfSSL",
+                "-DlogIntercept",
+                "-freference-trace"
+            ],
+            "problemMatcher": "$zig",
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": true,
+                "panel": "shared",
+                "showReuseMessage": true,
+                "clear": false
+            }
+        },
+        {
+            "label": "Cross-compile Deshader",
+            "command": "zig",
+            "args": [
+                "build",
+                "deshader",
+                "-fwine",
+                "-DwolfSSL",
+                "-Ddeps",
+                "-Dtarget=x86_64-windows-gnu",
+                "-DlogIntercept",
+                "-freference-trace"
+            ],
+            "group": "build",
+            "problemMatcher": "$zig",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": true,
+                "panel": "shared",
+                "showReuseMessage": true,
+                "clear": false
+            }
+        },
+        {
+            "label": "Cross-compile Runner",
+            "command": "zig",
+            "args": [
+                "build",
+                "runner",
+                "-fwine",
+                "-DwolfSSL",
+                "-Dtarget=x86_64-windows-gnu",
+                "-freference-trace"
+            ],
+            "problemMatcher": "$zig",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": true,
+                "panel": "shared",
+                "showReuseMessage": true,
+                "clear": false
+            }
+        },
+        {
+            "label": "Start LLDB Server",
+            "command": "pkexec",
+            "args": [
+                "lldb-server",
+                "platform",
+                "--listen",
+                "*:1234",
+                "--server"
+            ],
+            "problemMatcher": []
         },
         {
             "label": "Build Headers Generator",
@@ -128,7 +218,7 @@
             "group": "build",
             "presentation": {
                 "echo": false,
-                "reveal": "silent",
+                "reveal": "always",
                 "focus": false,
                 "panel": "shared",
                 "showReuseMessage": true,
@@ -143,10 +233,9 @@
                 "generate_stubs"
             ],
             "problemMatcher": "$zig",
-            "group": "build",
             "presentation": {
                 "echo": false,
-                "reveal": "silent",
+                "reveal": "always",
                 "focus": false,
                 "panel": "shared",
                 "showReuseMessage": true,
@@ -164,8 +253,28 @@
             "group": "build",
             "presentation": {
                 "echo": false,
-                "reveal": "silent",
+                "reveal": "always",
                 "focus": false,
+                "panel": "shared",
+                "showReuseMessage": true,
+                "clear": true
+            }
+        },
+        {
+            "label": "Cross-build Dependencies",
+            "command": "zig",
+            "args": [
+                "build",
+                "dependencies",
+                "-fwine",
+                "-Dtarget=x86_64-windows-gnu",
+            ],
+            "problemMatcher": "$zig",
+            "group": "build",
+            "presentation": {
+                "echo": false,
+                "reveal": "always",
+                "focus": true,
                 "panel": "shared",
                 "showReuseMessage": true,
                 "clear": true

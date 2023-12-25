@@ -56,7 +56,7 @@ Deshader consists of several (mostly third party; mostly forked) components that
 ## Requirements
 - Zig 0.12.0-dev.1718+3acb0e30a [built from source](https://github.com/ziglang/zig#building-from-source) (checkout the commit with hash 027aabf49)
 - Bun 1.0.6 [Install](https://github.com/oven-sh/bun#install)
-- Dotnet
+- GNU Make and .NET Core for generating OpenGL bindings
 - C libraries
     - GLEW (can be installed by VCPKG)
     - Linux
@@ -64,13 +64,19 @@ Deshader consists of several (mostly third party; mostly forked) components that
     - Windows
         - [VCPKG](https://vcpkg.io)
         - [Edge Dev Channel](https://www.microsoftedgeinsider.com/download)
-    - Cross-compilation under Linux
-        - [VCPKG](https://vcpkg.io)
-        - add VCPKG path to `~/.local/share/vcpkg/vcpkg.path.txt` (e.g. `echo $(which vcpkg) > ~/.local/share/vcpkg/vcpkg.path.txt`)
-        - `vcpkg install --triplet x64-windows-cross --x-install-root=build/vcpkg_installed`
+        - WebView2 runtime
+    - *Cross-compilation* under Linux
+        - for Windows
+            - [VCPKG](https://vcpkg.io)
+            - add VCPKG path to `~/.local/share/vcpkg/vcpkg.path.txt` (e.g. `echo $(which vcpkg) > ~/.local/share/vcpkg/vcpkg.path.txt`)
+            - [Edge Dev Channel](https://www.microsoftedgeinsider.com/download) installed by offline installer
+            - WebView2 runtime must be installed by [standalone installer](https://developer.microsoft.com/en-us/microsoft-edge/webview2#download) (not bootstraper) under Wine
+            - **NOTES**
+                - Cross compiled Runner is not compatible with Deshader compiled on Windows because there are inconsistencies between library names (`[lib]wolfssl`) 
+                - DLL interception does not work for OpenGL under Wine. Intercept on host side instead (however this does not really work for now)
 - For using CMake to compile C++ examples
     - `pkg-config`
-    - glfw 3.3
+    - glfw 3.3 when not using VCPKG
     - `ld` from `binutils` package
 
 ## How to
@@ -78,7 +84,7 @@ After you install all the required frameworks, clone this repository with submod
 ```sh
 git clone --recurse-submmodules https://github.com/OSDVF/deshader
 cd deshader
-zig build dependencies
+zig build deshader --Ddeps
 ```
 If that does not output any errors, it will autmatically
 - Generate OpenGL bindings
@@ -87,6 +93,8 @@ If that does not output any errors, it will autmatically
     - `bun install` inside `/editor/` and `/editor/deshader-vscode/`
 - Compile Deshader VSCode Extension
     - `bun compile-web` inside `/editor/deshader-vscode/`
+- Install VCPKG managed libraries (when target is Windows) and correct ther names (`.dll.a` -> `.lib`)
+- Build Deshader library
 
 for you. If there weren't any errors, then you can then
 ```sh
@@ -97,7 +105,7 @@ zig build runner
 DESHADER_LIB=zig-out/lib/libdeshader.so ./zig-out/bin/deshader-run your_application
 
 # Or run & build the provided examples sequentially
-zig build examples-run -DwolfSSL=true -DlogIntercept=true  # -DwolfSSL=true only if you have WolfSSL installed
+zig build examples-run
 ```
 `DESHADER_LIB` is optional if Deshader is installed system-wide or is in the same directory as `deshader-run`
 
@@ -140,12 +148,16 @@ DYLD_INSERT_LIBRARIES=./zig-out/lib/libdeshader.dylib your_application
 ```
 
 ## Build Options
-Specify options as `-Doption=value` to `zig build deshader` commands. See also `zig build --help`
+Specify options as `-Doption=value` to `zig build` commands. See also `zig build --help`.  
+Boolean options can be set to true using `-Doption=true` or `-Doption`.
+
+**NOTE**: Options must be specified when compiling both Deshader (`deshader-lib`/`deshader`) and Runner (`runner`).
 Name                  | Values                        | Description
 ----------------------|-------------------------------|--------------------------------------------------------------------------------------------------
 `linkage`             | `Static`, `Dynamic` (default) | Select type of for Deshader library
-`wolfSSL`             | `true`, `false` (default)     | Link with system-provided WolfSSL instead of deshader included one
+`wolfSSL`             | `true`, `false` (default)     | Link with system or VCPKG provided WolfSSL instead of compiling it from source
 `logIntercept`        | `true`, `false` (default)     | Enable logging of intercepted VK ang GL (not on Mac) procedure requests
+`deps`  | `true`, `false` (default) | Also build dependencies before the final Deshader library
 `embedEditor`         | `true` (default), `false`     | Embed VSCode into Deshader. Otherwise external editor must be used. Can save 4MB in ReleaseSmall.
 `glAddLoader`         | any string                    | Specify a single additional function name that will be exported and intercepted
 `vkAddDeviceLoader`   | any string                    | Export additional intercepted function that will call device procedure addresss loader
@@ -161,7 +173,7 @@ Name                  | Values                        | Description
 - Cannot compile
     - Something with `struct_XSTAT` inside WolfSSL
     - no field named `hex` in enum `zig.c_translation.CIntLiteralBase`
-        - fix by `./fix_c_import.sh`
+        - fix by `./fix_c_import.sh` or `./fix_c_import.ps1`
         **CAUTION**: The script searches the whole `zls` global cache in `~/.cache/zls` and deletes lines with `struct_XSTAT` so be careful.
 - Editor window is blank
     - This is a known issue between WebKit and vendor GL drivers
