@@ -32,5 +32,17 @@ node_modules/vscode-web/dist/out/vs/workbench/services/languageDetection/browser
 node_modules/vscode-web/dist/out/vs/workbench/workbench.web.main.css
 node_modules/vscode-web/dist/out/vs/workbench/workbench.web.main.js
 node_modules/vscode-web/dist/out/vs/workbench/workbench.web.main.nls.js
+node_modules/vscode-web/dist/node_modules/xterm/lib/xterm.js
+node_modules/vscode-web/dist/node_modules/xterm/css/xterm.css
+node_modules/vscode-web/dist/node_modules/xterm-addon-canvas/lib/xterm-addon-canvas.js
+node_modules/vscode-web/dist/node_modules/xterm-addon-image/lib/xterm-addon-image.js
+node_modules/vscode-web/dist/node_modules/xterm-addon-search/lib/xterm-addon-search.js
+node_modules/vscode-web/dist/node_modules/xterm-addon-unicode11/lib/xterm-addon-unicode11.js
+node_modules/vscode-web/dist/node_modules/xterm-addon-webgl/lib/xterm-addon-webgl.js
 deshader-vscode/dist/web/extension.js
+deshader-vscode/dist/web/extension.js.map
+deshader-vscode/src/web/extension.ts
+deshader-vscode/src/web/deshader.ts
+deshader-vscode/src/web/debugSession.ts
+deshader-vscode/src/web/filesystemProvider.ts
 deshader-vscode/package.json

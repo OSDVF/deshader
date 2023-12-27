@@ -55,8 +55,6 @@
                 "DESHADER_LIB_ROOT": "/usr/lib/",
                 "DESHADER_COMMANDS_WS": "8082",
                 "DESHADER_IGNORE_PROCESS": "gdb,zsh",
-                "G_DEBUG":"all",
-                "GDK_DEBUG":"all",
             }
         },
         {
@@ -93,6 +91,12 @@
             "name": "CPPDBG - Editor Linked",
             "cwd": "${workspaceRoot}/zig-out/bin/deshader-examples/",
             "preLaunchTask": "Build Examples",
+            "environment": [
+                {
+                    "name": "DESHADER_COMMANDS_WS",
+                    "value": "8082"
+                }
+            ]
         },
         {
             "type": "cppvsdbg",

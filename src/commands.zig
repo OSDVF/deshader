@@ -25,7 +25,7 @@ pub const CommandListener = struct {
     // various command providers
     http: ?*positron.Provider = null,
     ws: ?*websocket.Conn = null,
-    ws_config: websocket.Config.Server = undefined,
+    ws_config: ?websocket.Config.Server = null,
     provide_thread: ?std.Thread = null,
     websocket_thread: ?std.Thread = null,
     server_arena: std.heap.ArenaAllocator = undefined,
@@ -58,7 +58,7 @@ pub const CommandListener = struct {
                         };
                     }
                 }.listen,
-                .{ self, self.server_arena.allocator(), self.ws_config },
+                .{ self, self.server_arena.allocator(), self.ws_config.? },
             );
             try self.websocket_thread.?.setName("CmdListWS");
         }
@@ -341,6 +341,10 @@ pub const CommandListener = struct {
             }
             var iterator = std.mem.splitScalar(u8, message.data, 0);
             var args = iterator.first();
+            if (args.len == 0) {
+                try self.conn.writeText("400: Bad request\n");
+                return;
+            }
             if (args[args.len - 1] == '\n') {
                 args = args[0 .. args.len - 1];
             }

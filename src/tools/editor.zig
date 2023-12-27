@@ -4,6 +4,7 @@ const positron = @import("positron");
 const common = @import("../common.zig");
 const commands = @import("../commands.zig");
 const options = @import("options");
+const ctregex = @import("ctregex");
 
 const DeshaderLog = @import("../log.zig").DeshaderLog;
 
@@ -67,11 +68,14 @@ pub fn createEditorProvider(command_listener: ?*const commands.CommandListener) 
     inline for (options.files) |file| {
         const lastDot = std.mem.lastIndexOf(u8, file, &[_]u8{@as(u8, '.')});
         const fileExt = if (lastDot != null) file[lastDot.? + 1 ..] else "";
-        const Case = enum { html, htm, js, ts, css, json, other };
-        const case = std.meta.stringToEnum(Case, fileExt) orelse .other;
+        if (builtin.mode != .Debug and try ctregex.search("map|ts", .{}, fileExt) != null) {
+            continue; // Do not include sourcemaps in release builds
+        }
+        const case = std.meta.stringToEnum(enum { html, htm, js, map, ts, css, json, other }, fileExt) orelse .other;
         const mimeType = switch (case) {
             .html, .htm => "text/html",
             .js, .ts => "text/javascript",
+            .map => "application/json",
             .css => "text/css",
             .other => "text/plain",
             .json => "application/json",
@@ -86,7 +90,7 @@ pub fn createEditorProvider(command_listener: ?*const commands.CommandListener) 
             const editor_config_fmt = "{s}\nglobalThis.deshader={{{s}:{{address:\"";
             if (command_listener) |cl| {
                 var decompressed_data: String = undefined;
-                if (cl.ws != null or cl.http != null) {
+                if (cl.ws_config != null or cl.http != null) {
                     var stream = std.io.fixedBufferStream(compressed_content);
                     var decompressor = try std.compress.zlib.decompressStream(provider.allocator, stream.reader());
                     defer decompressor.deinit();
@@ -94,8 +98,8 @@ pub fn createEditorProvider(command_listener: ?*const commands.CommandListener) 
                     decompressed_data = try decompressed.readAllAlloc(provider.allocator, 10 * 1024 * 1024);
                     defer provider.allocator.free(decompressed_data);
 
-                    if (cl.ws) |_| {
-                        editor_config = try std.fmt.allocPrint(provider.allocator, editor_config_fmt ++ "{s}\",port:{d}}}}}\n", .{ decompressed_data, if (cl.secure) "wss" else "ws", cl.ws_config.address, cl.ws_config.port });
+                    if (cl.ws_config) |wsc| {
+                        editor_config = try std.fmt.allocPrint(provider.allocator, editor_config_fmt ++ "{s}\",port:{d}}}}}\n", .{ decompressed_data, if (cl.secure) "wss" else "ws", wsc.address, wsc.port });
                     } else {
                         if (cl.http) |http| {
                             if (http.server.bindings.getLastOrNull()) |bind| {

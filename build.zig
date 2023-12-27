@@ -216,6 +216,7 @@ pub fn build(b: *std.Build) !void {
         run_symbol_enum.addArgs(optionAdditionalLibraries.?);
         allLibraries.appendSlice(optionAdditionalLibraries.?) catch unreachable;
     }
+    // Parse symbol enumerator output
     var addGlProcsStep = ListGlProcsStep.init(b, targetTarget, "add_gl_procs", allLibraries.items, GlSymbolPrefixes, run_symbol_enum.captureStdOut());
     addGlProcsStep.step.dependOn(&run_symbol_enum.step);
     deshader_lib.step.dependOn(&addGlProcsStep.step);
@@ -282,9 +283,6 @@ pub fn build(b: *std.Build) !void {
         var dependencies_step: *DependenciesStep = try b.allocator.create(DependenciesStep);
         dependencies_step.* = DependenciesStep.init(b, target, optionWolfSSL or targetTarget == .windows); // If wolfSSL is meant to be linked dynamically, it must be built first
         dependencies_cmd.dependOn(&dependencies_step.step);
-        if (optionDependencies) {
-            deshader_lib_cmd.dependOn(&dependencies_step.step);
-        }
 
         //
         // Embed the created dependencies
@@ -292,14 +290,14 @@ pub fn build(b: *std.Build) !void {
         var files = std.ArrayList(String).init(b.allocator);
         defer files.deinit();
 
-        // Add all files names in the editor dist folder to `files`
+        // Add all file names in the editor dist folder to `files`
         const editor_directory = "editor";
         if (option_embed_editor) {
             const editor_files = try b.build_root.handle.readFileAlloc(b.allocator, editor_directory ++ "/required.txt", 1024 * 1024);
             var editor_files_lines = std.mem.splitScalar(u8, editor_files, '\n');
             editor_files_lines.reset();
             while (editor_files_lines.next()) |line| {
-                try appendFiles(deshader_lib, &files, .{
+                try appendFiles(deshader_lib, if (optionDependencies) &dependencies_step.step else null, &files, .{
                     try std.fmt.allocPrint(b.allocator, "{s}/{s}", .{ editor_directory, line }),
                 });
             }
@@ -560,13 +558,16 @@ fn openGlModule(b: *std.build.Builder) !*std.build.Module {
     });
 }
 
-fn appendFiles(step: *std.build.Step.Compile, files: *std.ArrayList(String), toAdd: anytype) !void {
+fn appendFiles(compile: *std.build.Step.Compile, dependOn: ?*std.build.Step, files: *std.ArrayList(String), toAdd: anytype) !void {
     inline for (toAdd) |addThis| {
-        const compress = try CompressStep.init(step.step.owner, std.build.FileSource.relative(addThis));
-        step.addAnonymousModule(addThis, .{
+        const compress = try CompressStep.init(compile.step.owner, std.build.FileSource.relative(addThis));
+        if (dependOn) |d| {
+            compress.step.dependOn(d);
+        }
+        compile.addAnonymousModule(addThis, .{
             .source_file = .{ .generated = &compress.generatedFile },
         });
-        step.step.dependOn(&compress.step);
+        compile.step.dependOn(&compress.step);
         try files.append(addThis);
     }
 }

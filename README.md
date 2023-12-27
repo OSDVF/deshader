@@ -57,6 +57,7 @@ Deshader consists of several (mostly third party; mostly forked) components that
 - Zig 0.12.0-dev.1718+3acb0e30a [built from source](https://github.com/ziglang/zig#building-from-source) (checkout the commit with hash 027aabf49)
 - Bun 1.0.6 [Install](https://github.com/oven-sh/bun#install)
 - GNU Make and .NET Core for generating OpenGL bindings
+- Webpack
 - C libraries
     - GLEW (can be installed by VCPKG)
     - Linux
@@ -65,6 +66,7 @@ Deshader consists of several (mostly third party; mostly forked) components that
         - [VCPKG](https://vcpkg.io)
         - [Edge Dev Channel](https://www.microsoftedgeinsider.com/download)
         - WebView2 runtime
+        - Bun under WSL
     - *Cross-compilation* under Linux
         - for Windows
             - [VCPKG](https://vcpkg.io)

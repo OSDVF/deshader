@@ -76,12 +76,11 @@ pub const DependenciesStep = struct {
 
         // Init
         try sub_steps.append(.{ .name = "Building OpenGL definitions", .args = &.{ "make", "all" }, .env_map = env_map, .cwd = "./libs/zig-opengl" });
-
-        const bunInstallCmd = [_]String{ "bun", "install", "--frozen-lockfile" };
+        const bunInstallCmd = if (builtin.os.tag == .windows) [_]String{ "wsl", "--exec", "bash", "-c", "~/.bun/bin/bun install --frozen-lockfile" } else [_]String{ "bun", "install", "--frozen-lockfile" };
         const deshaderVsCodeExt = "editor/deshader-vscode";
         try sub_steps.append(.{ .name = "Installing node.js dependencies by Bun for deshader-vscode", .args = &bunInstallCmd, .env_map = env_map, .cwd = deshaderVsCodeExt });
         try sub_steps.append(.{ .name = "Installing node.js dependencies by Bun for editor", .args = &bunInstallCmd ++ &[_]String{"--production"}, .env_map = env_map, .cwd = "editor" });
-        try sub_steps.append(.{ .name = "Compiling deshader-vscode extension", .args = &.{ "bun", "compile-web" }, .env_map = env_map, .cwd = deshaderVsCodeExt });
+        try sub_steps.append(.{ .name = "Compiling deshader-vscode extension", .args = if (builtin.os.tag == .windows) &.{ "wsl", "--exec", "bash", "-c", "~/.bun/bin/bun compile web" } else &.{ "bun", "compile-web" }, .env_map = env_map, .cwd = deshaderVsCodeExt });
 
         if (self.vcpgk) {
             const triplet = try std.mem.concat(step.owner.allocator, u8, &.{ (if (self.target.getCpuArch() == .x86) "x86" else "x64") ++ "-", switch (self.target.getOsTag()) {
