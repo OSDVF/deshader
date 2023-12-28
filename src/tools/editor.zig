@@ -43,6 +43,20 @@ pub fn getProductJson(allocator: std.mem.Allocator, https: bool, port: u16) !Str
 
 var provide_thread: ?std.Thread = null;
 
+fn resolveMime(path: String) String {
+    const lastDot = std.mem.lastIndexOf(u8, path, &[_]u8{@as(u8, '.')});
+    const fileExt = if (lastDot != null) path[lastDot.? + 1 ..] else "";
+    const case = std.meta.stringToEnum(enum { html, htm, js, map, ts, css, json, other }, fileExt) orelse .other;
+    return switch (case) {
+        .html, .htm => "text/html",
+        .js, .ts => "text/javascript",
+        .map => "application/json",
+        .css => "text/css",
+        .other => "text/plain",
+        .json => "application/json",
+    };
+}
+
 // basicaly a HTTP server
 pub fn createEditorProvider(command_listener: ?*const commands.CommandListener) !*positron.Provider {
     var port: u16 = undefined;
@@ -65,25 +79,23 @@ pub fn createEditorProvider(command_listener: ?*const commands.CommandListener) 
         defer provider.allocator.free(concatOrigin);
         try provider.allowed_origins.?.insert(concatOrigin);
     }
+    if (builtin.mode == .Debug) {
+        // Let the provider read the files at runtime in debug mode
+        try provider.embedded.append(positron.Provider.EmbedDir{ .address = "/", .path = "editor", .resolveMime = &resolveMime });
+    }
     inline for (options.files) |file| {
         const lastDot = std.mem.lastIndexOf(u8, file, &[_]u8{@as(u8, '.')});
         const fileExt = if (lastDot != null) file[lastDot.? + 1 ..] else "";
+        const mime_type = resolveMime(file);
+
         if (builtin.mode != .Debug and try ctregex.search("map|ts", .{}, fileExt) != null) {
             continue; // Do not include sourcemaps in release builds
         }
-        const case = std.meta.stringToEnum(enum { html, htm, js, map, ts, css, json, other }, fileExt) orelse .other;
-        const mimeType = switch (case) {
-            .html, .htm => "text/html",
-            .js, .ts => "text/javascript",
-            .map => "application/json",
-            .css => "text/css",
-            .other => "text/plain",
-            .json => "application/json",
-        };
+
+        const f_address = file[options.editorDir.len..];
         // assume all paths start with `options.editorDir`
         const compressed_content = @embedFile(file);
-        const f_name = file[options.editorDir.len..];
-        if (comptime std.mem.eql(u8, f_name, "/deshader-vscode/dist/web/extension.js")) {
+        if (comptime std.mem.eql(u8, f_address, "/deshader-vscode/dist/web/extension.js")) {
             // Inject editor config into Deshader extension
             // Construct editor base url and config JSON
             var editor_config: ?String = null;
@@ -111,12 +123,12 @@ pub fn createEditorProvider(command_listener: ?*const commands.CommandListener) 
             }
             if (editor_config) |c| {
                 defer provider.allocator.free(c);
-                try provider.addContent(f_name, mimeType, c);
-            } else {
-                try provider.addContentDeflatedNoAlloc(f_name, mimeType, compressed_content);
+                try provider.addContent(f_address, mime_type, c);
+            } else if (builtin.mode != .Debug) {
+                try provider.addContentDeflatedNoAlloc(f_address, mime_type, compressed_content);
             }
-        } else {
-            try provider.addContentDeflatedNoAlloc(f_name, mimeType, compressed_content);
+        } else if (builtin.mode != .Debug) {
+            try provider.addContentDeflatedNoAlloc(f_address, mime_type, compressed_content);
         }
     }
 
@@ -181,7 +193,8 @@ pub fn windowShow(command_listener: ?*const commands.CommandListener) !void {
         return error.AlreadyRunning;
     }
 
-    const base = global_provider.?.getUri("/index.html").?;
+    const base = (try global_provider.?.getUriAlloc("/index.html")).?;
+    defer global_provider.?.allocator.free(base);
     DeshaderLog.info("Editor URL: {s}", .{base});
 
     if (builtin.os.tag == .windows) {

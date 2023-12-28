@@ -3,6 +3,7 @@ node_modules/vscode-web/dist/extensions/emmet/dist/browser/emmetBrowserMain.js
 node_modules/vscode-web/dist/extensions/git-base/dist/browser/extension.js
 node_modules/vscode-web/dist/extensions/json/language-configuration.json
 node_modules/vscode-web/dist/extensions/json/syntaxes/JSONL.tmLanguage.json
+node_modules/vscode-web/dist/extensions/json/syntaxes/JSONC.tmLanguage.json
 node_modules/vscode-web/dist/extensions/merge-conflict/dist/browser/mergeConflictMain.js
 node_modules/vscode-web/dist/extensions/theme-defaults/themes/dark_modern.json
 node_modules/vscode-web/dist/extensions/theme-defaults/themes/dark_plus.json
@@ -40,9 +41,4 @@ node_modules/vscode-web/dist/node_modules/xterm-addon-search/lib/xterm-addon-sea
 node_modules/vscode-web/dist/node_modules/xterm-addon-unicode11/lib/xterm-addon-unicode11.js
 node_modules/vscode-web/dist/node_modules/xterm-addon-webgl/lib/xterm-addon-webgl.js
 deshader-vscode/dist/web/extension.js
-deshader-vscode/dist/web/extension.js.map
-deshader-vscode/src/web/extension.ts
-deshader-vscode/src/web/deshader.ts
-deshader-vscode/src/web/debugSession.ts
-deshader-vscode/src/web/filesystemProvider.ts
 deshader-vscode/package.json
