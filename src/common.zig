@@ -189,3 +189,11 @@ pub fn symlinkOrCopy(cwd: std.fs.Dir, target_path: String, symlink_path: String)
         }
     };
 }
+
+pub fn dupeSliceOfSlices(alloc: std.mem.Allocator, comptime t: type, input: []const []const t) ![]const []const t {
+    var result = try alloc.alloc([]const t, input.len);
+    for (0..input.len) |i| {
+        result[i] = try alloc.dupe(t, input[i]);
+    }
+    return result;
+}

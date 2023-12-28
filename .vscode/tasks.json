@@ -84,7 +84,7 @@
             }
         },
         {
-            "label": "Run Example",
+            "label": "Run Examples",
             "command": "zig",
             "args": [
                 "build",
@@ -108,7 +108,6 @@
             "args": [
                 "build",
                 "examples",
-                "-Ddeps",
                 "-DwolfSSL",
                 "-freference-trace",
                 "-DlogIntercept",

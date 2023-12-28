@@ -36,6 +36,8 @@ pub export fn deshaderEditorServerStart() usize {
     if (options.embedEditor) {
         editor.serverStart(command_listener) catch |err| {
             DeshaderLog.err(err_format, .{ @src().fn_name, err });
+            if (@errorReturnTrace()) |trace|
+                std.debug.dumpStackTrace(trace.*);
             return @intFromError(err);
         };
     }
@@ -46,6 +48,8 @@ pub export fn deshaderEditorServerStop() usize {
     if (options.embedEditor) {
         editor.serverStop() catch |err| {
             DeshaderLog.err(err_format, .{ @src().fn_name, err });
+            if (@errorReturnTrace()) |trace|
+                std.debug.dumpStackTrace(trace.*);
             return @intFromError(err);
         };
     }
@@ -56,6 +60,8 @@ pub export fn deshaderEditorWindowShow() usize {
     if (options.embedEditor) {
         editor.windowShow(command_listener) catch |err| {
             DeshaderLog.err(err_format, .{ @src().fn_name, err });
+            if (@errorReturnTrace()) |trace|
+                std.debug.dumpStackTrace(trace.*);
             return @intFromError(err);
         };
         return 0;
@@ -67,6 +73,8 @@ pub export fn deshaderEditorWindowWait() usize {
     if (options.embedEditor) {
         editor.windowWait() catch |err| {
             DeshaderLog.err(err_format, .{ @src().fn_name, err });
+            if (@errorReturnTrace()) |trace|
+                std.debug.dumpStackTrace(trace.*);
             return @intFromError(err);
         };
         return 0;
@@ -78,6 +86,8 @@ pub export fn deshaderEditorWindowTerminate() usize {
     if (options.embedEditor) {
         editor.windowTerminate() catch |err| {
             DeshaderLog.err(err_format, .{ @src().fn_name, err });
+            if (@errorReturnTrace()) |trace|
+                std.debug.dumpStackTrace(trace.*);
             return @intFromError(err);
         };
         return 0;
@@ -93,13 +103,13 @@ pub export fn deshaderFreeList(list: [*]const [*:0]const u8, count: usize) void 
 }
 
 pub export fn deshaderListPrograms(include_untagged: bool, path: [*:0]const u8, count: *usize) ?[*]const [*:0]const u8 {
-    const result = shaders.Programs.list(include_untagged, std.mem.span(path)) catch return null;
+    const result = shaders.Programs.listAlloc(include_untagged, std.mem.span(path)) catch return null;
     count.* = result.len;
     return @ptrCast(result);
 }
 
 pub export fn deshaderListSources(include_untagged: bool, path: [*:0]const u8, count: *usize) ?[*]const [*:0]const u8 {
-    const result = shaders.Shaders.list(include_untagged, std.mem.span(path)) catch return null;
+    const result = shaders.Shaders.listAlloc(include_untagged, std.mem.span(path)) catch return null;
     count.* = result.len;
     return @ptrCast(result);
 }
@@ -107,6 +117,8 @@ pub export fn deshaderListSources(include_untagged: bool, path: [*:0]const u8, c
 pub export fn deshaderRemovePath(path: [*:0]const u8, dir: bool) usize {
     shaders.Shaders.removePath(std.mem.span(path), dir) catch |err| {
         DeshaderLog.err(err_format, .{ @src().fn_name, err });
+        if (@errorReturnTrace()) |trace|
+            std.debug.dumpStackTrace(trace.*);
         return @intFromError(err);
     };
     return 0;
@@ -115,6 +127,8 @@ pub export fn deshaderRemovePath(path: [*:0]const u8, dir: bool) usize {
 pub export fn deshaderRemoveSource(ref: usize) usize {
     shaders.Shaders.remove(ref) catch |err| {
         DeshaderLog.err(err_format, .{ @src().fn_name, err });
+        if (@errorReturnTrace()) |trace|
+            std.debug.dumpStackTrace(trace.*);
         return @intFromError(err);
     };
     return 0;
@@ -123,6 +137,8 @@ pub export fn deshaderRemoveSource(ref: usize) usize {
 pub export fn deshaderTagSource(ref: usize, part_index: usize, path: [*:0]const u8, if_exists: ExistsBehavior) usize {
     shaders.Shaders.assignTag(ref, part_index, std.mem.span(path), if_exists) catch |err| {
         DeshaderLog.err(err_format, .{ @src().fn_name, err });
+        if (@errorReturnTrace()) |trace|
+            std.debug.dumpStackTrace(trace.*);
         return @intFromError(err);
     };
     return 0;
@@ -148,10 +164,14 @@ pub export fn deshaderPhysicalWorkspace(path: [*:0]const u8) usize {
 pub export fn deshaderTaggedProgram(payload: ProgramPayload, behavior: ExistsBehavior) usize {
     shaders.programCreateUntagged(payload) catch |err| {
         DeshaderLog.err(err_format, .{ @src().fn_name, err });
+        if (@errorReturnTrace()) |trace|
+            std.debug.dumpStackTrace(trace.*);
         return @intFromError(err);
     };
     shaders.Programs.assignTag(payload.ref, 0, std.mem.span(payload.path.?), behavior) catch |err| {
         DeshaderLog.err(err_format, .{ @src().fn_name, err });
+        if (@errorReturnTrace()) |trace|
+            std.debug.dumpStackTrace(trace.*);
         return @intFromError(err);
     };
     return 0;
@@ -162,11 +182,15 @@ pub export fn deshaderTaggedSource(payload: SourcesPayload, if_exists: ExistsBeh
     std.debug.assert(payload.paths != null);
     shaders.sourcesCreateUntagged(payload) catch |err| {
         DeshaderLog.err(err_format, .{ @src().fn_name, err });
+        if (@errorReturnTrace()) |trace|
+            std.debug.dumpStackTrace(trace.*);
         return @intFromError(err);
     };
     for (0..payload.count) |i| {
         shaders.Programs.assignTag(payload.ref, i, std.mem.span(payload.paths.?[i]), if_exists) catch |err| {
             DeshaderLog.err(err_format, .{ @src().fn_name, err });
+            if (@errorReturnTrace()) |trace|
+                std.debug.dumpStackTrace(trace.*);
             return @intFromError(err);
         };
     }

@@ -59,7 +59,7 @@ pub fn Storage(comptime Stored: type) type {
         /// lists existing tags in various contaners
         /// path = "/" => lists all tagged files
         /// path = null => do not include tagged files
-        pub fn list(self: *@This(), untagged: bool, path: ?String) ![]CString {
+        pub fn listAlloc(self: *@This(), untagged: bool, path: ?String) ![]CString {
             var result = std.ArrayList(CString).init(self.allocator);
 
             if (path) |sure_path| {

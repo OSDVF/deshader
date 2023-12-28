@@ -165,7 +165,8 @@ pub const DependenciesStep = struct {
     }
 
     fn doOnEachFileIf(step: *std.build.Step, path: String, predicate: *const fn (name: String) bool, func: *const fn (alloc: std.mem.Allocator, dir: std.fs.Dir, file: std.fs.Dir.Entry) void) !void {
-        const dir = try step.owner.build_root.handle.openDir(path, .{ .iterate = true });
+        var dir = try step.owner.build_root.handle.openDir(path, .{ .iterate = true });
+        defer dir.close();
         var it = dir.iterateAssumeFirstIteration();
         while (try it.next()) |file| {
             if (file.kind == .file) {

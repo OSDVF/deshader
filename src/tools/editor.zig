@@ -94,7 +94,7 @@ pub fn createEditorProvider(command_listener: ?*const commands.CommandListener) 
 
         const f_address = file[options.editorDir.len..];
         // assume all paths start with `options.editorDir`
-        const compressed_content = @embedFile(file);
+        const compressed_or_content = if (builtin.mode != .Debug) @embedFile(file);
         if (comptime std.mem.eql(u8, f_address, "/deshader-vscode/dist/web/extension.js")) {
             // Inject editor config into Deshader extension
             // Construct editor base url and config JSON
@@ -103,13 +103,21 @@ pub fn createEditorProvider(command_listener: ?*const commands.CommandListener) 
             if (command_listener) |cl| {
                 var decompressed_data: String = undefined;
                 if (cl.ws_config != null or cl.http != null) {
-                    var stream = std.io.fixedBufferStream(compressed_content);
-                    var decompressor = try std.compress.zlib.decompressStream(provider.allocator, stream.reader());
-                    defer decompressor.deinit();
-                    var decompressed = decompressor.reader();
-                    decompressed_data = try decompressed.readAllAlloc(provider.allocator, 10 * 1024 * 1024);
+                    var decompressor: std.compress.zlib.DecompressStream(std.io.FixedBufferStream(String).Reader) = undefined;
+                    if (builtin.mode == .Debug) {
+                        const handle = try std.fs.cwd().openFile(file, .{});
+                        defer handle.close();
+                        decompressed_data = try handle.readToEndAlloc(provider.allocator, 10 * 1024 * 1024);
+                    } else {
+                        var stream = std.io.fixedBufferStream(compressed_or_content);
+                        decompressor = try std.compress.zlib.decompressStream(provider.allocator, stream.reader());
+                        var decompressed = decompressor.reader();
+                        decompressed_data = try decompressed.readAllAlloc(provider.allocator, 10 * 1024 * 1024);
+                    }
+                    defer if (builtin.mode != .Debug) {
+                        decompressor.deinit();
+                    };
                     defer provider.allocator.free(decompressed_data);
-
                     if (cl.ws_config) |wsc| {
                         editor_config = try std.fmt.allocPrint(provider.allocator, editor_config_fmt ++ "{s}\",port:{d}}}}}\n", .{ decompressed_data, if (cl.secure) "wss" else "ws", wsc.address, wsc.port });
                     } else {
@@ -125,10 +133,10 @@ pub fn createEditorProvider(command_listener: ?*const commands.CommandListener) 
                 defer provider.allocator.free(c);
                 try provider.addContent(f_address, mime_type, c);
             } else if (builtin.mode != .Debug) {
-                try provider.addContentDeflatedNoAlloc(f_address, mime_type, compressed_content);
+                try provider.addContentDeflatedNoAlloc(f_address, mime_type, compressed_or_content);
             }
         } else if (builtin.mode != .Debug) {
-            try provider.addContentDeflatedNoAlloc(f_address, mime_type, compressed_content);
+            try provider.addContentDeflatedNoAlloc(f_address, mime_type, compressed_or_content);
         }
     }
 

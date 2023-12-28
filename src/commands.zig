@@ -75,7 +75,7 @@ pub const CommandListener = struct {
 
             inline for (@typeInfo(commands.simple).Struct.decls) |function| {
                 const command = @field(commands.simple, function.name);
-                _ = try self.addHTTPCommand("/" ++ function.name, command);
+                _ = try self.addHTTPCommand("/" ++ function.name, command, if (@hasDecl(commands.simple, function.name)) @field(commands.simple, function.name) else null);
             }
             self.provide_thread = try std.Thread.spawn(.{}, struct {
                 fn wrapper(provider: *positron.Provider) void {
@@ -125,10 +125,11 @@ pub const CommandListener = struct {
     //
 
     // A command that returns a string or a generic type that will be JSON-strinigified
-    pub fn addHTTPCommand(self: *@This(), comptime name: String, command: anytype) !*@This() {
+    pub fn addHTTPCommand(self: *@This(), comptime name: String, command: anytype, freee: ?*const anyopaque) !*@This() {
         const route = try self.http.?.addRoute(name);
         const command_route = struct {
             var comm: *const @TypeOf(command) = undefined;
+            var free: ?*const fn (@typeInfo(@TypeOf(command)).Fn.return_type.?) void = null;
             var writer: serve.HttpResponse.Writer = undefined;
             fn log(level: std.log.Level, scope: String, message: String) void {
                 const result = std.fmt.allocPrint(common.allocator, "{s} ({s}): {s}", .{ scope, @tagName(level), message }) catch return;
@@ -164,7 +165,7 @@ pub const CommandListener = struct {
                 const return_type = @typeInfo(@TypeOf(command)).Fn.return_type.?;
                 const error_union = @typeInfo(return_type).ErrorUnion;
 
-                if (switch (@typeInfo(@TypeOf(command)).Fn.params.len) {
+                const result_or_err = switch (@typeInfo(@TypeOf(command)).Fn.params.len) {
                     0 => comm(),
                     1 => blk: {
                         var args = try parseArgs(provider.allocator, context.request.url);
@@ -181,11 +182,13 @@ pub const CommandListener = struct {
                         break :blk comm(args, body);
                     },
                     else => @compileError("Command " ++ @typeName(comm) ++ " has invalid number of arguments. Only none, parameters and body are available."),
-                }) |result| { //swith on result of running the command
+                };
+
+                defer if (free) |f| f(result_or_err);
+                if (result_or_err) |result| { //swith on result of running the command
                     switch (error_union.payload) {
                         void => {},
                         String => {
-                            defer common.allocator.free(result);
                             if (!setting_vars.log_into_responses) {
                                 try context.response.setStatusCode(.accepted);
                                 writer = try context.response.writer();
@@ -194,13 +197,10 @@ pub const CommandListener = struct {
                             try writer.writeByte('\n'); //Alwys add a newline to the end
                         },
                         []const String => {
-                            defer for (result) |line| common.allocator.free(line);
-                            defer common.allocator.free(result);
                             if (!setting_vars.log_into_responses) {
                                 try context.response.setStatusCode(.accepted);
                                 writer = try context.response.writer();
                             }
-
                             for (result) |line| {
                                 try writer.writeAll(line);
                                 try writer.writeByte('\n'); //Alwys add a newline to the end
@@ -208,7 +208,6 @@ pub const CommandListener = struct {
                         },
                         serve.HttpStatusCode => try context.response.setStatusCode(result),
                         else => {
-                            defer if (@typeInfo(@TypeOf(result)) == .Pointer) common.allocator.free(result);
                             if (!setting_vars.log_into_responses) {
                                 try context.response.setStatusCode(.accepted);
                                 writer = try context.response.writer();
@@ -237,6 +236,7 @@ pub const CommandListener = struct {
             }
         };
         command_route.comm = command;
+        command_route.free = @ptrCast(freee);
         route.handler = command_route.wrapper;
         errdefer route.deinit();
         return self;
@@ -245,7 +245,7 @@ pub const CommandListener = struct {
     const ws_commands = blk: {
         const CommandReturnType = enum { Void, String, CStringArray, StringArray, HttpStatusCode };
         const decls = @typeInfo(commands.simple).Struct.decls;
-        const comInfo = struct { r: CommandReturnType, a: usize, c: *const anyopaque };
+        const comInfo = struct { r: CommandReturnType, a: usize, c: *const anyopaque, free: ?*const anyopaque };
         comptime var command_array: [decls.len]std.meta.Tuple(&.{ String, comInfo }) = undefined;
         for (decls, 0..) |function, i| {
             const command = @field(commands.simple, function.name);
@@ -262,6 +262,7 @@ pub const CommandListener = struct {
                 },
                 .a = @typeInfo(@TypeOf(command)).Fn.params.len,
                 .c = &command,
+                .free = if (@hasDecl(commands.free_funcs, function.name)) &@field(commands.free_funcs, function.name) else null,
             } };
         }
         const map = std.ComptimeStringMap(@TypeOf(command_array[0][1]), command_array);
@@ -286,28 +287,22 @@ pub const CommandListener = struct {
             };
         }
 
-        fn handleInner(self: *@This(), result_or_error: anytype, command_name: String) !void {
+        fn handleInner(self: *@This(), result_or_error: anytype, command_name: String, free: ?*const fn (@TypeOf(result_or_error)) void) !void {
+            defer if (free) |f| f(result_or_error);
             var http_code_buffer: [3]u8 = undefined;
             const accepted = "202: Accepted\n";
             if (result_or_error) |result| {
                 switch (@TypeOf(result)) {
                     void => try self.conn.writeAllFrame(.text, &.{ accepted, command_name, "\n" }),
                     String => {
-                        defer common.allocator.free(result);
                         try self.conn.writeAllFrame(.text, &.{ accepted, command_name, "\n", result, "\n" });
                     },
                     []const CString => {
-                        defer {
-                            for (result) |line| common.allocator.free(std.mem.span(line));
-                            common.allocator.free(result);
-                        }
                         const flattened = try common.joinInnerZ(common.allocator, "\n", result);
                         defer common.allocator.free(flattened);
                         try self.conn.writeAllFrame(.text, &.{ accepted, command_name, "\n", flattened, "\n" });
                     },
                     []const String => {
-                        defer for (result) |line| common.allocator.free(line);
-                        defer common.allocator.free(result);
                         const flattened = try std.mem.join(common.allocator, "\n", result);
                         defer common.allocator.free(flattened);
                         try self.conn.writeAllFrame(.text, &.{ accepted, command_name, "\n", flattened, "\n" });
@@ -355,46 +350,46 @@ pub const CommandListener = struct {
             const query = command_query.rest();
 
             const target_command = ws_commands.get(command_name);
-            if (target_command == null) {
+            if (target_command) |tc| {
+                var parsed_args: ?ArgumentsList = if (query.len > 0) try argsFromUri(common.allocator, query) else null;
+                defer if (parsed_args != null) parsed_args.?.deinit();
+
+                try switch (tc.r) {
+                    .Void => switch (tc.a) {
+                        0 => handleInner(self, @as(*const fn () anyerror!void, @ptrCast(tc.c))(), command_name, @ptrCast(tc.free)),
+                        1 => handleInner(self, @as(*const fn (?ArgumentsList) anyerror!void, @ptrCast(tc.c))(parsed_args), command_name, @ptrCast(tc.free)),
+                        2 => handleInner(self, @as(*const fn (?ArgumentsList, String) anyerror!void, @ptrCast(tc.c))(parsed_args, body), command_name, @ptrCast(tc.free)),
+                        else => unreachable,
+                    },
+                    .String => switch (tc.a) {
+                        0 => handleInner(self, @as(*const fn () anyerror!String, @ptrCast(tc.c))(), command_name, @ptrCast(tc.free)),
+                        1 => handleInner(self, @as(*const fn (?ArgumentsList) anyerror!String, @ptrCast(tc.c))(parsed_args), command_name, @ptrCast(tc.free)),
+                        2 => handleInner(self, @as(*const fn (?ArgumentsList, String) anyerror!String, @ptrCast(tc.c))(parsed_args, body), command_name, @ptrCast(tc.free)),
+                        else => unreachable,
+                    },
+                    .CStringArray => switch (tc.a) {
+                        0 => handleInner(self, @as(*const fn () anyerror![]const CString, @ptrCast(tc.c))(), command_name, @ptrCast(tc.free)),
+                        1 => handleInner(self, @as(*const fn (?ArgumentsList) anyerror![]const CString, @ptrCast(tc.c))(parsed_args), command_name, @ptrCast(tc.free)),
+                        2 => handleInner(self, @as(*const fn (?ArgumentsList, String) anyerror![]const CString, @ptrCast(tc.c))(parsed_args, body), command_name, @ptrCast(tc.free)),
+                        else => unreachable,
+                    },
+                    .StringArray => switch (tc.a) {
+                        0 => handleInner(self, @as(*const fn () anyerror![]const String, @ptrCast(tc.c))(), command_name, @ptrCast(tc.free)),
+                        1 => handleInner(self, @as(*const fn (?ArgumentsList) anyerror![]const String, @ptrCast(tc.c))(parsed_args), command_name, @ptrCast(tc.free)),
+                        2 => handleInner(self, @as(*const fn (?ArgumentsList, String) anyerror![]const String, @ptrCast(tc.c))(parsed_args, body), command_name, @ptrCast(tc.free)),
+                        else => unreachable,
+                    },
+                    .HttpStatusCode => switch (tc.a) {
+                        0 => handleInner(self, @as(*const fn () anyerror!serve.HttpStatusCode, @ptrCast(tc.c))(), command_name, @ptrCast(tc.free)),
+                        1 => handleInner(self, @as(*const fn (?ArgumentsList) anyerror!serve.HttpStatusCode, @ptrCast(tc.c))(parsed_args), command_name, @ptrCast(tc.free)),
+                        2 => handleInner(self, @as(*const fn (?ArgumentsList, String) anyerror!serve.HttpStatusCode, @ptrCast(tc.c))(parsed_args, body), command_name, @ptrCast(tc.free)),
+                        else => unreachable,
+                    },
+                };
+            } else {
                 try self.conn.writeText("404: Command not found\n");
                 return;
             }
-
-            var parsed_args: ?ArgumentsList = if (query.len > 0) try argsFromUri(common.allocator, query) else null;
-            defer if (parsed_args != null) parsed_args.?.deinit();
-
-            try switch (target_command.?.r) {
-                .Void => switch (target_command.?.a) {
-                    0 => handleInner(self, @as(*const fn () anyerror!void, @ptrCast(target_command.?.c))(), command_name),
-                    1 => handleInner(self, @as(*const fn (?ArgumentsList) anyerror!void, @ptrCast(target_command.?.c))(parsed_args), command_name),
-                    2 => handleInner(self, @as(*const fn (?ArgumentsList, String) anyerror!void, @ptrCast(target_command.?.c))(parsed_args, body), command_name),
-                    else => unreachable,
-                },
-                .String => switch (target_command.?.a) {
-                    0 => handleInner(self, @as(*const fn () anyerror!String, @ptrCast(target_command.?.c))(), command_name),
-                    1 => handleInner(self, @as(*const fn (?ArgumentsList) anyerror!String, @ptrCast(target_command.?.c))(parsed_args), command_name),
-                    2 => handleInner(self, @as(*const fn (?ArgumentsList, String) anyerror!String, @ptrCast(target_command.?.c))(parsed_args, body), command_name),
-                    else => unreachable,
-                },
-                .CStringArray => switch (target_command.?.a) {
-                    0 => handleInner(self, @as(*const fn () anyerror![]const CString, @ptrCast(target_command.?.c))(), command_name),
-                    1 => handleInner(self, @as(*const fn (?ArgumentsList) anyerror![]const CString, @ptrCast(target_command.?.c))(parsed_args), command_name),
-                    2 => handleInner(self, @as(*const fn (?ArgumentsList, String) anyerror![]const CString, @ptrCast(target_command.?.c))(parsed_args, body), command_name),
-                    else => unreachable,
-                },
-                .StringArray => switch (target_command.?.a) {
-                    0 => handleInner(self, @as(*const fn () anyerror![]const String, @ptrCast(target_command.?.c))(), command_name),
-                    1 => handleInner(self, @as(*const fn (?ArgumentsList) anyerror![]const String, @ptrCast(target_command.?.c))(parsed_args), command_name),
-                    2 => handleInner(self, @as(*const fn (?ArgumentsList, String) anyerror![]const String, @ptrCast(target_command.?.c))(parsed_args, body), command_name),
-                    else => unreachable,
-                },
-                .HttpStatusCode => switch (target_command.?.a) {
-                    0 => handleInner(self, @as(*const fn () anyerror!serve.HttpStatusCode, @ptrCast(target_command.?.c))(), command_name),
-                    1 => handleInner(self, @as(*const fn (?ArgumentsList) anyerror!serve.HttpStatusCode, @ptrCast(target_command.?.c))(parsed_args), command_name),
-                    2 => handleInner(self, @as(*const fn (?ArgumentsList, String) anyerror!serve.HttpStatusCode, @ptrCast(target_command.?.c))(parsed_args, body), command_name),
-                    else => unreachable,
-                },
-            };
         }
 
         // optional hooks
@@ -410,10 +405,6 @@ pub const CommandListener = struct {
 
     pub const commands = struct {
         const simple = struct {
-            pub fn version() !String {
-                return try common.allocator.dupe(u8, "dev");
-            }
-
             pub fn editorWindowShow() !void {
                 if (options.embedEditor) {
                     return editor.windowShow(main.command_listener);
@@ -452,16 +443,40 @@ pub const CommandListener = struct {
                 return .{ .untagged = untagged, .path = path };
             }
 
+            var help_out: [
+                blk: { // Compute the number of functions
+                    comptime var count = 0;
+                    for (@typeInfo(commands.simple).Struct.decls) |decl_info| {
+                        const decl = @field(commands.simple, decl_info.name);
+                        if (@typeInfo(@TypeOf(decl)) == .Fn) {
+                            count += 1;
+                        }
+                    }
+                    break :blk count;
+                }
+            ]String = undefined;
+            pub fn help() ![]const String {
+                var i: usize = 0;
+                inline for (@typeInfo(commands.simple).Struct.decls) |decl_info| {
+                    const decl = @field(commands.simple, decl_info.name);
+                    if (@typeInfo(@TypeOf(decl)) == .Fn) {
+                        defer i += 1;
+                        help_out[i] = decl_info.name;
+                    }
+                }
+                return &help_out;
+            }
+
             /// untagged: bool, path: String
             pub fn listSources(args: ?ArgumentsList) ![]const CString {
                 const args_result = getListArgs(args);
-                return try shaders.Shaders.list(args_result.untagged, args_result.path);
+                return try shaders.Shaders.listAlloc(args_result.untagged, args_result.path);
             }
 
             /// untagged: bool, path: String
             pub fn listPrograms(args: ?ArgumentsList) ![]const CString {
                 const args_result = getListArgs(args);
-                return try shaders.Programs.list(args_result.untagged, args_result.path);
+                return try shaders.Programs.listAlloc(args_result.untagged, args_result.path);
             }
 
             pub fn settings(args: ?ArgumentsList) error{ UnknownSettingName, OutOfMemory }![]const String {
@@ -518,6 +533,27 @@ pub const CommandListener = struct {
                 }
                 return results.items;
             }
+
+            pub fn version() !String {
+                return options.version;
+            }
+        };
+        const free_funcs = struct {
+            fn settings(result: anyerror![]const String) void {
+                const r = result catch return;
+                for (r) |line| {
+                    common.allocator.free(line);
+                }
+                common.allocator.free(r);
+            }
+            fn listPrograms(result: anyerror![]const CString) void {
+                const r = result catch return;
+                for (r) |line| {
+                    common.allocator.free(std.mem.span(line));
+                }
+                common.allocator.free(r);
+            }
+            const listSources = listPrograms;
         };
     };
 };

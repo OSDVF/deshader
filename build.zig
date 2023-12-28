@@ -283,6 +283,9 @@ pub fn build(b: *std.Build) !void {
         var dependencies_step: *DependenciesStep = try b.allocator.create(DependenciesStep);
         dependencies_step.* = DependenciesStep.init(b, target, optionWolfSSL or targetTarget == .windows); // If wolfSSL is meant to be linked dynamically, it must be built first
         dependencies_cmd.dependOn(&dependencies_step.step);
+        if (optionDependencies) {
+            deshader_lib.step.dependOn(&dependencies_step.step);
+        }
 
         //
         // Embed the created dependencies
@@ -297,9 +300,11 @@ pub fn build(b: *std.Build) !void {
             var editor_files_lines = std.mem.splitScalar(u8, editor_files, '\n');
             editor_files_lines.reset();
             while (editor_files_lines.next()) |line| {
-                try appendFiles(deshader_lib, if (optionDependencies) &dependencies_step.step else null, &files, .{
-                    try std.fmt.allocPrint(b.allocator, "{s}/{s}", .{ editor_directory, line }),
-                });
+                const path = try std.fmt.allocPrint(b.allocator, "{s}/{s}", .{ editor_directory, line });
+                try files.append(path);
+                if (optimize != .Debug) { // In debug mode files are served from physical filesystem so one does not need to recompile Deshader each time
+                    try embedCompressedFile(deshader_lib, if (optionDependencies) &dependencies_step.step else null, path);
+                }
             }
         }
 
@@ -479,10 +484,12 @@ pub fn build(b: *std.Build) !void {
                 inline for (.{ "fragment.frag", "vertex.vert" }) |shader| {
                     const output = try std.fs.path.join(b.allocator, &.{ b.cache_root.path.?, "shaders", shader ++ ".o" });
                     b.cache_root.handle.access("shaders", .{}) catch try std.fs.makeDirAbsolute(std.fs.path.dirname(output).?);
+                    var dir = try b.build_root.handle.openDir("examples", .{});
+                    defer dir.close();
                     const result = try exec(.{
                         .allocator = b.allocator,
                         .argv = &.{ "ld", "--relocatable", "--format", "binary", "--output", output, shader },
-                        .cwd_dir = try b.build_root.handle.openDir("examples", .{}),
+                        .cwd_dir = dir,
                     });
                     if (result.term.Exited == 0) {
                         example_glfw_cpp.compile.addObjectFile(.{ .path = output });
@@ -558,18 +565,15 @@ fn openGlModule(b: *std.build.Builder) !*std.build.Module {
     });
 }
 
-fn appendFiles(compile: *std.build.Step.Compile, dependOn: ?*std.build.Step, files: *std.ArrayList(String), toAdd: anytype) !void {
-    inline for (toAdd) |addThis| {
-        const compress = try CompressStep.init(compile.step.owner, std.build.FileSource.relative(addThis));
-        if (dependOn) |d| {
-            compress.step.dependOn(d);
-        }
-        compile.addAnonymousModule(addThis, .{
-            .source_file = .{ .generated = &compress.generatedFile },
-        });
-        compile.step.dependOn(&compress.step);
-        try files.append(addThis);
+fn embedCompressedFile(compile: *std.build.Step.Compile, dependOn: ?*std.build.Step, path: String) !void {
+    const compress = try CompressStep.init(compile.step.owner, std.build.FileSource.relative(path));
+    if (dependOn) |d| {
+        compress.step.dependOn(d);
     }
+    compile.addAnonymousModule(path, .{
+        .source_file = .{ .generated = &compress.generatedFile },
+    });
+    compile.step.dependOn(&compress.step);
 }
 
 const SubExampleStep = struct {
