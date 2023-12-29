@@ -442,6 +442,21 @@ pub const CommandListener = struct {
                 }
                 return .{ .untagged = untagged, .path = path };
             }
+            /// path: String
+            pub fn listBreakpoints(args: ?ArgumentsList) ![]const String {
+                if (args) |sure_args| {
+                    if (sure_args.get("path")) |path| {
+                        if (try shaders.Shaders.getByPath(path)) |shader| {
+                            var result = std.ArrayList(String).init(common.allocator);
+                            for (shader.breakpoints.items) |bp| {
+                                try result.append(try std.fmt.allocPrint(common.allocator, "{d},{d}", .{ bp[0], bp[1] }));
+                            }
+                            return result.toOwnedSlice();
+                        }
+                    }
+                }
+                return error.FileNotFound;
+            }
 
             var help_out: [
                 blk: { // Compute the number of functions
@@ -466,14 +481,13 @@ pub const CommandListener = struct {
                 }
                 return &help_out;
             }
-
-            /// untagged: bool, path: String
+            /// untagged: bool[true], path: String
             pub fn listSources(args: ?ArgumentsList) ![]const CString {
                 const args_result = getListArgs(args);
                 return try shaders.Shaders.listAlloc(args_result.untagged, args_result.path);
             }
 
-            /// untagged: bool, path: String
+            /// untagged: bool[true], path: String
             pub fn listPrograms(args: ?ArgumentsList) ![]const CString {
                 const args_result = getListArgs(args);
                 return try shaders.Programs.listAlloc(args_result.untagged, args_result.path);

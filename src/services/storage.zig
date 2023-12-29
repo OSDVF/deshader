@@ -334,6 +334,14 @@ pub fn Storage(comptime Stored: type) type {
             key: *String,
         };
 
+        pub fn getByPath(self: *@This(), path: String) !?Stored {
+            const ptr = try self.makePathRecursive(path, false, false, false);
+            switch (ptr.content) {
+                .Tag => |tag| return if (tag.getFirstTarget()) |target| return target.* else null,
+                else => return error.DirExists,
+            }
+        }
+
         /// Gets an existing tag or directory, throws error is does not exist, or
         /// create_new => if the path pointer does not exist, create it (recursively).
         /// create_as_dir switches between creating a pointer for new Tag(payload) or Dir(payload)
@@ -399,6 +407,9 @@ pub fn Storage(comptime Stored: type) type {
                     }
                     // overwrite tag and content
                     existing_file.value_ptr.name = try self.allocator.dupe(u8, new);
+                    const time = std.time.milliTimestamp();
+                    existing_file.value_ptr.stat.modified = time;
+                    existing_file.value_ptr.stat.accessed = time;
 
                     return .{
                         .is_new = false,
@@ -441,6 +452,7 @@ pub fn Storage(comptime Stored: type) type {
                     std.debug.assert(new_file.found_existing == false);
                     new_file.value_ptr.* = Tag(Stored){
                         .name = try self.allocator.dupe(u8, new),
+                        .stat = Stat.now(),
                         .parent = in_dir,
                         .targets = Tag(Stored).Targets.init(self.allocator),
                     };
@@ -460,6 +472,15 @@ pub fn Storage(comptime Stored: type) type {
 }
 
 pub const Error = error{ NotUntagged, NotTagged, TagExists, DirExists, AlreadyTagged, DirectoryNotFound, TargetNotFound };
+pub const Stat = struct {
+    accessed: i64,
+    created: i64,
+    modified: i64,
+    pub fn now() @This() {
+        const time = std.time.milliTimestamp();
+        return @This(){ .accessed = time, .created = time, .modified = time };
+    }
+};
 
 pub fn Dir(comptime Taggable: type) type {
     return struct {
@@ -470,6 +491,7 @@ pub fn Dir(comptime Taggable: type) type {
         files: FileMap,
         /// is owned by Dir instance
         name: String,
+        stat: Stat,
         parent: ?*@This(),
 
         fn init(allocator: std.mem.Allocator, parent: ?*@This(), name: String) !@This() {
@@ -479,6 +501,7 @@ pub fn Dir(comptime Taggable: type) type {
                 .dirs = DirMap.init(allocator),
                 .files = FileMap.init(allocator),
                 .parent = parent,
+                .stat = Stat.now(),
             };
         }
 
@@ -505,13 +528,15 @@ pub fn Tag(comptime taggable: type) type {
         /// name is duplicated when stored
         name: String,
         parent: *Dir(taggable),
-        // TODO should ideally be a iterable continuously growwing hash-set
+        stat: Stat,
+        // TODO should ideally be an iterable continuously growing hash-set
         /// Reverse pointer to the tag from the content.
         /// the pointer is not owned.
         /// When more shaders are symlinked the hashmap will have more than one entry
         targets: Targets,
 
-        pub fn getPathAlloc(self: *const @This(), allocator: std.mem.Allocator) !String {
+        pub fn getPathAlloc(self: *@This(), allocator: std.mem.Allocator) !String {
+            self.stat.accessed = std.time.milliTimestamp();
             var path_stack = std.ArrayList(u8).init(allocator);
             var dir_stack = std.ArrayList(String).init(allocator);
             var root: ?*Dir(taggable) = self.parent;
@@ -526,7 +551,8 @@ pub fn Tag(comptime taggable: type) type {
             return try path_stack.toOwnedSlice();
         }
 
-        pub fn getFirstTarget(self: *const @This()) ?*taggable {
+        pub fn getFirstTarget(self: *@This()) ?*taggable {
+            self.stat.accessed = std.time.milliTimestamp();
             var it = self.targets.keyIterator();
             return if (it.next()) |next| return next.* else null;
         }

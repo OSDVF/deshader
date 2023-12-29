@@ -72,8 +72,7 @@
                 "DESHADER_IGNORE_PROCESS": "gdb,zsh",
                 "DESHADER_LIB_ROOT": "/usr/lib/",
                 "DESHADER_COMMANDS_WS": "8082",
-                "G_DEBUG":"all",
-                "GDK_DEBUG":"all",
+                "DESHADER_START_SERVER": "1",
             }
         },
         {

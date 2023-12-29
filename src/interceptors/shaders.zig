@@ -177,12 +177,13 @@ pub export fn glShaderSource(shader: gl.GLuint, count: gl.GLsizei, sources: [*][
     for (sources[0..wide_count], lengths_wide.?[0..wide_count], 0..) |source, len, source_i| {
         var it = std.mem.splitScalar(u8, source[0..len], '\n');
         var in_block_comment = false;
-        while (it.next()) |line| {
+        var line_i: usize = 0;
+        while (it.next()) |line| : (line_i += 1) {
             // GLSL cannot have strings so we can just search for uncommented pragma
             var pragma_found: usize = std.math.maxInt(usize);
             var comment_found: usize = std.math.maxInt(usize);
             const pragma_text = "#pragma deshader";
-            if (std.mem.indexOf(u8, line, pragma_text)) |i| {
+            if (std.ascii.indexOfIgnoreCase(line, pragma_text)) |i| {
                 pragma_found = i;
             }
             if (std.mem.indexOf(u8, line, "/*")) |i| {
@@ -205,6 +206,7 @@ pub export fn glShaderSource(shader: gl.GLuint, count: gl.GLsizei, sources: [*][
                     if (args.parseWithVerb(
                         struct {},
                         union(enum) {
+                            breakpoint: void,
                             workspace: void,
                             @"workspace-overwrite": void,
                             source: void,
@@ -221,26 +223,34 @@ pub export fn glShaderSource(shader: gl.GLuint, count: gl.GLsizei, sources: [*][
                                 // Workspace include
                                 .workspace => {
                                     shaders.addWorkspacePath(options.positionals[0], options.positionals[1]) catch |err| failedWorkspacePath(options.positionals[0], err);
-                                    return;
                                 },
                                 .@"workspace-overwrite" => {
                                     if (shaders.workspace_paths.getPtr(options.positionals[0])) |w_paths| {
                                         w_paths.clearAndFree();
                                     }
                                     shaders.addWorkspacePath(options.positionals[0], options.positionals[1]) catch |err| failedWorkspacePath(options.positionals[0], err);
-                                    return;
                                 },
                                 .source => {
                                     shaders.Shaders.assignTag(@intCast(shader), source_i, options.positionals[0], .Error) catch |err| objLabErr(options.positionals[0], shader, source_i, err);
-                                    return;
                                 },
                                 .@"source-link" => {
                                     shaders.Shaders.assignTag(@intCast(shader), source_i, options.positionals[0], .Link) catch |err| objLabErr(options.positionals[0], shader, source_i, err);
-                                    return;
                                 },
                                 .@"source-purge-previous" => {
                                     shaders.Shaders.assignTag(@intCast(shader), source_i, options.positionals[0], .PurgePrevious) catch |err| objLabErr(options.positionals[0], shader, source_i, err);
-                                    return;
+                                },
+                                .breakpoint => {
+                                    if (shaders.Shaders.all.get(@intCast(shader))) |stored| {
+                                        if (stored.items.len > source_i) {
+                                            if (stored.items[source_i].breakpoints.append(.{ line_i, 0 })) {
+                                                log.debug("Shader {d} source {d}: breakpoint at line {d}", .{ shader, source_i, line_i });
+                                            } else |err| {
+                                                log.warn("Failed to add breakpoint for shader {x} source {d}: {any}", .{ shader, source_i, err });
+                                            }
+                                        } else {
+                                            log.warn("Shader {d} source {d} not found", .{ shader, source_i });
+                                        }
+                                    } else log.debug("Shader {d} not found", .{shader});
                                 },
                             }
                         } else {

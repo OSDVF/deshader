@@ -202,6 +202,7 @@ Name                | Default                                            | Descr
 LIB_ROOT            | `/usr/lib` / `C:\Windows\System32`                 | **REQUIRED** and automatically set by the Runner. Path to the folder where the original libraries are located
 PORT                | 8080                                               | Port for the web editor at `http://localhost:DESHADER_PORT/index.html`
 SHOW                | none                                               | Pass `true` or `1` to show the editor window on startup
+START_SERVER        | none                                               | Pass `true` or `1` to start the editor server on startup	2300325930 / 2010 
 COMMANDS_HTTP       | 8081                                               | Port for HTTP server listening to Deshader commands
 COMMANDS_WS         | none                                               | Port for WebSocket server listening to Deshader commands (disabled by default)
 GL_LIBS             | `libGLX.so, libEGL.so` / `opengl32.dll`            | Path to libraries from which the original GL functions will be loaded

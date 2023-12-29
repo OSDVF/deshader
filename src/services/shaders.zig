@@ -75,6 +75,8 @@ pub const Shader = struct {
         context: ?*const anyopaque = null,
         compile: @TypeOf(SourcePayload.compile) = null,
         save: @TypeOf(SourcePayload.save) = null,
+        /// Line and column
+        breakpoints: std.ArrayList(std.meta.Tuple(&.{ usize, usize })),
 
         implementation: *anyopaque, // is on heap
         /// The most important part of interface implementation
@@ -99,6 +101,7 @@ pub const Shader = struct {
     };
 
     /// Contrary to decls.SourcePayload this is just a single tagged shader source code.
+    /// Contains a copy of the original passed string
     pub const MemorySource = struct {
         super: *SourceInterface,
         source: ?String = null,
@@ -109,9 +112,9 @@ pub const Shader = struct {
             var source: ?String = null;
             if (payload.sources != null) {
                 if (payload.lengths) |lens| {
-                    source = payload.sources.?[index][0..lens[index]];
+                    source = try allocator.dupe(u8, payload.sources.?[index][0..lens[index]]);
                 } else {
-                    source = std.mem.span(payload.sources.?[index]);
+                    source = try allocator.dupe(u8, std.mem.span(payload.sources.?[index]));
                 }
             }
             const result = try allocator.create(@This());
@@ -120,6 +123,7 @@ pub const Shader = struct {
                 .implementation = result,
                 .ref = payload.ref,
                 .type = payload.type,
+                .breakpoints = @TypeOf(interface.breakpoints).init(allocator),
                 .compile = payload.compile,
                 .context = if (payload.contexts != null) payload.contexts.?[index] else null,
                 .getSourceImpl = &getSource,
@@ -138,6 +142,10 @@ pub const Shader = struct {
         }
 
         pub fn deinit(this: *@This()) void {
+            if (this.source) |s| {
+                this.allocator.free(s);
+            }
+            this.super.breakpoints.deinit();
             this.allocator.destroy(this.super);
             this.allocator.destroy(this);
         }

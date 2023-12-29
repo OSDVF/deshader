@@ -280,14 +280,26 @@ fn runOnLoad() !void {
     const editor_at_startup = common.env.get(common.env_prefix ++ "SHOW") orelse "0";
     const l = try std.ascii.allocLowerString(common.allocator, editor_at_startup);
     defer common.allocator.free(l);
-    const showOpts = enum { yes, no, @"1", @"0", true, false, unknown };
-    switch (std.meta.stringToEnum(showOpts, l) orelse .unknown) {
+    const opts = enum { yes, no, @"1", @"0", true, false, unknown };
+    switch (std.meta.stringToEnum(opts, l) orelse .unknown) {
         .yes, .@"1", .true => {
             _ = deshaderEditorWindowShow();
         },
         .no, .@"0", .false => {},
         .unknown => {
             DeshaderLog.warn("Invalid value for DESHADER_SHOW: {s}", .{editor_at_startup});
+        },
+    }
+    const server_at_startup = common.env.get(common.env_prefix ++ "START_SERVER") orelse "0";
+    const ll = try std.ascii.allocLowerString(common.allocator, server_at_startup);
+    defer common.allocator.free(ll);
+    switch (std.meta.stringToEnum(opts, ll) orelse .unknown) {
+        .yes, .@"1", .true => {
+            _ = deshaderEditorServerStart();
+        },
+        .no, .@"0", .false => {},
+        .unknown => {
+            DeshaderLog.warn("Invalid value for DESHADER_START_SERVER: {s}", .{server_at_startup});
         },
     }
 }
