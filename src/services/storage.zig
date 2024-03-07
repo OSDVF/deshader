@@ -123,7 +123,7 @@ pub fn Storage(comptime Stored: type, comptime Stored2: type) type {
                                 if (shader_iter != null) {
                                     while (try shader_iter.?.nextAlloc(self.allocator)) |shaders_s| {
                                         defer self.allocator.free(shaders_s.name);
-                                        try result.append(try std.mem.concatWithSentinel(self.allocator, u8, &.{ current_path.items, file.value_ptr.name, shaders_s.name }, 0));
+                                        try result.append(try std.mem.concatWithSentinel(self.allocator, u8, &.{ current_path.items, file.value_ptr.name, "/", shaders_s.name }, 0));
                                     }
                                 }
                             }
@@ -145,11 +145,11 @@ pub fn Storage(comptime Stored: type, comptime Stored2: type) type {
                             if (iter2) |*sure_iter| {
                                 while (try sure_iter.nextAlloc(self.allocator)) |shader| {
                                     defer self.allocator.free(shader.name);
-                                    try result.append(try std.fmt.allocPrintZ(self.allocator, "/untagged/program{d}/{d}{s}", .{ item.ref, shader.source.ref, shader.source.toExtension() }));
+                                    try result.append(try std.fmt.allocPrintZ(self.allocator, "/untagged/{d}/{s}", .{ item.ref, shader.name }));
                                 }
                             }
                         } else {
-                            try result.append(try std.fmt.allocPrintZ(self.allocator, "/untagged/{x}_{d}{s}", .{ item.ref, index, item.toExtension() }));
+                            try result.append(try std.fmt.allocPrintZ(self.allocator, "/untagged/{d}_{d}{s}", .{ item.ref, index, item.toExtension() }));
                         }
                     }
                 }
@@ -389,7 +389,8 @@ pub fn Storage(comptime Stored: type, comptime Stored2: type) type {
             key: String,
         };
 
-        pub fn getTagByPath(self: *@This(), path: String) !?Stored {
+        // untagged
+        pub fn getStoredByPath(self: *@This(), path: String) !?Stored {
             const ptr = try self.makePathRecursive(path, false, false, false);
             switch (ptr.content) {
                 .Tag => |tag| return if (tag.getFirstTarget()) |target| return target.* else null,
@@ -634,6 +635,7 @@ pub fn Tag(comptime taggable: type) type {
     return struct {
         pub const Targets = std.AutoHashMap(*taggable, void);
         /// name is duplicated when stored
+        /// name cannot contain '/' and '>'
         name: String,
         parent: ?*Dir(taggable),
         stat: Stat,

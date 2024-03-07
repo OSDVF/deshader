@@ -134,6 +134,7 @@ pub export fn deshaderRemoveSource(ref: usize) usize {
     return 0;
 }
 
+/// path cannot contain '>'
 pub export fn deshaderTagSource(ref: usize, part_index: usize, path: [*:0]const u8, if_exists: ExistsBehavior) usize {
     shaders.Shaders.assignTag(ref, part_index, std.mem.span(path), if_exists) catch |err| {
         DeshaderLog.err(err_format, .{ @src().fn_name, err });

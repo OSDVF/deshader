@@ -147,34 +147,52 @@ pub const Shader = struct {
     };
 
     pub const Program = struct {
+        // each ref can have multiple source parts
         pub const ShadersRefMap = std.AutoHashMap(usize, *const std.ArrayList(*SourceInterface));
         pub const ShaderIterator = struct {
             program: *const Program,
             shaders: Program.ShadersRefMap.ValueIterator,
+            current_parts: ?*const std.ArrayList(*SourceInterface),
+            part_index: usize = 0,
 
             /// Returns the next shader source name and its object. The name is allocated with the allocator
-            /// TODO maybe should return all the linked shader sources instead
             pub fn nextAlloc(self: *ShaderIterator, allocator: std.mem.Allocator) error{OutOfMemory}!?struct { name: []const u8, source: *const Shader.SourceInterface } {
-                if (self.shaders.next()) |current_targets| {
-                    if (findAssociatedSource(current_targets.*.items)) |current| {
-                        if (current.tag) |tag| {
-                            return .{ .name = try allocator.dupe(u8, tag.name), .source = current };
-                        } else {
-                            if (self.program.tag) |program_tag| {
-                                return .{
-                                    .name = try std.mem.concat(allocator, u8, &.{ program_tag.name, current.toExtension() }),
-                                    .source = current,
-                                };
-                            } else {
-                                return .{
-                                    .name = try std.fmt.allocPrint(allocator, "{d}{s}", .{ self.program.ref, current.toExtension() }),
-                                    .source = current,
-                                };
+                var current: *const SourceInterface = undefined;
+                var found = false;
+                while (!found) {
+                    if (self.current_parts == null or self.current_parts.?.items.len <= self.part_index) {
+                        while (self.shaders.next()) |next| { // find the first non-empty source
+                            if (next.*.items.len > 0) {
+                                self.current_parts = next.*;
+                                self.part_index = 0;
+                                break;
                             }
                         }
+                        if (self.current_parts == null) { // not found
+                            return null;
+                        }
+                    } else { //TODO really correct check?
+                        found = true;
+                        current = self.current_parts.?.items[self.part_index];
+                        self.part_index += 1;
                     }
                 }
-                return null;
+
+                if (current.tag) |tag| {
+                    return .{ .name = try allocator.dupe(u8, tag.name), .source = current };
+                } else {
+                    if (self.program.tag) |program_tag| {
+                        return .{
+                            .name = try std.mem.concat(allocator, u8, &.{ program_tag.name, current.toExtension() }),
+                            .source = current,
+                        };
+                    } else {
+                        return .{
+                            .name = try std.fmt.allocPrint(allocator, "{d}_{d}{s}", .{ current.ref, self.part_index, current.toExtension() }),
+                            .source = current,
+                        };
+                    }
+                }
             }
         };
 
@@ -209,6 +227,7 @@ pub const Shader = struct {
             if (self.shaders) |s| {
                 return Program.ShaderIterator{
                     .program = self,
+                    .current_parts = null,
                     .shaders = s.valueIterator(),
                 };
             } else return null;

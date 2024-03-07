@@ -99,7 +99,7 @@ pub fn createEditorProvider(command_listener: ?*const commands.CommandListener) 
             // Inject editor config into Deshader extension
             // Construct editor base url and config JSON
             var editor_config: ?String = null;
-            const editor_config_fmt = "{s}\nglobalThis.deshader={{{s}:{{address:\"";
+            const editor_config_fmt = "{s}\nglobalThis.deshader={{{s}:{{host:\"";
             if (command_listener) |cl| {
                 var decompressed_data: String = undefined;
                 if (cl.ws_config != null or cl.http != null) {

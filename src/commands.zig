@@ -299,16 +299,19 @@ pub const CommandListener = struct {
                 switch (@TypeOf(result)) {
                     void => try self.conn.writeAllFrame(.text, &.{ accepted, command_echo, "\n" }),
                     String => {
+                        DeshaderLog.debug("WS Command {s} => {s}", .{ command_echo, result });
                         try self.conn.writeAllFrame(.text, &.{ accepted, command_echo, "\n", result, "\n" });
                     },
                     []const CString => {
                         const flattened = try common.joinInnerZ(common.allocator, "\n", result);
                         defer common.allocator.free(flattened);
+                        DeshaderLog.debug("WS Command {s} => {s}", .{ command_echo, flattened });
                         try self.conn.writeAllFrame(.text, &.{ accepted, command_echo, "\n", flattened, "\n" });
                     },
                     []const String => {
                         const flattened = try std.mem.join(common.allocator, "\n", result);
                         defer common.allocator.free(flattened);
+                        DeshaderLog.debug("WS Command {s} => {s}", .{ command_echo, flattened });
                         try self.conn.writeAllFrame(.text, &.{ accepted, command_echo, "\n", flattened, "\n" });
                     },
                     serve.HttpStatusCode => {
@@ -324,7 +327,7 @@ pub const CommandListener = struct {
                     else => unreachable,
                 }
             } else |err| {
-                const text = try std.fmt.allocPrint(common.allocator, "Error: {any}\n", .{err});
+                const text = try std.fmt.allocPrint(common.allocator, "500: Internal Server Error\n{s}\n{any}", .{ command_echo, err });
                 defer common.allocator.free(text);
                 try self.conn.writeText(text);
             }
@@ -355,9 +358,6 @@ pub const CommandListener = struct {
 
             const target_command = ws_commands.get(command_name);
             if (target_command) |tc| {
-                if (logParsing) {
-                    DeshaderLog.debug("query: {s}", .{query});
-                }
                 var parsed_args: ?ArgumentsList = if (query.len > 0) try argsFromQuery(common.allocator, query) else null;
                 defer if (parsed_args) |*a| {
                     var it = a.valueIterator();
@@ -479,7 +479,7 @@ pub const CommandListener = struct {
             pub fn clearAllBreakpoints(args: ?ArgumentsList) !void {
                 if (args) |sure_args| {
                     if (sure_args.get("path")) |path| {
-                        if (try shaders.Shaders.getTagByPath(path)) |shader| {
+                        if (try shaders.Shaders.getStoredByPath(path)) |shader| {
                             shader.breakpoints.clearRetainingCapacity();
                         }
                     } else {
@@ -496,7 +496,7 @@ pub const CommandListener = struct {
                     line: usize,
                     column: usize,
                 }, args);
-                if (try shaders.Shaders.getTagByPath(breakpoint.path)) |shader| {
+                if (try shaders.Shaders.getStoredByPath(breakpoint.path)) |shader| {
                     var new = shaders.Breakpoint.init();
                     new.line = breakpoint.line;
                     new.column = breakpoint.column;
@@ -526,21 +526,18 @@ pub const CommandListener = struct {
                 const args_result = try parseArgs(StatRequest, args);
 
                 const s = try std.json.stringifyAlloc(common.allocator, try shaders.Shaders.stat(args_result.path), .{});
-                DeshaderLog.debug("Stat source {s}: {s}", .{ args_result.path, s });
                 return s;
             }
             pub fn statProgram(args: ?ArgumentsList) !String {
                 const args_result = try parseArgs(StatRequest, args);
 
                 const s = try std.json.stringifyAlloc(common.allocator, try shaders.Programs.stat(args_result.path), .{});
-                DeshaderLog.debug("Stat program {s}: {s}", .{ args_result.path, s });
                 return s;
             }
             pub fn stat(args: ?ArgumentsList) !String {
                 const args_result = try parseArgs(StatRequest, args);
 
                 const s = try std.json.stringifyAlloc(common.allocator, try (shaders.Shaders.stat(args_result.path) catch shaders.Programs.stat(args_result.path)), .{});
-                DeshaderLog.debug("Stat {s}: {s}", .{ args_result.path, s });
                 return s;
             }
 
@@ -589,7 +586,7 @@ pub const CommandListener = struct {
             pub fn listBreakpoints(args: ?ArgumentsList) ![]const String {
                 if (args) |sure_args| {
                     if (sure_args.get("path")) |path| {
-                        if (try shaders.Shaders.getTagByPath(path)) |shader| {
+                        if (try shaders.Shaders.getStoredByPath(path)) |shader| {
                             var result = std.ArrayList(String).init(common.allocator);
                             for (shader.breakpoints.items) |bp| {
                                 try result.append(try std.fmt.allocPrint(common.allocator, "{?d},{?d}", .{ bp.line, bp.column }));
@@ -646,7 +643,7 @@ pub const CommandListener = struct {
 
             pub fn readFile(args: ?ArgumentsList) !String {
                 const args_result = try parseArgs(struct { path: String }, args);
-                const result = try shaders.Shaders.getTagByPath(args_result.path);
+                const result = try shaders.Shaders.getStoredByPath(args_result.path);
                 if (result) |shader| {
                     if (shader.getSource()) |source| {
                         return source;
