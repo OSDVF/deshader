@@ -102,14 +102,14 @@ pub export fn deshaderFreeList(list: [*]const [*:0]const u8, count: usize) void 
     common.allocator.free(list[0..count]);
 }
 
-pub export fn deshaderListPrograms(include_untagged: bool, path: [*:0]const u8, count: *usize) ?[*]const [*:0]const u8 {
-    const result = shaders.Programs.listAlloc(include_untagged, std.mem.span(path)) catch return null;
+pub export fn deshaderListPrograms(include_untagged: bool, path: [*:0]const u8, recursive: bool, count: *usize) ?[*]const [*:0]const u8 {
+    const result = shaders.Programs.listAlloc(include_untagged, std.mem.span(path), recursive) catch return null;
     count.* = result.len;
     return @ptrCast(result);
 }
 
-pub export fn deshaderListSources(include_untagged: bool, path: [*:0]const u8, count: *usize) ?[*]const [*:0]const u8 {
-    const result = shaders.Shaders.listAlloc(include_untagged, std.mem.span(path)) catch return null;
+pub export fn deshaderListSources(include_untagged: bool, path: [*:0]const u8, recursive: bool, count: *usize) ?[*]const [*:0]const u8 {
+    const result = shaders.Shaders.listAlloc(include_untagged, std.mem.span(path), recursive) catch return null;
     count.* = result.len;
     return @ptrCast(result);
 }

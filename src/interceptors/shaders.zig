@@ -1,3 +1,5 @@
+// TODO: support MESA debug extensions? (MESA_program_debug, MESA_shader_debug)
+//TODO: support GL_ARB_shading_language_include
 const std = @import("std");
 const builtin = @import("builtin");
 const gl = @import("gl");
@@ -242,7 +244,9 @@ pub export fn glShaderSource(shader: gl.GLuint, count: gl.GLsizei, sources: [*][
                                 .breakpoint => {
                                     if (shaders.Shaders.all.get(@intCast(shader))) |stored| {
                                         if (stored.items.len > source_i) {
-                                            if (stored.items[source_i].breakpoints.append(.{ line_i, 0 })) {
+                                            var new = shaders.Breakpoint.init();
+                                            new.line = line_i;
+                                            if (stored.items[source_i].breakpoints.append(new)) {
                                                 log.debug("Shader {d} source {d}: breakpoint at line {d}", .{ shader, source_i, line_i });
                                             } else |err| {
                                                 log.warn("Failed to add breakpoint for shader {x} source {d}: {any}", .{ shader, source_i, err });

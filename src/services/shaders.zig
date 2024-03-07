@@ -2,6 +2,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+const common = @import("../common.zig");
 const log = @import("../log.zig").DeshaderLog;
 const decls = @import("../declarations/shaders.zig");
 const storage = @import("storage.zig");
@@ -11,9 +12,10 @@ const CString = [*:0]const u8;
 const Storage = storage.Storage;
 const Tag = storage.Tag;
 
-pub var Shaders: Storage(*Shader.SourceInterface) = undefined;
-pub var Programs: Storage(Shader.Program) = undefined;
+pub var Shaders: Storage(*Shader.SourceInterface, void) = undefined;
+pub var Programs: Storage(Shader.Program, *Shader.SourceInterface) = undefined;
 var g_allocator: std.mem.Allocator = undefined;
+var g_breakpoint_last: usize = 0;
 /// Maps real absolute paths to virtual workspace paths
 /// Warning: when unsetting or setting this variable, no path resolution is done, no paths in storage are updated or synced
 /// Serves just as a reference when reading and writing files
@@ -39,29 +41,22 @@ pub fn init(a: std.mem.Allocator) !void {
 const SourcePayload: decls.SourcesPayload = undefined;
 const ProgramPayload: decls.ProgramPayload = undefined;
 
-pub fn mergePayload(comptime T: type, self: T, payload: T) !void {
-    comptime var inner = @typeInfo(@TypeOf(payload));
-    inline while (inner == .Optional or inner == .Pointer) {
-        if (inner == .Optional) {
-            inner = @typeInfo(inner.Optional.child);
-        } else {
-            inner = @typeInfo(inner.Pointer.child);
-        }
+pub const Breakpoint = struct {
+    id: ?usize,
+    message: ?String = null,
+    line: ?usize = null,
+    column: ?usize = null,
+    endLine: ?usize = null,
+    endColumn: ?usize = null,
+
+    pub fn init() @This() {
+        const result = @This(){
+            .id = g_breakpoint_last,
+        };
+        g_breakpoint_last += 1;
+        return result;
     }
-    inline for (inner.Struct.fields) |field| {
-        if (@hasField(@This(), field.name)) {
-            const val = @field(payload, field.name);
-            if (@typeInfo(@TypeOf(val)) == .Optional) {
-                if (val != null) {
-                    @field(self.*, field.name) = val.?;
-                    log.debug("Assigning field {s} with {any}", .{ field.name, val });
-                }
-            } else {
-                @field(self.*, field.name) = val;
-            }
-        }
-    }
-}
+};
 
 pub const Shader = struct {
     /// Interface for interacting with a single source code part
@@ -76,14 +71,14 @@ pub const Shader = struct {
         compile: @TypeOf(SourcePayload.compile) = null,
         save: @TypeOf(SourcePayload.save) = null,
         /// Line and column
-        breakpoints: std.ArrayList(std.meta.Tuple(&.{ usize, usize })),
+        breakpoints: std.ArrayList(Breakpoint),
 
         implementation: *anyopaque, // is on heap
         /// The most important part of interface implementation
         getSourceImpl: *const anyopaque,
         deinitImpl: *const anyopaque,
 
-        pub fn toString(self: *const @This()) String {
+        pub fn toExtension(self: *const @This()) String {
             return self.type.toExtension();
         }
 
@@ -152,16 +147,46 @@ pub const Shader = struct {
     };
 
     pub const Program = struct {
-        pub const Shaders = std.ArrayList(Storage(*Shader.SourceInterface).RefMap.Entry);
+        pub const ShadersRefMap = std.AutoHashMap(usize, *const std.ArrayList(*SourceInterface));
+        pub const ShaderIterator = struct {
+            program: *const Program,
+            shaders: Program.ShadersRefMap.ValueIterator,
+
+            /// Returns the next shader source name and its object. The name is allocated with the allocator
+            /// TODO maybe should return all the linked shader sources instead
+            pub fn nextAlloc(self: *ShaderIterator, allocator: std.mem.Allocator) error{OutOfMemory}!?struct { name: []const u8, source: *const Shader.SourceInterface } {
+                if (self.shaders.next()) |current_targets| {
+                    if (findAssociatedSource(current_targets.*.items)) |current| {
+                        if (current.tag) |tag| {
+                            return .{ .name = try allocator.dupe(u8, tag.name), .source = current };
+                        } else {
+                            if (self.program.tag) |program_tag| {
+                                return .{
+                                    .name = try std.mem.concat(allocator, u8, &.{ program_tag.name, current.toExtension() }),
+                                    .source = current,
+                                };
+                            } else {
+                                return .{
+                                    .name = try std.fmt.allocPrint(allocator, "{d}{s}", .{ self.program.ref, current.toExtension() }),
+                                    .source = current,
+                                };
+                            }
+                        }
+                    }
+                }
+                return null;
+            }
+        };
+
         ref: @TypeOf(ProgramPayload.ref) = 0,
         tag: ?*Tag(Program) = null,
         /// Ref and sources
-        shaders: ?Program.Shaders = null,
+        shaders: ?Program.ShadersRefMap = null,
         context: @TypeOf(ProgramPayload.context) = null,
         link: @TypeOf(ProgramPayload.link) = null,
 
         pub fn deinit(self: *@This()) void {
-            if (self.shaders) |s| {
+            if (self.shaders) |*s| {
                 s.deinit();
             }
         }
@@ -178,6 +203,119 @@ pub const Shader = struct {
                 }
             }
             return self.ref == other.ref;
+        }
+
+        pub fn listFiles(self: *const @This()) ?Program.ShaderIterator {
+            if (self.shaders) |s| {
+                return Program.ShaderIterator{
+                    .program = self,
+                    .shaders = s.valueIterator(),
+                };
+            } else return null;
+        }
+
+        pub fn statFile(_: *const @This(), _: []const u8) storage.StatPayload {
+            return storage.StatPayload{
+                .type = @intFromEnum(storage.FileType.File),
+            };
+        }
+
+        const DirOrFile = Storage(@This(), *Shader.SourceInterface).DirOrFile;
+        const Nested = @TypeOf(Shaders).StoredTag;
+        pub fn makePathAlloc(
+            self: *@This(),
+            name: String,
+            create: bool,
+            overwrite: bool,
+            create_as_dir: bool,
+            allocator: std.mem.Allocator,
+        ) !DirOrFile {
+            if (create_as_dir or create or overwrite) {
+                return error.NotSupported;
+            } else if (self.shaders) |s| {
+                var iter = s.valueIterator();
+                var name_iter = std.mem.splitScalar(u8, name, '.');
+                const name_name = name_iter.first();
+                const name_extension = name_iter.rest();
+                while (iter.next()) |current_targets| {
+                    if (findAssociatedSourceMutable(current_targets.*.items)) |current| {
+                        if (current.*.tag) |tag| {
+                            if (std.mem.eql(u8, name, tag.name)) {
+                                var dupedTag = tag.*;
+                                dupedTag.targets = try common.dupeHashMap(Nested.Targets, allocator, tag.*.targets);
+                                return DirOrFile{
+                                    .content = .{ .Nested = dupedTag },
+                                    .is_new = false,
+                                    .key = name,
+                                };
+                            }
+                        } else {
+                            // no tagged shader with this name was found. Try to find unnamed shaders with names derived from the program
+                            var stat: storage.Stat = undefined;
+                            if (blk: {
+                                if (self.tag) |program_tag| {
+                                    stat = program_tag.stat;
+                                    break :blk std.mem.eql(u8, name_name, program_tag.name); // will produce ./programName.shaderExtension
+                                } else if (std.fmt.parseInt(usize, name_name, 0)) |parsed| {
+                                    stat = storage.Stat.now(); //TODO how to store the real stat?
+                                    break :blk parsed == self.ref; // will produce ./programRefNumber.shaderExtension
+                                } else |_| {
+                                    break :blk false;
+                                }
+                            }) {
+                                if (std.mem.eql(u8, name_extension, current.*.toExtension()[1..])) {
+                                    var newTargets = Nested.Targets.init(allocator);
+                                    try newTargets.put(current, {});
+                                    return DirOrFile{
+                                        .content = .{
+                                            .Nested = Nested{
+                                                .targets = newTargets,
+                                                .parent = null,
+                                                .stat = stat,
+                                                .name = name,
+                                            },
+                                        },
+                                        .is_new = false,
+                                        .key = name,
+                                    };
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            return error.TargetNotFound;
+        }
+
+        /// find shader entry point among other shaders sources in the shader
+        /// TODO search for main instead of searching for the source which does not have any symlinks
+        fn findMainShaderSource(sources: []*const Shader.SourceInterface) ?*const Shader.SourceInterface {
+            for (sources) |s| {
+                if (s.tag) |tag| {
+                    if (tag.targets.count() == 1) { // The tag is only used by this program (not symlinked to some other program)
+                        return s;
+                    }
+                }
+            }
+            return null;
+        }
+
+        /// find the shader source tag which is contained in this program
+        /// TODO does it really work like the first is always the correct target?
+        fn findAssociatedSource(sources: []*const Shader.SourceInterface) ?*const Shader.SourceInterface {
+            for (sources) |s| {
+                return s;
+            }
+            return null;
+        }
+
+        /// find the shader source tag which is contained in this program
+        /// TODO does it really work like the first is always the correct target?
+        fn findAssociatedSourceMutable(sources: []*Shader.SourceInterface) ?**Shader.SourceInterface {
+            for (sources) |*s| {
+                return s;
+            }
+            return null;
         }
 
         pub const Pipeline = union(decls.PipelineType) {
@@ -232,7 +370,10 @@ pub fn sourceReplaceUntagged(sources: decls.SourcesPayload) !void {
         for (e_sources.items, 0..) |*item, i| {
             const data = try Shader.MemorySource.fromPayload(Shaders.allocator, sources, i);
             defer data.deinit();
-            try mergePayload(@TypeOf(item.*), item.*, data.super);
+            const item_impl: *Shader.MemorySource = @alignCast(@ptrCast(item.*.implementation)); //TODO generic
+            if (item_impl.source == null and data.source != null) {
+                item_impl.source = try item_impl.allocator.dupe(u8, data.source.?);
+            }
         }
     }
 }
@@ -307,9 +448,9 @@ pub fn programAttachSource(ref: usize, source: usize) !void {
             std.debug.assert(existing_program.items.len == 1);
             var program = &existing_program.items[0]; // note the reference
             if (program.shaders == null) {
-                program.shaders = Shader.Program.Shaders.init(existing_program.allocator);
+                program.shaders = Shader.Program.ShadersRefMap.init(existing_program.allocator);
             }
-            try program.shaders.?.append(existing_source);
+            try program.shaders.?.put(existing_source.key_ptr.*, existing_source.value_ptr);
         } else {
             return error.TargetNotFound;
         }

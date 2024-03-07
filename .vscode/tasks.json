@@ -90,7 +90,7 @@
                 "build",
                 "examples-run",
                 "-DwolfSSL",
-                "-freference-trace"
+                "-freference-trace",
             ],
             "problemMatcher": "$zig",
             "presentation": {
@@ -111,7 +111,7 @@
                 "-DwolfSSL",
                 "-freference-trace",
                 "-DlogIntercept",
-                "-DmemoryFrames=10",
+                "-DmemoryFrames=15",
                 "--summary",
                 "none"
             ],

@@ -96,6 +96,26 @@ pub fn joinInnerZ(alloc: std.mem.Allocator, separator: []const u8, slices: []con
     return buf;
 }
 
+test "joinInnerZ Empty" {
+    const alloc = std.testing.allocator;
+    const separator = "\n";
+    const slices = [_]CString{};
+    const result = try joinInnerZ(alloc, separator, &slices);
+    defer alloc.free(result);
+    const expected: String = "";
+    try std.testing.expectEqualStrings(expected, result);
+}
+
+test "joinInnerZ Non-Empty" {
+    const alloc = std.testing.allocator;
+    const separator = "\n";
+    const slices = [_]CString{ "a", "b", "c" };
+    const result = try joinInnerZ(alloc, separator, &slices);
+    defer alloc.free(result);
+    const expected: String = "a\nb\nc";
+    try std.testing.expectEqualStrings(expected, result);
+}
+
 pub fn copyForwardsZ(comptime T: type, dest: []T, source: [*]const T, source_len: usize) void {
     for (dest[0..source_len], source) |*d, s| d.* = s;
 }
@@ -194,6 +214,15 @@ pub fn dupeSliceOfSlices(alloc: std.mem.Allocator, comptime t: type, input: []co
     var result = try alloc.alloc([]const t, input.len);
     for (0..input.len) |i| {
         result[i] = try alloc.dupe(t, input[i]);
+    }
+    return result;
+}
+
+pub fn dupeHashMap(comptime H: type, alloc: std.mem.Allocator, input: H) !H {
+    var result = H.init(alloc);
+    var iter = input.iterator();
+    while (iter.next()) |item| {
+        try result.put(item.key_ptr.*, item.value_ptr.*);
     }
     return result;
 }

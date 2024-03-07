@@ -19,6 +19,7 @@ const GetProcAddressSignature = fn (name: [*:0]const u8) gl.FunctionPointer;
 const String = []const u8;
 
 // TODO multi-context
+// TODO wasm
 pub const APIs = struct {
     const vk = struct {
         const names = [_]String{"libvulkan.so"};
