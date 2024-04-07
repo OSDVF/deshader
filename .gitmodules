@@ -1,9 +1,9 @@
 [submodule "backend/libs/glsl_analyzer"]
 	path = libs/glsl_analyzer
-	url = git@github.com:nolanderc/glsl_analyzer.git
+	url = git@github.com:OSDVF/glsl_analyzer.git
 [submodule "backend/libs/positron"]
 	path = libs/positron
-	url = git@github.com:osdvf/positron.git
+	url = git@github.com:OSDVF/positron.git
 [submodule "libs/zig-opengl"]
 	path = libs/zig-opengl
 	url = https://github.com/MasterQ32/zig-opengl.git
@@ -21,7 +21,10 @@
 	url = git@github.com:OSDVF/deshader-vscode.git
 [submodule "libs/websocket"]
 	path = libs/websocket
-	url = git@github.com:karlseguin/websocket.zig.git
+	url = git@github.com:OSDVF/websocket.zig.git
 [submodule "bootstrap/llvm-ir-cmake"]
 	path = bootstrap/llvm-ir-cmake
 	url = git@github.com:compor/llvm-ir-cmake-utils.git
+[submodule "editor/glsl-language-support"]
+	path = editor/glsl-language-support
+	url = https://github.com/filippofracascia/glsl-language-support.git

@@ -42,3 +42,7 @@ node_modules/vscode-web/dist/node_modules/xterm-addon-unicode11/lib/xterm-addon-
 node_modules/vscode-web/dist/node_modules/xterm-addon-webgl/lib/xterm-addon-webgl.js
 deshader-vscode/dist/web/extension.js
 deshader-vscode/package.json
+glsl-language-support/package.json
+glsl-language-support/language-configuration.json
+glsl-language-support/snippets/glsl.json
+glsl-language-support/syntaxes/glsl.tmLanguage.json

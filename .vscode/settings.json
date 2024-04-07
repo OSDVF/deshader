@@ -118,7 +118,22 @@
     },
     "typescript.surveys.enabled": false,
     "typescript.suggest.autoImports": false,
-    "typescript.preferGoToSourceDefinition": true,
     "typescript.preferences.quoteStyle": "single",
-    "typescript.format.semicolons": "remove"
+    "typescript.format.semicolons": "remove",
+    "typescript.implementationsCodeLens.enabled": false,
+    "typescript.referencesCodeLens.enabled": false,
+    "typescript.experimental.tsserver.web.typeAcquisition.enabled": false,
+    "typescript.preferGoToSourceDefinition": false,
+    "typescript.tsserver.enableTracing": false,
+    "typescript.tsserver.log": "off",
+    "typescript.tsserver.experimental.enableProjectDiagnostics": false,
+    "typescript.tsserver.nodePath": "bun",
+    "typescript.tsserver.useSyntaxServer": "auto",
+    "typescript.workspaceSymbols.scope": "currentProject",
+    "editor.stickyScroll.defaultModel": "foldingProviderModel",
+    "editor.stickyScroll.maxLineCount": 7,
+    "files.exclude": {
+        "**/node_modules": true,
+        "**/.git": true,
+    }
 }

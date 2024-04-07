@@ -113,12 +113,12 @@ pub fn build(b: *std.Build) !void {
     deshader_lib.addModule("args", args_mod);
 
     var deshader_dependent_dlls = std.ArrayList(String).init(b.allocator);
+    try addVcpkgInstalledPaths(deshader_lib);
     // WolfSSL
     var wolfssl: *std.build.Step.Compile = undefined;
     if (optionWolfSSL) {
         const wolfssl_lib_name = if (targetTarget == .windows and builtin.os.tag != .windows) "libwolfssl" else "wolfssl";
         deshader_lib.linkSystemLibrary(wolfssl_lib_name);
-        try addVcpkgInstalledPaths(deshader_lib);
         try installVcpkgLibrary(deshader_lib_install, wolfssl_lib_name); // This really depends on host build system
         const with_ext = try std.mem.concat(b.allocator, u8, &.{ wolfssl_lib_name, targetTarget.dynamicLibSuffix() });
         try deshader_dependent_dlls.append(with_ext);
@@ -131,19 +131,28 @@ pub fn build(b: *std.Build) !void {
         deshader_lib.addIncludePath(.{ .path = ZigServe.sdkPath("/vendor/wolfssl/") });
     }
 
+    const noSystemGLSLang = blk: {
+        const libname = try std.mem.concat(b.allocator, u8, &.{ target.libPrefix(), "glslang" });
+        defer b.allocator.free(libname);
+        if (try fileWithPrefixExists(b.allocator, host_libs_location, libname)) |_| {
+            break :blk true;
+        } else break :blk false;
+    };
+
+    // GLSLang
+    inline for (.{ "glslang", "glslang-default-resource-limits" }) |glslang| {
+        try installVcpkgLibrary(deshader_lib_install, glslang);
+        deshader_lib.linkSystemLibrary(glslang);
+    }
+    if (noSystemGLSLang) {
+        // vcpkg will link these statically
+        deshader_lib.linkSystemLibrary("MachineIndependent");
+        deshader_lib.linkSystemLibrary("GenericCodeGen");
+    }
+
     // Websocket
     const websocket = b.addModule("websocket", .{
         .source_file = .{ .path = "libs/websocket/src/websocket.zig" },
-        .dependencies = &.{
-            .{
-                .name = "zigtrait",
-                .module = b.addModule("zigtrait", .{
-                    .source_file = .{
-                        .path = "libs/websocket/vendor/zigtrait/src/zigtrait.zig",
-                    },
-                }),
-            },
-        },
     });
     deshader_lib.addModule("websocket", websocket);
 
@@ -158,6 +167,26 @@ pub fn build(b: *std.Build) !void {
     });
     const vkzigBindings = vkzig_dep.module("vulkan-zig");
     deshader_lib.addModule("vulkan-zig", vkzigBindings);
+
+    // GLSL Analyzer
+    const compresss_spec = try CompressStep.init(b, .{ .path = b.pathFromRoot("libs/glsl_analyzer/spec/spec.json") });
+    const compressed_spec = b.addModule("glsl_spec.json.zlib", .{ .source_file = .{ .generated = &compresss_spec.generatedFile } });
+    const glsl_analyzer_options = b.addOptions();
+    glsl_analyzer_options.addOption(bool, "has_websocket", true);
+    const glsl_analyzer = b.addModule("glsl_analyzer", .{
+        .source_file = .{ .path = "libs/glsl_analyzer.zig" },
+        .dependencies = &[_]std.build.ModuleDependency{ .{
+            .name = "glsl_spec.json.zlib",
+            .module = compressed_spec,
+        }, .{
+            .name = "websocket",
+            .module = websocket,
+        }, .{
+            .name = "build_options",
+            .module = glsl_analyzer_options.createModule(),
+        } },
+    });
+    deshader_lib.addModule("glsl_analyzer", glsl_analyzer);
 
     // Deshader internal library options
     const options = b.addOptions();
@@ -281,7 +310,7 @@ pub fn build(b: *std.Build) !void {
         // Build dependencies
         const dependencies_cmd = b.step("dependencies", "Bootstrap building nested deshader components and dependencies");
         var dependencies_step: *DependenciesStep = try b.allocator.create(DependenciesStep);
-        dependencies_step.* = DependenciesStep.init(b, target, optionWolfSSL or targetTarget == .windows); // If wolfSSL is meant to be linked dynamically, it must be built first
+        dependencies_step.* = DependenciesStep.init(b, target, optionWolfSSL or targetTarget == .windows or noSystemGLSLang); // If wolfSSL is meant to be linked dynamically, it must be built first
         dependencies_cmd.dependOn(&dependencies_step.step);
         if (optionDependencies) {
             deshader_lib.step.dependOn(&dependencies_step.step);
@@ -635,9 +664,10 @@ fn vcpkgTriplet(t: std.Target.Os.Tag) String {
 
 /// assuming vcpkg is called as by Visual Studio or `vcpkg install --triplet x64-windows-cross --x-install-root=build/vcpkg_installed` or inside DependenciesStep
 fn addVcpkgInstalledPaths(c: *std.build.Step.Compile) !void {
+    const debug = if (c.optimize == .Debug) "debug" else "";
     c.addIncludePath(.{ .path = try c.step.owner.build_root.join(c.step.owner.allocator, &.{ "build", "vcpkg_installed", vcpkgTriplet(c.target.getOsTag()), "include" }) });
-    c.addLibraryPath(.{ .path = try c.step.owner.build_root.join(c.step.owner.allocator, &.{ "build", "vcpkg_installed", vcpkgTriplet(c.target.getOsTag()), "bin" }) });
-    c.addLibraryPath(.{ .path = try c.step.owner.build_root.join(c.step.owner.allocator, &.{ "build", "vcpkg_installed", vcpkgTriplet(c.target.getOsTag()), "lib" }) });
+    c.addLibraryPath(.{ .path = try c.step.owner.build_root.join(c.step.owner.allocator, &.{ "build", "vcpkg_installed", vcpkgTriplet(c.target.getOsTag()), debug, "bin" }) });
+    c.addLibraryPath(.{ .path = try c.step.owner.build_root.join(c.step.owner.allocator, &.{ "build", "vcpkg_installed", vcpkgTriplet(c.target.getOsTag()), debug, "lib" }) });
 }
 
 fn installVcpkgLibrary(i: *std.build.Step.InstallArtifact, name: String) !void {
@@ -663,9 +693,9 @@ fn installVcpkgLibrary(i: *std.build.Step.InstallArtifact, name: String) !void {
             b.addInstallLibFile(.{ .path = lib_path }, dest_path)
         else
             b.addInstallBinFile(.{ .path = lib_path }, dest_path)).step);
-        std.log.info("Installed {s} from VCPKG", .{dest_path});
+        std.log.info("Installed dynamic {s} from VCPKG", .{dest_path});
     } else |err| {
-        std.log.warn("Could not find {s} from VCPKG but maybe system library will work too. {}", .{ name, err });
+        std.log.warn("Could not find dynamic {s} from VCPKG but maybe system library will work too. {}", .{ name, err });
     }
 }
 

@@ -7,14 +7,13 @@ pub const ExistsBehavior = enum(c_int) {
     /// Do not permit collisions
     Error = 1,
     /// Overwrite contents of the target tag. Removes any targeted previous links to other tags. Tags which pointed to previous content will be linked to the new content.
-    PurgePrevious = 2,
+    Overwrite = 2,
 };
 
 /// Non-exhaustive enumeration type
 /// Shader language can be graphics API backend agnostic so it is stored separately
 pub const LanguageType = enum(c_int) { GLSL = 1, _ };
 
-/// Non-exhaustive enumeration type
 /// Specifies both shader type and API backend type
 pub const SourceType = enum(c_int) {
     gl_vertex = 0x8b31,
@@ -39,8 +38,9 @@ pub const SourceType = enum(c_int) {
     vk_callable = 0x2000,
     vk_task = 0x4000,
     vk_mesh = 0x8000,
-    _,
+    unknown = 0,
 
+    /// Including the dot
     pub fn toExtension(typ: SourceType) []const u8 {
         return switch (typ) {
             .gl_fragment, .vk_fragment => ".frag",
@@ -68,9 +68,14 @@ pub const SourcesPayload = extern struct {
     /// Graphics API level shader reference.
     /// Will be GLuint for OpenGL, pointer to VkShaderModule on Vulkan
     ref: usize = 0,
-    /// Shader tag/virtual path. Has the size of 'count'
-    /// Paths are stored duplicated (because they can change over time)
-    paths: ?[*]CString = null,
+    /// Shader tag/virtual paths list. Has the size of 'count'.
+    /// Paths are copied when stored by Deshader.
+    ///
+    /// If some physical path mapping will be used, the save function will get the physical path passed.
+    ///
+    /// If multiple paths are assigned to the same shader source part (for example by `deshaderTagSource`), the client must accept any of
+    /// the paths when reading the `SourcesPayload` (for example in `compile` and `save` functions).
+    paths: ?[*]?CString = null,
     /// Shader GLSL source code parts. Each of them has different path and context. Has the size of 'count'
     /// Sources are never duplicated or freed
     sources: ?[*]CString = null,
@@ -86,21 +91,25 @@ pub const SourcesPayload = extern struct {
     type: SourceType = @enumFromInt(0), // Default to unknown (_) value
     /// Represents the language of the shader source (GLSL ...)
     language: LanguageType = @enumFromInt(0), // Default to unknown (_) value
-    /// Non-null user-specified or default compile function to be executed when Deshader inejcts something and wants to apply it
-    compile: ?*const fn (source: SourcesPayload) callconv(.C) u8 = null,
+    /// (Non-null => user-specified) or default source assignment and compile function to be executed when Deshader inejcts something and wants to apply it
+    /// length is the length of the `instrumented` source. If it is 0, then there is no instrumented source.
+    /// The instrumented source is also always null-terminated.
+    /// Should return 0 when there is no error
+    compile: ?*const fn (source: SourcesPayload, instrumented: CString, length: i32) callconv(.C) u8 = null,
     /// Function to execute when user wants to save a source in the Deshader editor
-    save: ?*const fn (source: SourcesPayload) callconv(.C) u8 = null,
+    save: ?*const fn (source: SourcesPayload, physical: ?CString) callconv(.C) u8 = null,
 
     pub fn toString(self: *const @This()) []const u8 {
         return self.type.toExtension();
     }
 };
 
+/// See `SourcesPayload`
 pub const ProgramPayload = extern struct {
     ref: usize = 0,
     path: ?CString = null,
     shaders: ?[*]usize = null,
     count: usize = 0,
     context: ?*const anyopaque = null,
-    link: ?*const fn (ref: usize, path: ?CString, sources: [*]SourcesPayload, count: usize, context: ?*const anyopaque) callconv(.C) u8,
+    link: ?*const fn (self: *ProgramPayload) callconv(.C) u8,
 };

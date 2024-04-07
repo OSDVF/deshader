@@ -1,10 +1,12 @@
 {
+    "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
     "name": "deshader",
     "version": "0.0.1",
     "dependencies": [
       "glew",
       "opengl",
       "glfw3",
-      "wolfssl"
+      "wolfssl",
+      "glslang-no-hlsl"
     ]
   }

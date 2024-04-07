@@ -18,7 +18,10 @@
             "request": "launch",
             "type": "cppvsdbg",
             "program": "${workspaceRoot}/zig-out/bin/deshader-run",
-            "args": ["-y", "zig-out/bin/deshader-examples/glfw.exe"],
+            "args": [
+                "-y",
+                "zig-out/bin/deshader-examples/glfw.exe"
+            ],
             "preLaunchTask": "Build Runner",
             "cwd": "${workspaceRoot}"
         },
@@ -73,6 +76,8 @@
                 "DESHADER_LIB_ROOT": "/usr/lib/",
                 "DESHADER_COMMANDS_WS": "8082",
                 "DESHADER_START_SERVER": "1",
+                "DESHADER_LSP": "8083",
+                "POWER_SAVE": "1",
             }
         },
         {
@@ -139,8 +144,8 @@
             "cwd": "${workspaceRoot}",
         },
         {
-            "name": "LLDB Attach",// Use for Wine debugging
-            "type": "lldb",// Execute add-dsym zig-out/bin/deshader-glfw.pdb afterwards to get smybols
+            "name": "LLDB Attach", // Use for Wine debugging
+            "type": "lldb", // Execute add-dsym zig-out/bin/deshader-glfw.pdb afterwards to get smybols
             "request": "attach",
             "pid": "${command:pickMyProcess}",
             "initCommands": [
@@ -148,7 +153,6 @@
                 "platform connect connect://localhost:1234",
             ]
         },
-        
         {
             "type": "gdb",
             "request": "launch",

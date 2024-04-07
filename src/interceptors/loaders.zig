@@ -13,7 +13,7 @@ const c = @cImport({
         @cInclude("dlfcn.h");
     }
 });
-const shaders = @import("../interceptors/shaders.zig");
+const gl_shaders = @import("../interceptors/gl_shaders.zig");
 
 const GetProcAddressSignature = fn (name: [*:0]const u8) gl.FunctionPointer;
 const String = []const u8;
@@ -168,18 +168,29 @@ const _known_gl_loaders =
 const _platform_gl_libs = if (builtin.os.tag == .windows) .{APIs.gl.wgl} else .{ APIs.gl.glX, APIs.gl.egl };
 const _gl_ibs = _platform_gl_libs ++ .{APIs.gl.custom};
 
-/// Lists all declarations inside interceptors/shaders.zig and creates a map from procedure name to procedure pointer
+/// Lists all exported declarations inside interceptors/shaders.zig and creates a map from procedure name to procedure pointer
 pub const intercepted = blk: {
-    const decls = @typeInfo(shaders).Struct.decls;
-    comptime var procs: [decls.len]std.meta.Tuple(&.{ String, gl.FunctionPointer }) = undefined;
-    comptime var names2: [decls.len]?String = undefined;
+    const decls = @typeInfo(gl_shaders).Struct.decls;
 
-    for (decls, 0..) |proc, i| {
-        names2[i] = proc.name;
-        procs[i] = .{
-            proc.name,
-            @field(shaders, proc.name),
-        };
+    var count = 0;
+    for (decls) |decl| {
+        if (decl.name[0] == 'g' and decl.name[1] == 'l') {
+            count += 1;
+        }
+    }
+    var i = 0;
+    comptime var procs: [count]struct { String, gl.FunctionPointer } = undefined;
+    comptime var names2: [count]?String = undefined;
+    for (decls) |proc| {
+        if (proc.name[0] == 'g' and proc.name[1] == 'l') {
+            defer i += 1;
+            names2[i] = proc.name;
+            procs[i] = .{
+                proc.name,
+                // depends on every declaration in gl_shaders.zig to be a function or a private struct (so not listed here). It cannot be pub struct
+                @field(gl_shaders, proc.name),
+            };
+        }
     }
     break :blk struct {
         const names = names2;
@@ -343,6 +354,7 @@ pub fn deinit() void {
         std.os.unlinkat(cwd, lib, if (builtin.os.tag == .linux) std.os.AT.SYMLINK_NOFOLLOW else 0) catch |err|
             DeshaderLog.err("Could not delete renamed lib {s}: {}", .{ lib, err });
     }
+    gl_shaders.deinit();
 }
 
 /// Interceptors for Vulkan functions

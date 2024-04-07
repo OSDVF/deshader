@@ -3,6 +3,7 @@ const glfw = @import("mach-glfw");
 const gl = @import("gl");
 
 const log = std.log.scoped(.Engine);
+const gl_stack_trace = false;
 
 fn glGetProcAddress(p: glfw.GLProc, proc: [:0]const u8) ?gl.FunctionPointer {
     _ = p;
@@ -101,10 +102,15 @@ pub fn glDebugMessageCallback(source: gl.GLenum, typ: gl.GLenum, id: gl.GLuint, 
         gl.DEBUG_SEVERITY_NOTIFICATION => "Notification",
         else => unreachable,
     };
-    log.debug("{d}: {s} {s} {s} {s}\n", .{ id, source_string, typ_string, severity_string, message });
+    log.debug("{d}: {s} {s} {s} {s}\n", .{ id, source_string, typ_string, severity_string, message }); // TODO use debug build of OpenGL
+    if (gl_stack_trace) {
+        std.debug.dumpCurrentStackTrace(null);
+    }
 }
 
 pub fn main() !void {
+    const env = try std.process.getEnvMap(std.heap.page_allocator);
+    const powerSave = !std.ascii.eqlIgnoreCase(env.get("POWER_SAVE") orelse "0", "0");
     log.info("Showing a window with GLFW and OpenGL", .{});
     // Initialize GLFW
     glfw.setErrorCallback(errorCallback);
@@ -172,5 +178,8 @@ pub fn main() !void {
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
         window.swapBuffers();
+        if (powerSave) {
+            std.time.sleep(100000); //100ms
+        }
     }
 }

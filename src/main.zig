@@ -11,7 +11,7 @@ const vulkan = @import("vulkan");
 const DeshaderLog = @import("log.zig").DeshaderLog;
 const common = @import("common.zig");
 const commands = @import("commands.zig");
-const shaders = @import("services/shaders.zig");
+const shaders = @import("services/shaders.zig"); // TODO more shader services?
 const shader_decls = @import("declarations/shaders.zig");
 
 const loaders = @import("interceptors/loaders.zig");
@@ -34,7 +34,7 @@ const ExistsBehavior = shader_decls.ExistsBehavior;
 
 pub export fn deshaderEditorServerStart() usize {
     if (options.embedEditor) {
-        editor.serverStart(command_listener) catch |err| {
+        editor.serverStart(common.command_listener) catch |err| {
             DeshaderLog.err(err_format, .{ @src().fn_name, err });
             if (@errorReturnTrace()) |trace|
                 std.debug.dumpStackTrace(trace.*);
@@ -58,7 +58,7 @@ pub export fn deshaderEditorServerStop() usize {
 
 pub export fn deshaderEditorWindowShow() usize {
     if (options.embedEditor) {
-        editor.windowShow(command_listener) catch |err| {
+        editor.windowShow(common.command_listener) catch |err| {
             DeshaderLog.err(err_format, .{ @src().fn_name, err });
             if (@errorReturnTrace()) |trace|
                 std.debug.dumpStackTrace(trace.*);
@@ -102,20 +102,33 @@ pub export fn deshaderFreeList(list: [*]const [*:0]const u8, count: usize) void 
     common.allocator.free(list[0..count]);
 }
 
-pub export fn deshaderListPrograms(include_untagged: bool, path: [*:0]const u8, recursive: bool, count: *usize) ?[*]const [*:0]const u8 {
-    const result = shaders.Programs.listAlloc(include_untagged, std.mem.span(path), recursive) catch return null;
+pub export fn deshaderListPrograms(path: [*:0]const u8, recursive: bool, count: *usize, physical: bool) ?[*]const [*:0]const u8 {
+    const result = shaders.instance.Programs.listTagged(common.allocator, std.mem.span(path), recursive, physical) catch return null;
+    count.* = result.len;
+    return result.ptr;
+}
+
+pub export fn deshaderListSources(path: [*:0]const u8, recursive: bool, count: *usize, physical: bool) ?[*]const [*:0]const u8 {
+    const result = shaders.instance.Shaders.listTagged(common.allocator, std.mem.span(path), recursive, physical) catch return null;
+    count.* = result.len;
+    return result.ptr;
+}
+
+/// If `program` == 0, then list all programs. Else list shader stages of a particular program
+pub export fn deshaderListProgramsUntagged(count: *usize, refOrRoot: usize) ?[*]const [*:0]const u8 {
+    const result = shaders.instance.Programs.listUntagged(common.allocator, refOrRoot) catch return null;
     count.* = result.len;
     return @ptrCast(result);
 }
 
-pub export fn deshaderListSources(include_untagged: bool, path: [*:0]const u8, recursive: bool, count: *usize) ?[*]const [*:0]const u8 {
-    const result = shaders.Shaders.listAlloc(include_untagged, std.mem.span(path), recursive) catch return null;
+pub export fn deshaderListSourcesUntagged(count: *usize) ?[*]const [*:0]const u8 {
+    const result = shaders.instance.Shaders.listUntagged(common.allocator, 0) catch return null;
     count.* = result.len;
     return @ptrCast(result);
 }
 
 pub export fn deshaderRemovePath(path: [*:0]const u8, dir: bool) usize {
-    shaders.Shaders.removePath(std.mem.span(path), dir) catch |err| {
+    shaders.instance.Shaders.untag(std.mem.span(path), dir) catch |err| {
         DeshaderLog.err(err_format, .{ @src().fn_name, err });
         if (@errorReturnTrace()) |trace|
             std.debug.dumpStackTrace(trace.*);
@@ -125,7 +138,7 @@ pub export fn deshaderRemovePath(path: [*:0]const u8, dir: bool) usize {
 }
 
 pub export fn deshaderRemoveSource(ref: usize) usize {
-    shaders.Shaders.remove(ref) catch |err| {
+    shaders.instance.Shaders.remove(ref) catch |err| {
         DeshaderLog.err(err_format, .{ @src().fn_name, err });
         if (@errorReturnTrace()) |trace|
             std.debug.dumpStackTrace(trace.*);
@@ -136,7 +149,7 @@ pub export fn deshaderRemoveSource(ref: usize) usize {
 
 /// path cannot contain '>'
 pub export fn deshaderTagSource(ref: usize, part_index: usize, path: [*:0]const u8, if_exists: ExistsBehavior) usize {
-    shaders.Shaders.assignTag(ref, part_index, std.mem.span(path), if_exists) catch |err| {
+    shaders.instance.Shaders.assignTag(ref, part_index, std.mem.span(path), if_exists) catch |err| {
         DeshaderLog.err(err_format, .{ @src().fn_name, err });
         if (@errorReturnTrace()) |trace|
             std.debug.dumpStackTrace(trace.*);
@@ -163,13 +176,13 @@ pub export fn deshaderPhysicalWorkspace(path: [*:0]const u8) usize {
 }
 
 pub export fn deshaderTaggedProgram(payload: ProgramPayload, behavior: ExistsBehavior) usize {
-    shaders.programCreateUntagged(payload) catch |err| {
+    shaders.instance.programCreateUntagged(payload) catch |err| {
         DeshaderLog.err(err_format, .{ @src().fn_name, err });
         if (@errorReturnTrace()) |trace|
             std.debug.dumpStackTrace(trace.*);
         return @intFromError(err);
     };
-    shaders.Programs.assignTag(payload.ref, 0, std.mem.span(payload.path.?), behavior) catch |err| {
+    shaders.instance.Programs.assignTag(payload.ref, 0, std.mem.span(payload.path.?), behavior) catch |err| {
         DeshaderLog.err(err_format, .{ @src().fn_name, err });
         if (@errorReturnTrace()) |trace|
             std.debug.dumpStackTrace(trace.*);
@@ -181,19 +194,21 @@ pub export fn deshaderTaggedProgram(payload: ProgramPayload, behavior: ExistsBeh
 pub export fn deshaderTaggedSource(payload: SourcesPayload, if_exists: ExistsBehavior) usize {
     std.debug.assert(payload.count == 1);
     std.debug.assert(payload.paths != null);
-    shaders.sourcesCreateUntagged(payload) catch |err| {
+    shaders.instance.sourcesCreateUntagged(payload) catch |err| {
         DeshaderLog.err(err_format, .{ @src().fn_name, err });
         if (@errorReturnTrace()) |trace|
             std.debug.dumpStackTrace(trace.*);
         return @intFromError(err);
     };
     for (0..payload.count) |i| {
-        shaders.Programs.assignTag(payload.ref, i, std.mem.span(payload.paths.?[i]), if_exists) catch |err| {
-            DeshaderLog.err(err_format, .{ @src().fn_name, err });
-            if (@errorReturnTrace()) |trace|
-                std.debug.dumpStackTrace(trace.*);
-            return @intFromError(err);
-        };
+        if (payload.paths.?[i]) |path| {
+            shaders.instance.Programs.assignTag(payload.ref, i, std.mem.span(path), if_exists) catch |err| {
+                DeshaderLog.err(err_format, .{ @src().fn_name, err });
+                if (@errorReturnTrace()) |trace|
+                    std.debug.dumpStackTrace(trace.*);
+                return @intFromError(err);
+            };
+        }
     }
     return 0;
 }
@@ -223,11 +238,10 @@ comptime {
         @export(f, .{ .name = "fini_array", .section = ".fini_array" });
     }
 }
-pub var command_listener: ?*commands.CommandListener = null;
 
-/// Run this functions at Deshader shared library load
+/// Mean to be called at Deshader shared library load
 fn runOnLoad() !void {
-    if (!common.initialized) { // races with dlopen but should be on the same thread
+    if (!common.initialized) { // races with the intercepted dlopen but should be on the same thread
         try common.init(); // init allocator and env
     }
     if (!loaders.ignored) {
@@ -235,7 +249,7 @@ fn runOnLoad() !void {
         loaders.checkIgnoredProcess();
     }
 
-    // Should this be the editor subprocess?
+    // Should the library instance in this process serve as the editor subprocess?
     const url = common.env.get(editor.DESHADER_EDITOR_URL);
     if (builtin.os.tag != .windows and url != null and common.env.get(common.env_prefix ++ "EDITOR_SHOWN") == null) {
         common.setenv(common.env_prefix ++ "EDITOR_SHOWN", "1");
@@ -262,16 +276,22 @@ fn runOnLoad() !void {
     }
     // Prevent recursive hooking
     common.setenv(common.env_prefix ++ "HOOKED", "1");
-    try shaders.init(common.allocator);
+    try shaders.instance.init(common.allocator);
 
-    const commands_port_string = common.env.get(common.env_prefix ++ "COMMANDS_HTTP") orelse "8081";
+    const commands_port_string = common.env.get(common.env_prefix ++ "COMMANDS_HTTP") orelse common.default_http_port;
     const commands_port_string_ws = common.env.get(common.env_prefix ++ "COMMANDS_WS");
+    const port_string_lsp = common.env.get(common.env_prefix ++ "LSP");
     const commands_port_http = try std.fmt.parseInt(u16, commands_port_string, 10);
     const commands_port_ws = if (commands_port_string_ws == null) null else try std.fmt.parseInt(u16, commands_port_string_ws.?, 10);
-    command_listener = try commands.CommandListener.start(common.allocator, commands_port_http, commands_port_ws);
+    const port_lsp = if (port_string_lsp) |p| std.fmt.parseInt(u16, p, 10) catch try std.fmt.parseInt(u16, common.default_lsp_port, 10) else null;
+    // HTTP port is always open
+    common.command_listener = try commands.CommandListener.start(common.allocator, commands_port_http, commands_port_ws, port_lsp);
     DeshaderLog.debug("Commands HTTP port {d}", .{commands_port_http});
     if (commands_port_ws != null) {
         DeshaderLog.debug("Commands WS port {d}", .{commands_port_ws.?});
+    }
+    if (port_lsp != null) {
+        DeshaderLog.debug("Language server port {d}", .{port_lsp.?});
     }
 
     try loaders.loadGlLib();
@@ -307,9 +327,9 @@ fn runOnLoad() !void {
 
 fn finalize() callconv(.C) void {
     defer common.deinit();
-    if (command_listener != null) {
-        command_listener.?.stop();
-        common.allocator.destroy(command_listener.?);
+    if (common.command_listener != null) {
+        common.command_listener.?.stop();
+        common.allocator.destroy(common.command_listener.?);
     }
     if (options.embedEditor) {
         if (editor.editor_process != null) {
@@ -323,11 +343,11 @@ fn finalize() callconv(.C) void {
             };
         }
     }
-    shaders.Programs.deinit();
-    shaders.Shaders.deinit();
-    loaders.deinit();
+    shaders.instance.deinit();
+    loaders.deinit(); // also deinits gl_shaders
 }
 
+/// Will be called upon Deshader library load and BEFORE the host application's main()
 fn wrapErrorRunOnLoad() callconv(.C) void {
     runOnLoad() catch |err| {
         DeshaderLog.err("Initialization error: {any}", .{err});

@@ -4,6 +4,10 @@
 #include <cstring>
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
+#ifdef __GNUC__
+#include <execinfo.h>
+#include <unistd.h>
+#endif
 #ifdef WIN32
 #include <windows.h>
 #include "resources.h"
@@ -66,6 +70,10 @@ MessageCallback(GLenum source,
     }
 
     std::cerr << "): " << message << std::endl;
+
+    void *array[10];
+    size_t size = backtrace(array, 10);
+    backtrace_symbols_fd(array, size, STDERR_FILENO);
 }
 
 int main(int argc, char** argv) {

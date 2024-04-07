@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const options = @import("options");
+const commands = @import("commands.zig");
 const c = @cImport({
     @cInclude("stdlib.h"); //setenv or _putenv_s
     @cInclude("string.h"); //strerror
@@ -22,6 +23,11 @@ pub var allocator: std.mem.Allocator = undefined;
 pub var env: std.process.EnvMap = undefined;
 pub var initialized = false;
 pub const env_prefix = "DESHADER_";
+pub const default_http_port = "8081";
+pub const default_ws_port = "8082";
+pub const default_lsp_port = "8083";
+pub var command_listener: ?*commands.CommandListener = null;
+
 pub fn init() !void {
     if (!initialized) {
         allocator = gpa.allocator();
@@ -65,7 +71,7 @@ pub fn setenv(name: String, value: String) void {
     };
 }
 
-pub fn joinInnerZ(alloc: std.mem.Allocator, separator: []const u8, slices: []const CString) std.mem.Allocator.Error![]u8 {
+pub fn joinInnerZ(alloc: std.mem.Allocator, separator: []const u8, slices: []const ?CString) std.mem.Allocator.Error![]u8 {
     if (slices.len == 0) return &[0]u8{};
     var lengths = try alloc.alloc(usize, slices.len);
     defer alloc.free(lengths);
@@ -73,9 +79,11 @@ pub fn joinInnerZ(alloc: std.mem.Allocator, separator: []const u8, slices: []con
     const total_len = blk: {
         var sum: usize = separator.len * (slices.len - 1);
         for (slices, 0..) |slice, i| {
-            const len = std.mem.len(slice);
-            sum += len;
-            lengths[i] = len;
+            if (slice) |yes_slice| {
+                const len = std.mem.len(yes_slice);
+                sum += len;
+                lengths[i] = len;
+            }
         }
         break :blk sum;
     };
@@ -83,13 +91,18 @@ pub fn joinInnerZ(alloc: std.mem.Allocator, separator: []const u8, slices: []con
     const buf = try alloc.alloc(u8, total_len);
     errdefer alloc.free(buf);
 
-    @memcpy(buf, slices[0]);
-    var buf_index: usize = lengths[0];
+    var buf_index: usize = 0;
+    if (slices[0]) |yes_slice| {
+        @memcpy(buf, yes_slice);
+        buf_index = lengths[0];
+    }
     for (slices[1..], 1..) |slice, i| {
-        std.mem.copyForwards(u8, buf[buf_index..], separator);
-        buf_index += separator.len;
-        copyForwardsZ(u8, buf[buf_index..], slice, lengths[i]);
-        buf_index += lengths[i];
+        if (slice) |yes_slice| {
+            std.mem.copyForwards(u8, buf[buf_index..], separator);
+            buf_index += separator.len;
+            copyForwardsZ(u8, buf[buf_index..], yes_slice, lengths[i]);
+            buf_index += lengths[i];
+        }
     }
 
     // No need for shrink since buf is exactly the correct size.
@@ -225,4 +238,14 @@ pub fn dupeHashMap(comptime H: type, alloc: std.mem.Allocator, input: H) !H {
         try result.put(item.key_ptr.*, item.value_ptr.*);
     }
     return result;
+}
+
+pub fn oneStartsWithOtherNotEqual(a: String, b: String) bool {
+    if (a.len < b.len) {
+        return std.mem.eql(u8, a, b[0..a.len]);
+    } else if (a.len > b.len) {
+        return std.mem.eql(u8, a[0..b.len], b);
+    } else {
+        return !std.mem.eql(u8, a, b);
+    }
 }

@@ -46,8 +46,9 @@
                 "build",
                 "deshader",
                 "-DwolfSSL",
-                "-Ddeps",
+                //"-Ddeps",
                 "-DlogIntercept",
+                "-DmemoryFrames=15",
                 "-freference-trace",
                 "--summary",
                 "none"
@@ -277,6 +278,54 @@
                 "panel": "shared",
                 "showReuseMessage": true,
                 "clear": true
+            }
+        },
+        {
+            "label": "Min Brightness",
+            "command": "gdbus",
+            "args": [
+                "call",
+                "--session",
+                "--dest",
+                "org.gnome.SettingsDaemon.Power",
+                "--object-path",
+                "/org/gnome/SettingsDaemon/Power",
+                "--method org.freedesktop.DBus.Properties.Set",
+                "org.gnome.SettingsDaemon.Power.Screen",
+                "Brightness",
+                "<int32 0>"
+            ],
+            "presentation": {
+                "echo": true,
+                "reveal": "never",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": false,
+                "clear": false
+            }
+        },
+        {
+            "label": "Max Brightness",
+            "command": "gdbus",
+            "args": [
+                "call",
+                "--session",
+                "--dest",
+                "org.gnome.SettingsDaemon.Power",
+                "--object-path",
+                "/org/gnome/SettingsDaemon/Power",
+                "--method org.freedesktop.DBus.Properties.Set",
+                "org.gnome.SettingsDaemon.Power.Screen",
+                "Brightness",
+                "<int32 100>"
+            ],
+            "presentation": {
+                "echo": true,
+                "reveal": "never",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": false,
+                "clear": false
             }
         }
     ]

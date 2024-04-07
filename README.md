@@ -24,6 +24,11 @@ And also some dead ends that have been encountered.
 - Mac OS CGL Support
 - [Custom WebView profile data directory](https://github.com/webview/webview/issues/719)
 
+## Possible future goals
+- View assembly
+    - SPIR-V (compile by GLSLang)
+    - ISA level ([nvdisasm](https://developer.download.nvidia.com/compute/cuda/redist/cuda_nvdisasm/), [nvcachetools](https://github.com/therontarigo/nvcachetools), [envytools](https://github.com/envytools/envytools/))
+
 Feel free to fork and add your own goals or even better, break the non-goals!
 
 Deshader aims to assist researchers who want to leverage the edge features of graphical APIs to explore and create new software technologies. There is no development effort given into features like debugging of third party applications. If Deshader saved some of your time, you can leave a comment in the [discussions](https://github.com/OSDVF/deshader/discussions) or [star](https://github.com/OSDVF/deshader/star) the repo.
@@ -60,6 +65,7 @@ Deshader consists of several (mostly third party; mostly forked) components that
 - Webpack
 - C libraries
     - GLEW (can be installed by VCPKG)
+    - GLSLang (can be installed by VCPKG)
     - Linux
         - gtk-3 and webkit2gtk
     - Windows

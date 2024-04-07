@@ -1,3 +1,6 @@
+//! This module provides the editor server and the editor window
+//! Injects current Deshader settings into the editor extension
+
 const std = @import("std");
 const builtin = @import("builtin");
 const positron = @import("positron");
@@ -16,7 +19,7 @@ pub fn getProductJson(allocator: std.mem.Allocator, https: bool, port: u16) !Str
     return try std.json.stringifyAlloc(allocator, .{
         .productConfiguration = .{
             .nameShort = "Deshader Editor",
-            .nameLong = "Deshader Editor",
+            .nameLong = "Deshader Integrated Editor",
             .applicationName = "deshader-editor",
             .dataFolderName = ".deshader-editor",
             .version = "1.82.0",
@@ -31,13 +34,17 @@ pub fn getProductJson(allocator: std.mem.Allocator, https: bool, port: u16) !Str
         },
         .workspaceUri = .{
             .scheme = "deshader",
-            .path = "/live-app.code-workspace",
+            .path = "/connected.code-workspace",
         },
-        .additionalBuiltinExtensions = .{.{
+        .additionalBuiltinExtensions = .{ .{
             .scheme = if (https) "https" else "http",
             .authority = authority,
             .path = "/deshader-vscode",
-        }},
+        }, .{
+            .scheme = if (https) "https" else "http",
+            .authority = authority,
+            .path = "/glsl-language-support",
+        } },
     }, .{ .whitespace = .minified });
 }
 
@@ -99,7 +106,7 @@ pub fn createEditorProvider(command_listener: ?*const commands.CommandListener) 
             // Inject editor config into Deshader extension
             // Construct editor base url and config JSON
             var editor_config: ?String = null;
-            const editor_config_fmt = "{s}\nglobalThis.deshader={{{s}:{{host:\"";
+            const editor_config_fmt = "{s}\nglobalThis.deshader={{lsp:{{port:{d}}},{s}:{{host:\"";
             if (command_listener) |cl| {
                 var decompressed_data: String = undefined;
                 if (cl.ws_config != null or cl.http != null) {
@@ -119,11 +126,11 @@ pub fn createEditorProvider(command_listener: ?*const commands.CommandListener) 
                     };
                     defer provider.allocator.free(decompressed_data);
                     if (cl.ws_config) |wsc| {
-                        editor_config = try std.fmt.allocPrint(provider.allocator, editor_config_fmt ++ "{s}\",port:{d}}}}}\n", .{ decompressed_data, if (cl.secure) "wss" else "ws", wsc.address, wsc.port });
+                        editor_config = try std.fmt.allocPrint(provider.allocator, editor_config_fmt ++ "{s}\",port:{d}}}}}\n", .{ decompressed_data, commands.CommandListener.setting_vars.languageServerPort, if (cl.secure) "wss" else "ws", wsc.address, wsc.port });
                     } else {
                         if (cl.http) |http| {
                             if (http.server.bindings.getLastOrNull()) |bind| {
-                                editor_config = try std.fmt.allocPrint(provider.allocator, editor_config_fmt ++ "{}\",port:{d}}}}}\n", .{ decompressed_data, if (cl.secure) "https" else "http", bind.address, bind.port });
+                                editor_config = try std.fmt.allocPrint(provider.allocator, editor_config_fmt ++ "{}\",port:{d}}}}}\n", .{ decompressed_data, commands.CommandListener.setting_vars.languageServerPort, if (cl.secure) "https" else "http", bind.address, bind.port });
                             }
                         }
                     }
