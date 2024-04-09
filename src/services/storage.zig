@@ -58,7 +58,7 @@ pub fn Storage(comptime Stored: type, comptime Nested: type) type {
 
         pub const TaggableMixin = struct {
             pub fn hasTag(self: Const(Stored)) bool {
-                return self.tags.count() >= 0;
+                return self.tags.count() > 0;
             }
             pub fn firstTag(self: Const(Stored)) ?*Tag(Stored) {
                 return if (self.hasTag()) self.tags.values()[0] else null;
@@ -207,22 +207,23 @@ pub fn Storage(comptime Stored: type, comptime Nested: type) type {
                         if (item.tags.count() > 0) { // skip tagged ones
                             continue;
                         }
-                        try result.append(allocator, try std.fmt.allocPrintZ(allocator, if (Nested == void) "{d}" else "{d}/", .{combinedRef(item.ref, index)}));
+                        try result.append(allocator, try std.fmt.allocPrintZ(allocator, if (Nested == void) "{x}" else "{x}/", .{combinedRef(item.ref, index)}));
                     }
                 }
             } else {
                 const item = self.all.get(refOrRoot) orelse return error.TargetNotFound;
-                if (Nested != void and item.items.len > 0) { //Specialization
-
-                    var iter2 = item.items[0].listFiles();
-                    if (iter2) |*sure_iter| {
-                        while (try sure_iter.nextAlloc(allocator)) |shader| {
-                            defer allocator.free(shader.name);
-                            try result.append(allocator, try allocator.dupeZ(u8, shader.name));
+                if (Nested != void) { //Specialization
+                    if (item.items.len > 0) {
+                        var iter2 = item.items[0].listFiles();
+                        if (iter2) |*sure_iter| {
+                            while (try sure_iter.nextAlloc(allocator)) |shader| {
+                                defer allocator.free(shader.name);
+                                try result.append(allocator, try allocator.dupeZ(u8, shader.name));
+                            }
                         }
                     }
                 } else {
-                    for (item.items, 0..) |part, i| try result.append(allocator, try std.fmt.allocPrintZ(allocator, "{d}{s}", .{ combinedRef(refOrRoot, i), part.toExtension() }));
+                    for (item.items, 0..) |part, i| try result.append(allocator, try std.fmt.allocPrintZ(allocator, "{x}{s}", .{ combinedRef(refOrRoot, i), part.toExtension() }));
                 }
             }
             return result.toOwnedSlice(allocator);
@@ -241,7 +242,7 @@ pub fn Storage(comptime Stored: type, comptime Nested: type) type {
                     const p = try tag.fullPathAlloc(self.allocator, false);
                     defer self.allocator.free(p);
                     if (!std.mem.eql(u8, path, p)) {
-                        log.err("Tried to put tag {s} to {x}_{d} but the pointer has already tag {s}", .{ path, ref, index, p });
+                        log.err("Tried to put tag {s} to {x} but the pointer has already tag {s}", .{ path, combinedRef(ref, index), p });
                         return error.TagExists;
                     }
                 }
@@ -249,7 +250,7 @@ pub fn Storage(comptime Stored: type, comptime Nested: type) type {
                 var target = try self.makePathRecursive(path, true, if_exists != .Error, false);
 
                 if (target.content == .Dir) {
-                    log.err("Tried to put tag {s} to {x}_{d} but the path is a directory", .{ path, ref, index });
+                    log.err("Tried to put tag {s} to {x} but the path is a directory", .{ path, combinedRef(ref, index) });
                     return error.DirExists;
                 }
                 target.content.Tag.target = &ptr.value_ptr.items[index];
@@ -569,7 +570,7 @@ pub fn Storage(comptime Stored: type, comptime Nested: type) type {
                         // Remove old / overwrite
                         const old_ref = existing_file.value_ptr.target.*.ref;
                         if (!self.all.remove(old_ref)) {
-                            log.err("Tag {d} not found in all", .{old_ref});
+                            log.err("Ref {x} not found in storage map", .{old_ref});
                             return error.NotTagged;
                         }
                         log.debug("Overwriting tag {s} from source {x} with {s}", .{ existing_file.value_ptr.name, old_ref, name });
@@ -799,8 +800,7 @@ pub fn Tag(comptime taggable: type) type {
             if (sentinel) {
                 try path_stack.append(allocator, 0);
             }
-            const result = try path_stack.toOwnedSlice(allocator);
-            return if (sentinel) result[0.. :0] else result;
+            return if (sentinel) try path_stack.toOwnedSliceSentinel(allocator, 0) else try path_stack.toOwnedSlice(allocator);
         }
     };
 }
@@ -838,7 +838,7 @@ pub const Locator = union(enum) {
                 return null;
             }
             const last_dot = std.mem.lastIndexOfScalar(u8, subpath, '.') orelse subpath.len;
-            const combined = try std.fmt.parseInt(DoubleUsize, subpath[untagged_path.len..last_dot], 10);
+            const combined = try std.fmt.parseInt(DoubleUsize, subpath[untagged_path.len + 1 .. last_dot], 16);
             return Locator.untagged(combined);
         } else {
             return Locator{ .tagged = subpath };

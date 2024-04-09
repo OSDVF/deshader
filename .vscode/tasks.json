@@ -46,7 +46,6 @@
                 "build",
                 "deshader",
                 "-DwolfSSL",
-                //"-Ddeps",
                 "-DlogIntercept",
                 "-DmemoryFrames=15",
                 "-freference-trace",
@@ -91,7 +90,7 @@
                 "build",
                 "examples-run",
                 "-DwolfSSL",
-                "-freference-trace",
+                "-freference-trace"
             ],
             "problemMatcher": "$zig",
             "presentation": {
@@ -267,7 +266,7 @@
                 "build",
                 "dependencies",
                 "-fwine",
-                "-Dtarget=x86_64-windows-gnu",
+                "-Dtarget=x86_64-windows-gnu"
             ],
             "problemMatcher": "$zig",
             "group": "build",

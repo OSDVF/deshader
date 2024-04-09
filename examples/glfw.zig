@@ -110,7 +110,7 @@ pub fn glDebugMessageCallback(source: gl.GLenum, typ: gl.GLenum, id: gl.GLuint, 
 
 pub fn main() !void {
     const env = try std.process.getEnvMap(std.heap.page_allocator);
-    const powerSave = !std.ascii.eqlIgnoreCase(env.get("POWER_SAVE") orelse "0", "0");
+    const powerSave = try std.fmt.parseInt(usize, env.get("POWER_SAVE") orelse "0", 0);
     log.info("Showing a window with GLFW and OpenGL", .{});
     // Initialize GLFW
     glfw.setErrorCallback(errorCallback);
@@ -178,8 +178,8 @@ pub fn main() !void {
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
         window.swapBuffers();
-        if (powerSave) {
-            std.time.sleep(100000); //100ms
+        if (powerSave > 0) {
+            std.time.sleep(powerSave * 1000000); //to miliseconds
         }
     }
 }

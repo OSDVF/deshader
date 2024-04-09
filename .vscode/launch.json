@@ -77,7 +77,9 @@
                 "DESHADER_COMMANDS_WS": "8082",
                 "DESHADER_START_SERVER": "1",
                 "DESHADER_LSP": "8083",
-                "POWER_SAVE": "1",
+                "POWER_SAVE": "100",
+                "__NV_PRIME_RENDER_OFFLOAD": "0",
+                "__GLX_VENDOR_LIBRARY_NAME": "mesa"
             }
         },
         {

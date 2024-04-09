@@ -111,5 +111,6 @@ pub const ProgramPayload = extern struct {
     shaders: ?[*]usize = null,
     count: usize = 0,
     context: ?*const anyopaque = null,
-    link: ?*const fn (self: *ProgramPayload) callconv(.C) u8,
+    /// If count is 0, the function will only link the program. Otherwise it will attach the shaders in the order they are stored in the payload.
+    link: ?*const fn (self: ProgramPayload) callconv(.C) u8,
 };

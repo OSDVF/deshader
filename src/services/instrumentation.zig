@@ -1,3 +1,8 @@
+//! TODO
+//! Sdílená paměť - dumpuje jen jedno vlákno ze skupiny
+//! Lokální paměť - každé vlákno
+//! Builtin variables - podle druhu
+
 const std = @import("std");
 const analyzer = @import("glsl_analyzer");
 const log = @import("../log.zig").DeshaderLog;

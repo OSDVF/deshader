@@ -575,7 +575,7 @@ pub const CommandListener = struct {
     }
 
     pub const commands = struct {
-        pub fn @"continue"(_: ?ArgumentsList) !void {
+        pub fn @"continue"() !void {
             common.command_listener.?.break_mutex.lock();
             common.command_listener.?.break_mutex.unlock();
             common.command_listener.?.resume_condition.broadcast();
@@ -613,6 +613,10 @@ pub const CommandListener = struct {
             //TODO
         }
 
+        pub fn abort() !void {
+            std.process.abort();
+        }
+
         fn getUnsentBreakpoints() !std.ArrayListUnmanaged(dap.Breakpoint) {
             var breakpoints_to_send = try std.ArrayListUnmanaged(dap.Breakpoint).initCapacity(common.allocator, shaders.instance.breakpoints_to_send.items.len);
             for (shaders.instance.breakpoints_to_send.items) |bp| {
@@ -628,7 +632,7 @@ pub const CommandListener = struct {
             return breakpoints_to_send;
         }
 
-        pub fn debug(_: ?ArgumentsList) !String {
+        pub fn debug() !String {
             shaders.instance.debugging = true;
             var breakpoints_to_send = try getUnsentBreakpoints();
             defer {
@@ -641,8 +645,9 @@ pub const CommandListener = struct {
             return std.json.stringifyAlloc(common.allocator, breakpoints_to_send.items, json_options);
         }
 
-        pub fn noDebug(_: ?ArgumentsList) !void {
-            return shaders.instance.revertInstrumentation();
+        pub fn noDebug() !void {
+            try @"continue"();
+            shaders.instance.revert_requested = true;
         }
 
         pub fn evaluate(_: ?ArgumentsList) !void {
@@ -797,7 +802,7 @@ pub const CommandListener = struct {
             //TODO
         }
 
-        pub fn state(_: ?ArgumentsList) !String {
+        pub fn state() !String {
             var breakpoints_to_send = try getUnsentBreakpoints();
             defer {
                 for (breakpoints_to_send.items) |bp| {
@@ -815,10 +820,11 @@ pub const CommandListener = struct {
             return std.json.stringifyAlloc(common.allocator, .{
                 .threads = threads_to_send,
                 .breakpoints = breakpoints_to_send.items,
+                .lsp = if (analysis.isRunning()) setting_vars.languageServerPort else null,
             }, .{});
         }
 
-        pub fn threads(_: ?ArgumentsList) !String {
+        pub fn threads() !String {
             const threads_list = try shaders.instance.listThreads(common.allocator);
             defer {
                 for (threads_list) |thread| {
@@ -945,9 +951,11 @@ pub const CommandListener = struct {
         }
 
         /// port: ?u16. 1st fallback: settings_vars.language_server_port, 2nd fallback: common.default_lsp_port
-        pub fn languageServerStart(args: ?ArgumentsList) !void {
+        pub fn languageServerStart(args: ?ArgumentsList) !String {
             const parsed = try parseArgs(?struct { port: ?u16 }, args);
-            return analysis.serverStart((if (parsed) |p| p.port else null) orelse setting_vars.languageServerPort);
+            const port = (if (parsed) |p| p.port else null) orelse setting_vars.languageServerPort;
+            try analysis.serverStart(port);
+            return std.fmt.allocPrint(common.allocator, "{d}", .{port});
         }
 
         pub fn languageServerStop() !void {
@@ -1069,6 +1077,7 @@ pub const CommandListener = struct {
         const evaluate = stringReturning;
         const possibleBreakpoints = stringReturning;
         const getStepInTargets = stringReturning;
+        const languageServerStart = stringReturning;
         const readMemory = stringReturning;
         const scopes = stringReturning;
         const setDataBreakpoint = stringReturning;

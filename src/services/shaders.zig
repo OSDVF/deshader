@@ -324,6 +324,7 @@ Shaders: Storage(*Shader.SourceInterface, void) = undefined,
 Programs: Storage(Shader.Program, *Shader.SourceInterface) = undefined,
 allocator: std.mem.Allocator = undefined,
 debugging: bool = false, // TODO per-context or per-thread?
+revert_requested: bool = false, // set by the command listener thread, read by the drawing thread
 
 pub fn init(service: *@This(), a: std.mem.Allocator) !void {
     service.Programs = try @TypeOf(service.Programs).init(a);
@@ -456,7 +457,7 @@ pub const Shader = struct {
             if (source.firstTag()) |t| {
                 return try allocator.dupe(u8, t.name);
             } else {
-                return try std.fmt.allocPrint(allocator, "{d}{s}", .{ storage.combinedRef(source.ref, part_index), source.toExtension() });
+                return try std.fmt.allocPrint(allocator, "{x}{s}", .{ storage.combinedRef(source.ref, part_index), source.toExtension() });
             }
         }
 
@@ -501,7 +502,7 @@ pub const Shader = struct {
                     defer allocator.free(program_path);
                     return std.fmt.allocPrint(allocator, GenericLocator.programs_path ++ "{s}/{s}", .{ program_path, basename });
                 } else {
-                    return std.fmt.allocPrint(allocator, GenericLocator.programs_path ++ storage.untagged_path ++ "/{d}/{s}", .{ p.ref, basename });
+                    return std.fmt.allocPrint(allocator, GenericLocator.programs_path ++ storage.untagged_path ++ "/{x}/{s}", .{ p.ref, basename });
                 }
             }
 
@@ -510,7 +511,7 @@ pub const Shader = struct {
                 defer allocator.free(source_path);
                 return std.fmt.allocPrint(allocator, GenericLocator.sources_path ++ "{s}", .{source_path});
             } else {
-                return std.fmt.allocPrint(allocator, GenericLocator.sources_path ++ storage.untagged_path ++ "/{d}{s}", .{ storage.combinedRef(self.ref, part_index), self.toExtension() });
+                return std.fmt.allocPrint(allocator, GenericLocator.sources_path ++ storage.untagged_path ++ "/{x}{s}", .{ storage.combinedRef(self.ref, part_index), self.toExtension() });
             }
         }
 
@@ -911,17 +912,24 @@ pub const Shader = struct {
 
         pub fn revertInstrumentation(self: *@This(), allocator: std.mem.Allocator) !void {
             if (self.stages) |shaders_map| {
+                // compile the shaders
                 var it = shaders_map.valueIterator();
                 while (it.next()) |shader_parts| {
                     const shader = shader_parts.*.items[0];
                     if (shader.compileHost) |compile| {
                         var sources = try allocator.alloc(CString, shader_parts.*.items.len);
-                        defer allocator.free(sources);
                         var lengths = try allocator.alloc(usize, shader_parts.*.items.len);
-                        defer allocator.free(lengths);
                         var paths = try allocator.alloc(?CString, shader_parts.*.items.len);
+                        defer {
+                            for (sources, lengths, paths) |s, l, p| {
+                                allocator.free(s[0..l :0]);
+                                if (p) |pa| allocator.free(pa[0 .. std.mem.len(pa) + 1 :0]);
+                            }
+                            allocator.free(sources);
+                            allocator.free(lengths);
+                            allocator.free(paths);
+                        }
                         var has_paths = false;
-                        defer allocator.free(paths);
                         for (shader_parts.*.items, 0..) |part, i| {
                             const source = part.getSource();
                             sources[i] = try allocator.dupeZ(u8, source orelse "");
@@ -931,7 +939,7 @@ pub const Shader = struct {
                                 break :blk try t.fullPathAlloc(allocator, true);
                             } else null;
                         }
-                        const status = compile(decls.SourcesPayload{
+                        const payload = decls.SourcesPayload{
                             .ref = shader.ref,
                             .paths = if (has_paths) paths.ptr else null,
                             .compile = shader.compileHost,
@@ -948,11 +956,35 @@ pub const Shader = struct {
                             .lengths = lengths.ptr,
                             .type = shader.type,
                             .save = shader.saveHost,
-                        }, "", 0);
+                        };
+                        defer allocator.free(payload.contexts.?[0..payload.count]);
+                        const status = compile(payload, "", 0);
+
                         if (status != 0) {
-                            log.err("Failed to compile shader {d} (code {d})", .{ self.ref, status });
+                            log.err("Failed to compile program {x} shader {x} (code {d})", .{ self.ref, shader.ref, status });
                         }
+                    } else {
+                        log.warn("No function to compile shader {x} provided.", .{self.ref});
                     }
+                }
+                // Link the program
+                if (self.link) |linkFunc| {
+                    const path = if (self.firstTag()) |t| try t.fullPathAlloc(allocator, true) else null;
+                    defer if (path) |p| allocator.free(p);
+                    const result = linkFunc(decls.ProgramPayload{
+                        .context = self.context,
+                        .count = 0,
+                        .link = linkFunc,
+                        .path = if (path) |p| p.ptr else null,
+                        .ref = self.ref,
+                        .shaders = null,
+                    });
+                    if (result != 0) {
+                        log.err("Failed to link to revert instrumentation for program {x}. Code {d}", .{ self.ref, result });
+                        return error.Link;
+                    }
+                } else {
+                    log.warn("No function to link program {x} provided.", .{self.ref}); // TODO forward logging to the connected client
                 }
             }
         }
@@ -1017,7 +1049,7 @@ pub const Shader = struct {
                     log.debug("Instrumented source:\n{s}", .{s[0..result.length]});
                 }
                 if (result.outputs.diagnostics.items.len > 0) {
-                    log.info("Shader {d} instrumentation diagnostics:", .{self.ref});
+                    log.info("Shader {x} instrumentation diagnostics:", .{self.ref});
                     for (result.outputs.diagnostics.items) |diag| {
                         log.info("{d}: {s}", .{ diag.span.start, diag.message }); // TODO line and column pos instead of offset
                     }
@@ -1130,13 +1162,14 @@ pub const Shader = struct {
                                         params.allocator.free(payload.lengths.?[0..payload.count]);
                                         params.allocator.free(payload.contexts.?[0..payload.count]);
                                     }
-                                    if (c(payload, instrumented_source, @intCast(new_result.length)) != 0) {
-                                        log.err("Failed to compile shader {d}", .{self.ref});
+                                    const result = c(payload, instrumented_source, @intCast(new_result.length));
+                                    if (result != 0) {
+                                        log.err("Failed to compile instrumented shader {x}. Code {d}", .{ self.ref, result });
                                         new_result.deinit(params.allocator);
                                         continue;
                                     }
                                 } else {
-                                    log.err("No compileHost function for shader {d}", .{self.ref});
+                                    log.err("No compileHost function for shader {x}", .{self.ref});
                                     new_result.deinit(params.allocator);
                                     continue;
                                 }
@@ -1202,25 +1235,26 @@ pub const Shader = struct {
                         const path = if (self.firstTag()) |t| try t.fullPathAlloc(params.allocator, true) else null;
                         defer if (path) |p|
                             params.allocator.free(p);
-
-                        var p = decls.ProgramPayload{
+                        const result = l(decls.ProgramPayload{
                             .ref = self.ref,
                             .context = self.context,
                             .count = 0,
                             .link = self.link,
                             .path = if (path) |p| p.ptr else null,
                             .shaders = null, // the shaders array is useful only for attaching new shaders
-                        };
-                        if (l(&p) != 0) {
+                        });
+                        if (result != 0) {
+                            log.err("Failed to link program {x} for instrumentation. Code {d}", .{ self.ref, result });
                             return error.Link;
                         }
                     } else {
+                        log.err("No link function provided for program {x}", .{self.ref});
                         return error.Link;
                     }
                 }
                 return .{ .outputs = outputs, .invalidated = invalidated };
             } else {
-                log.warn("Program {d} has no shaders", .{self.ref});
+                log.warn("Program {x} has no shaders", .{self.ref});
                 return error.TargetNotFound;
             }
         }
@@ -1444,10 +1478,22 @@ pub fn programAttachSource(service: *Service, ref: usize, source: usize) !void {
     }
 }
 
-pub fn revertInstrumentation(service: *Service) !void {
+/// Must be called from the drawing thread
+fn revert(service: *Service) !void {
+    service.debugging = false;
     var it = service.Programs.all.valueIterator();
     while (it.next()) |program| {
         try program.items[0].revertInstrumentation(service.allocator);
+    }
+}
+
+pub fn checkDebuggingOrRevert(service: *Service) bool {
+    if (service.revert_requested) {
+        service.revert_requested = false;
+        service.revert() catch |err| log.err("Failed to revert instrumentation: {}", .{err});
+        return false;
+    } else {
+        return service.debugging;
     }
 }
 

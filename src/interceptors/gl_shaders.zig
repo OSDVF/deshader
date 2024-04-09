@@ -48,7 +48,7 @@ fn defaultCompileShader(source: decls.SourcesPayload, instrumented: CString, len
             }
             break :blk result;
         } else null;
-        defer if (source.lengths) |l| common.allocator.free(l[0..source.count]);
+        defer if (lengths_i32) |l| common.allocator.free(l);
         gl.shaderSource(shader, @intCast(source.count), source.sources, if (lengths_i32) |l| l.ptr else null);
     }
     gl.compileShader(shader);
@@ -81,7 +81,8 @@ fn defaultCompileShader(source: decls.SourcesPayload, instrumented: CString, len
     return 0;
 }
 
-fn defaultLink(self: *decls.ProgramPayload) callconv(.C) u8 {
+/// If count is 0, the function will only link the program. Otherwise it will attach the shaders in the order they are stored in the payload.
+fn defaultLink(self: decls.ProgramPayload) callconv(.C) u8 {
     const program: gl.GLuint = @intCast(self.ref);
     var i: usize = 0;
     while (i < self.count) : (i += 1) {
@@ -653,7 +654,7 @@ fn instrumentCompute(dim: [3]usize) !InstrumentationResult {
 }
 
 pub export fn glDispatchCompute(num_groups_x: gl.GLuint, num_groups_y: gl.GLuint, num_groups_z: gl.GLuint) void {
-    if (shaders.instance.debugging) {
+    if (shaders.instance.checkDebuggingOrRevert()) {
         const prepared = prepareStorage(instrumentCompute([_]usize{ @intCast(num_groups_x), @intCast(num_groups_y), @intCast(num_groups_z) }));
         gl.dispatchCompute(num_groups_x, num_groups_y, num_groups_z);
         processOutput(prepared);
@@ -666,7 +667,7 @@ const IndirectComputeCommand = extern struct {
     num_groups_z: gl.GLuint,
 };
 pub export fn glDispatchComputeIndirect(indirect: ?*const IndirectComputeCommand) void {
-    if (shaders.instance.debugging) {
+    if (shaders.instance.checkDebuggingOrRevert()) {
         const i = if (indirect) |i| i.* else IndirectComputeCommand{ .num_groups_x = 1, .num_groups_y = 1, .num_groups_z = 1 };
         const prepared = prepareStorage(instrumentCompute([_]usize{ @intCast(i.num_groups_x), @intCast(i.num_groups_y), @intCast(i.num_groups_z) }));
         gl.dispatchComputeIndirect(@intFromPtr(indirect));
@@ -675,7 +676,7 @@ pub export fn glDispatchComputeIndirect(indirect: ?*const IndirectComputeCommand
 }
 
 pub export fn glDrawArrays(mode: gl.GLenum, first: gl.GLint, count: gl.GLsizei) void {
-    if (shaders.instance.debugging) {
+    if (shaders.instance.checkDebuggingOrRevert()) {
         const prepared = prepareStorage(instrumentDraw(count, 1));
         gl.drawArrays(mode, first, count);
         processOutput(prepared);
@@ -683,7 +684,7 @@ pub export fn glDrawArrays(mode: gl.GLenum, first: gl.GLint, count: gl.GLsizei) 
 }
 
 pub export fn glDrawArraysInstanced(mode: gl.GLenum, first: gl.GLint, count: gl.GLsizei, instanceCount: gl.GLsizei) void {
-    if (shaders.instance.debugging) {
+    if (shaders.instance.checkDebuggingOrRevert()) {
         const prepared = prepareStorage(instrumentDraw(count, instanceCount));
         gl.drawArraysInstanced(mode, first, count, instanceCount);
         processOutput(prepared);
@@ -691,7 +692,7 @@ pub export fn glDrawArraysInstanced(mode: gl.GLenum, first: gl.GLint, count: gl.
 }
 
 pub export fn glDrawElements(mode: gl.GLenum, count: gl.GLsizei, _type: gl.GLenum, indices: ?*const anyopaque) void {
-    if (shaders.instance.debugging) {
+    if (shaders.instance.checkDebuggingOrRevert()) {
         const prepared = prepareStorage(instrumentDraw(count, 1));
         gl.drawElements(mode, count, _type, indices);
         processOutput(prepared);
@@ -699,7 +700,7 @@ pub export fn glDrawElements(mode: gl.GLenum, count: gl.GLsizei, _type: gl.GLenu
 }
 
 pub export fn glDrawElementsInstanced(mode: gl.GLenum, count: gl.GLsizei, _type: gl.GLenum, indices: ?*const anyopaque, instanceCount: gl.GLsizei) void {
-    if (shaders.instance.debugging) {
+    if (shaders.instance.checkDebuggingOrRevert()) {
         const prepared = prepareStorage(instrumentDraw(count, instanceCount));
         gl.drawElementsInstanced(mode, count, _type, indices, instanceCount);
         processOutput(prepared);
@@ -707,7 +708,7 @@ pub export fn glDrawElementsInstanced(mode: gl.GLenum, count: gl.GLsizei, _type:
 }
 
 pub export fn glDrawElementsBaseVertex(mode: gl.GLenum, count: gl.GLsizei, _type: gl.GLenum, indices: ?*const anyopaque, basevertex: gl.GLint) void {
-    if (shaders.instance.debugging) {
+    if (shaders.instance.checkDebuggingOrRevert()) {
         const prepared = prepareStorage(instrumentDraw(count, 1));
         gl.drawElementsBaseVertex(mode, count, _type, indices, basevertex);
         processOutput(prepared);
@@ -715,7 +716,7 @@ pub export fn glDrawElementsBaseVertex(mode: gl.GLenum, count: gl.GLsizei, _type
 }
 
 pub export fn glDrawElementsInstancedBaseVertex(mode: gl.GLenum, count: gl.GLsizei, _type: gl.GLenum, indices: ?*const anyopaque, instanceCount: gl.GLsizei, basevertex: gl.GLint) void {
-    if (shaders.instance.debugging) {
+    if (shaders.instance.checkDebuggingOrRevert()) {
         const prepared = prepareStorage(instrumentDraw(count, instanceCount));
         gl.drawElementsInstancedBaseVertex(mode, count, _type, indices, instanceCount, basevertex);
         processOutput(prepared);
@@ -723,7 +724,7 @@ pub export fn glDrawElementsInstancedBaseVertex(mode: gl.GLenum, count: gl.GLsiz
 }
 
 pub export fn glDrawRangeElements(mode: gl.GLenum, start: gl.GLuint, end: gl.GLuint, count: gl.GLsizei, _type: gl.GLenum, indices: ?*const anyopaque) void {
-    if (shaders.instance.debugging) {
+    if (shaders.instance.checkDebuggingOrRevert()) {
         const prepared = prepareStorage(instrumentDraw(count, 1));
         gl.drawRangeElements(mode, start, end, count, _type, indices);
         processOutput(prepared);
@@ -731,7 +732,7 @@ pub export fn glDrawRangeElements(mode: gl.GLenum, start: gl.GLuint, end: gl.GLu
 }
 
 pub export fn glDrawRangeElementsBaseVertex(mode: gl.GLenum, start: gl.GLuint, end: gl.GLuint, count: gl.GLsizei, _type: gl.GLenum, indices: ?*const anyopaque, basevertex: gl.GLint) void {
-    if (shaders.instance.debugging) {
+    if (shaders.instance.checkDebuggingOrRevert()) {
         const prepared = prepareStorage(instrumentDraw(count, 1));
         gl.drawRangeElementsBaseVertex(mode, start, end, count, _type, indices, basevertex);
         processOutput(prepared);
@@ -739,7 +740,7 @@ pub export fn glDrawRangeElementsBaseVertex(mode: gl.GLenum, start: gl.GLuint, e
 }
 
 pub export fn glDrawElementsInstancedBaseVertexBaseInstance(mode: gl.GLenum, count: gl.GLsizei, _type: gl.GLenum, indices: ?*const anyopaque, instanceCount: gl.GLsizei, basevertex: gl.GLint, baseInstance: gl.GLuint) void {
-    if (shaders.instance.debugging) {
+    if (shaders.instance.checkDebuggingOrRevert()) {
         const prepared = prepareStorage(instrumentDraw(count, instanceCount));
         gl.drawElementsInstancedBaseVertexBaseInstance(mode, count, _type, indices, instanceCount, basevertex, baseInstance);
         processOutput(prepared);
@@ -747,7 +748,7 @@ pub export fn glDrawElementsInstancedBaseVertexBaseInstance(mode: gl.GLenum, cou
 }
 
 pub export fn glDrawElementsInstancedBaseInstance(mode: gl.GLenum, count: gl.GLsizei, _type: gl.GLenum, indices: ?*const anyopaque, instanceCount: gl.GLsizei, baseInstance: gl.GLuint) void {
-    if (shaders.instance.debugging) {
+    if (shaders.instance.checkDebuggingOrRevert()) {
         const prepared = prepareStorage(instrumentDraw(count, instanceCount));
         gl.drawElementsInstancedBaseInstance(mode, count, _type, indices, instanceCount, baseInstance);
         processOutput(prepared);
@@ -765,7 +766,7 @@ pub fn parseIndirect(indirect: ?*const IndirectCommand) IndirectCommand {
 }
 
 pub export fn glDrawArraysIndirect(mode: gl.GLenum, indirect: ?*const IndirectCommand) void {
-    if (shaders.instance.debugging) {
+    if (shaders.instance.checkDebuggingOrRevert()) {
         const i = parseIndirect(indirect);
         const prepared = prepareStorage(instrumentDraw(@intCast(i.count), @intCast(i.instanceCount)));
         gl.drawArraysIndirect(mode, indirect);
@@ -774,7 +775,7 @@ pub export fn glDrawArraysIndirect(mode: gl.GLenum, indirect: ?*const IndirectCo
 }
 
 pub export fn glDrawElementsIndirect(mode: gl.GLenum, _type: gl.GLenum, indirect: ?*const IndirectCommand) void {
-    if (shaders.instance.debugging) {
+    if (shaders.instance.checkDebuggingOrRevert()) {
         const i = parseIndirect(indirect);
         const prepared = prepareStorage(instrumentDraw(@intCast(i.count), @intCast(i.instanceCount)));
         gl.drawElementsIndirect(mode, _type, indirect);
@@ -783,7 +784,7 @@ pub export fn glDrawElementsIndirect(mode: gl.GLenum, _type: gl.GLenum, indirect
 }
 
 pub export fn glDrawArraysInstancedBaseInstance(mode: gl.GLenum, first: gl.GLint, count: gl.GLsizei, instanceCount: gl.GLsizei, baseInstance: gl.GLuint) void {
-    if (shaders.instance.debugging) {
+    if (shaders.instance.checkDebuggingOrRevert()) {
         const prepared = prepareStorage(instrumentDraw(count, instanceCount));
         gl.drawArraysInstancedBaseInstance(mode, first, count, instanceCount, baseInstance);
         processOutput(prepared);
@@ -791,7 +792,7 @@ pub export fn glDrawArraysInstancedBaseInstance(mode: gl.GLenum, first: gl.GLint
 }
 
 pub export fn glDrawTransformFeedback(mode: gl.GLenum, id: gl.GLuint) void {
-    if (shaders.instance.debugging) {
+    if (shaders.instance.checkDebuggingOrRevert()) {
         const prepared = prepareStorage(instrumentDraw(0, 1)); // Drawing transform feedback does not dispatch vertex shader
         gl.drawTransformFeedback(mode, id);
         processOutput(prepared);
@@ -799,7 +800,7 @@ pub export fn glDrawTransformFeedback(mode: gl.GLenum, id: gl.GLuint) void {
 }
 
 pub export fn glDrawTransformFeedbackInstanced(mode: gl.GLenum, id: gl.GLuint, instanceCount: gl.GLsizei) void {
-    if (shaders.instance.debugging) {
+    if (shaders.instance.checkDebuggingOrRevert()) {
         const prepared = prepareStorage(instrumentDraw(0, instanceCount));
         gl.drawTransformFeedbackInstanced(mode, id, instanceCount);
         processOutput(prepared);
@@ -807,7 +808,7 @@ pub export fn glDrawTransformFeedbackInstanced(mode: gl.GLenum, id: gl.GLuint, i
 }
 
 pub export fn glDrawTransformFeedbackStream(mode: gl.GLenum, id: gl.GLuint, stream: gl.GLuint) void {
-    if (shaders.instance.debugging) {
+    if (shaders.instance.checkDebuggingOrRevert()) {
         const prepared = prepareStorage(instrumentDraw(0, 1));
         gl.drawTransformFeedbackStream(mode, id, stream);
         processOutput(prepared);
@@ -815,7 +816,7 @@ pub export fn glDrawTransformFeedbackStream(mode: gl.GLenum, id: gl.GLuint, stre
 }
 
 pub export fn glDrawTransformFeedbackStreamInstanced(mode: gl.GLenum, id: gl.GLuint, stream: gl.GLuint, instanceCount: gl.GLsizei) void {
-    if (shaders.instance.debugging) {
+    if (shaders.instance.checkDebuggingOrRevert()) {
         const prepared = prepareStorage(instrumentDraw(0, instanceCount));
         gl.drawTransformFeedbackStreamInstanced(mode, id, stream, instanceCount);
         processOutput(prepared);

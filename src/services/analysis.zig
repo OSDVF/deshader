@@ -34,6 +34,10 @@ pub fn serverStop() !void {
     }
 }
 
+pub fn isRunning() bool {
+    return server_thread != null;
+}
+
 pub fn serverThread(port: u16) !void {
     _ = try analyzer.main.run(server_arena.allocator(), &state, .{
         .channel = .{ .ws = port },
