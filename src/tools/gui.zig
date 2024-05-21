@@ -117,20 +117,17 @@ pub fn createEditorProvider(command_listener: ?*const commands.CommandListener) 
             if (command_listener) |cl| {
                 var decompressed_data: String = undefined;
                 if (cl.ws_config != null or cl.http != null) {
-                    var decompressor: std.compress.zlib.DecompressStream(std.io.FixedBufferStream(String).Reader) = undefined;
                     if (builtin.mode == .Debug) {
                         const handle = try if (dll_dir) |d| d.openFile(options.editorDirRelative ++ f_address, .{}) else std.fs.cwd().openFile(file, .{});
                         defer handle.close();
                         decompressed_data = try handle.readToEndAlloc(provider.allocator, 10 * 1024 * 1024);
                     } else {
-                        var stream = std.io.fixedBufferStream(compressed_or_content);
-                        decompressor = try std.compress.zlib.decompressStream(provider.allocator, stream.reader());
+                        const reader = std.io.fixedBufferStream(compressed_or_content).reader();
+                        var decompressor = try std.compress.zlib.decompressor(reader).init(@TypeOf(reader));
+                        defer decompressor.deinit();
                         var decompressed = decompressor.reader();
                         decompressed_data = try decompressed.readAllAlloc(provider.allocator, 10 * 1024 * 1024);
                     }
-                    defer if (builtin.mode != .Debug) {
-                        decompressor.deinit();
-                    };
                     defer provider.allocator.free(decompressed_data);
                     if (cl.ws_config) |wsc| {
                         editor_config = try std.fmt.allocPrint(provider.allocator, editor_config_fmt ++ "{s}\",port:{d}}}}}\n", .{ decompressed_data, commands.setting_vars.languageServerPort, if (cl.secure) "wss" else "ws", wsc.address, wsc.port });
@@ -252,9 +249,9 @@ pub fn editorShow(command_listener: ?*const commands.CommandListener) !void {
                 } else { //Must be called separately because Zig std library contains extra security check which would crash
                     var status: u32 = undefined;
                     while (blk: {
-                        const result = std.os.system.waitpid(gui_process.?.id, @ptrCast(&status), std.os.W.UNTRACED);
-                        DeshaderLog.debug("Editor PID {d} watcher result {}", .{ gui_process.?.id, std.os.system.getErrno(result) });
-                        break :blk !(std.os.W.IFEXITED(status) or std.os.W.IFSTOPPED(status) or std.os.W.IFSIGNALED(status));
+                        const result = std.posix.system.waitpid(gui_process.?.id, @ptrCast(&status), std.posix.W.UNTRACED);
+                        DeshaderLog.debug("Editor PID {d} watcher result {}", .{ gui_process.?.id, std.posix.errno(result) });
+                        break :blk !(std.posix.W.IFEXITED(status) or std.posix.W.IFSTOPPED(status) or std.posix.W.IFSIGNALED(status));
                     }) {}
                 }
                 gui_process = null;
@@ -293,7 +290,7 @@ pub fn editorTerminate() !void {
         if (builtin.os.tag == .windows) {
             state.view.terminate();
         } else {
-            try std.os.kill(p.id, std.os.SIG.TERM);
+            try std.posix.kill(p.id, std.posix.SIG.TERM);
         }
         DeshaderLog.debug("Editor terminated", .{});
     } else {
@@ -309,7 +306,7 @@ pub fn editorWait() !void {
             gui_shutdown.wait(&gui_mutex);
             gui_mutex.unlock();
         } else {
-            _ = std.os.system.waitpid(p.id, null, 0);
+            _ = std.posix.waitpid(p.id, 0);
         }
     } else {
         DeshaderLog.err("Editor not running", .{});

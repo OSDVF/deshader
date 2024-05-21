@@ -218,8 +218,8 @@ pub const intercepted = blk: {
         }
     }
     var i = 0;
-    comptime var procs: [count]struct { String, gl.FunctionPointer } = undefined;
-    comptime var names2: [count]?String = undefined;
+    var procs: [count]struct { String, gl.FunctionPointer } = undefined;
+    var names2: [count]?String = undefined;
     for (decls) |proc| {
         if (std.mem.startsWith(u8, proc.name, "gl") or std.mem.startsWith(u8, proc.name, "egl")) {
             defer i += 1;
@@ -370,7 +370,7 @@ pub fn deinit() void {
     const cwd = std.fs.cwd().fd;
     defer renamed_libs.deinit();
     for (renamed_libs.items) |lib| {
-        std.os.unlinkat(cwd, lib, if (builtin.os.tag == .linux) std.os.AT.SYMLINK_NOFOLLOW else 0) catch |err|
+        std.posix.unlinkat(cwd, lib, if (builtin.os.tag == .linux) std.posix.AT.SYMLINK_NOFOLLOW else 0) catch |err|
             DeshaderLog.err("Could not delete renamed lib {s}: {}", .{ lib, err });
     }
     if (!ignored) {

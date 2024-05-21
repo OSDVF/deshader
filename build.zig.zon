@@ -10,12 +10,12 @@
     },
     .dependencies = .{
         .mach_glfw = .{
-            .url = "https://github.com/osdvf/mach-glfw/tarball/master",
-            .hash = "12204779ba2f14b46f569110f774d5c3f48b7a105b6717e668bc410710bceae62072",
+            .url = "https://github.com/CoBrooks/mach-glfw/tarball/main/bac62013d302c3bac0fdd1dfa3b4e9b406455448.tar.gz",
+            .hash = "1220a98fcc667b1822749558b44cfebd681d7f5d974b1e869c329f7eea8fa87b610b",
         },
         .vulkan_zig = .{
-            .url = "https://github.com/Snektron/vulkan-zig/archive/27d9b028ebedf616bc9bf49ba551bf33b3ff33a8.tar.gz",
-            .hash = "1220f9e64b39552cd4e7b7e23585daefcf82c4f37b998a1c80355b7a57ca6db79dbc",
+            .url = "https://github.com/Snektron/vulkan-zig/archive/571cecdda64d548e2df59226ab72112ac0fcdec4.tar.gz",
+            .hash = "1220b7727a5bccd0a6009b3b2b2320d49e49a702a26e3a9450ac63dbc3dbe35527e4",
         },
     },
 }

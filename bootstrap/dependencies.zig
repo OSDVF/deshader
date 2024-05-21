@@ -4,8 +4,8 @@ const String = []const u8;
 
 /// `make`s opengl definitions, installs node.js dependencies for the editor and editor extension, and builds VCPKG dependencies for Windows
 pub const DependenciesStep = struct {
-    step: std.build.Step,
-    target: std.zig.CrossTarget,
+    step: std.Build.Step,
+    target: std.Target,
     vcpgk: bool,
 
     const SubStep = struct {
@@ -15,16 +15,16 @@ pub const DependenciesStep = struct {
         env_map: ?*std.process.EnvMap = null,
         process: ?std.process.Child = null,
         progress_node: std.Progress.Node = undefined,
-        create: ?*const fn (step: *std.build.Step, progressNode: *std.Progress.Node, arg: ?*const anyopaque) anyerror!void = null,
+        create: ?*const fn (step: *std.Build.Step, progressNode: *std.Progress.Node, arg: ?*const anyopaque) anyerror!void = null,
         arg: ?*const anyopaque = null,
         after: ?[]SubStep = null,
     };
 
-    pub fn init(b: *std.build.Builder, target: std.zig.CrossTarget, vcpkg: bool) DependenciesStep {
+    pub fn init(b: *std.Build, target: std.Target, vcpkg: bool) DependenciesStep {
         return DependenciesStep{
             .target = target,
             .vcpgk = vcpkg,
-            .step = std.build.Step.init(
+            .step = std.Build.Step.init(
                 .{
                     .name = "dependencies",
                     .makeFn = DependenciesStep.doStep,
@@ -61,8 +61,8 @@ pub const DependenciesStep = struct {
         std.log.err("Dependecy build step \"{s}\" failed: {}", .{ step, err });
     }
 
-    pub fn doStep(step: *std.build.Step, progressNode: *std.Progress.Node) anyerror!void {
-        const self: *DependenciesStep = @fieldParentPtr(DependenciesStep, "step", step);
+    pub fn doStep(step: *std.Build.Step, progressNode: *std.Progress.Node) anyerror!void {
+        const self: *DependenciesStep = @fieldParentPtr("step", step);
 
         var sub_steps = std.ArrayList(SubStep).init(step.owner.allocator);
         defer sub_steps.deinit();
@@ -83,18 +83,18 @@ pub const DependenciesStep = struct {
         try sub_steps.append(.{ .name = "Compiling deshader-vscode extension", .args = if (builtin.os.tag == .windows) &.{ "wsl", "--exec", "bash", "-c", "~/.bun/bin/bun compile web" } else &.{ "bun", "compile-web" }, .env_map = env_map, .cwd = deshaderVsCodeExt });
 
         if (self.vcpgk) {
-            const triplet = try std.mem.concat(step.owner.allocator, u8, &.{ (if (self.target.getCpuArch() == .x86) "x86" else "x64") ++ "-", switch (self.target.getOsTag()) {
+            const triplet = try std.mem.concat(step.owner.allocator, u8, &.{ (if (self.target.cpu.arch == .x86) "x86" else "x64") ++ "-", switch (self.target.os.tag) {
                 .windows => "windows",
                 .linux => "linux",
                 .macos => "osx",
                 else => @panic("Unsupported OS"),
-            }, if (self.target.getOsTag() != builtin.os.tag) "-cross" else "" });
+            }, if (self.target.os.tag != builtin.os.tag) "-cross" else "" });
 
             var sub_sub = [_]SubStep{SubStep{
                 .name = "Rename VCPKG artifact",
                 .create = struct {
                     // After building VCPKG libraries rename the output files
-                    fn create(step2: *std.build.Step, _: *std.Progress.Node, arg: ?*const anyopaque) anyerror!void {
+                    fn create(step2: *std.Build.Step, _: *std.Progress.Node, arg: ?*const anyopaque) anyerror!void {
                         std.log.info("Renaming VCPKG artifacts", .{});
                         const tripl = @as(*const String, @alignCast(@ptrCast(arg)));
                         const bin_path = try std.fs.path.join(step2.owner.allocator, &.{ "build", "vcpkg_installed", tripl.*, "bin" });
@@ -114,7 +114,7 @@ pub const DependenciesStep = struct {
             try sub_steps.append(.{
                 .name = "Building VCPKG dependencies",
                 .args = &.{ "vcpkg", "install", "--triplet", triplet, "--x-install-root=build/vcpkg_installed" },
-                .after = if (self.target.getOsTag() == .windows and builtin.os.tag != .windows) &sub_sub else null,
+                .after = if (self.target.os.tag == .windows and builtin.os.tag != .windows) &sub_sub else null,
             });
         }
 
@@ -164,7 +164,7 @@ pub const DependenciesStep = struct {
         }
     }
 
-    fn doOnEachFileIf(step: *std.build.Step, path: String, predicate: *const fn (name: String) bool, func: *const fn (alloc: std.mem.Allocator, dir: std.fs.Dir, file: std.fs.Dir.Entry) void) !void {
+    fn doOnEachFileIf(step: *std.Build.Step, path: String, predicate: *const fn (name: String) bool, func: *const fn (alloc: std.mem.Allocator, dir: std.fs.Dir, file: std.fs.Dir.Entry) void) !void {
         var dir = try step.owner.build_root.handle.openDir(path, .{ .iterate = true });
         defer dir.close();
         var it = dir.iterateAssumeFirstIteration();

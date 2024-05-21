@@ -70,7 +70,7 @@ pub fn setenv(name: String, value: String) void {
     } else {
         const result = c.setenv(with_sentinel_name, with_sentinel_value, 1);
         if (result != 0) {
-            log.err("Failed to set env {s}={s}: {s}", .{ name, value, c.strerror(@intFromEnum(std.os.errno(result))) });
+            log.err("Failed to set env {s}={s}: {s}", .{ name, value, c.strerror(@intFromEnum(std.posix.errno(result))) });
         }
     }
     env.put(name, value) catch |err| {
@@ -181,12 +181,12 @@ pub fn copyForwardsZ(comptime T: type, dest: []T, source: [*]const T, source_len
 }
 
 pub fn isPortFree(address: ?String, port: u16) !bool {
-    var check = std.net.StreamServer.init(.{ .reuse_address = true });
-    defer check.deinit();
-    _ = check.listen(try std.net.Address.parseIp4(address orelse "0.0.0.0", port)) catch |err| switch (err) {
+    var check = try std.net.Address.parseIp4(address orelse "0.0.0.0", port);
+    var server = check.listen(.{ .reuse_address = true }) catch |err| switch (err) {
         error.AddressInUse => return false,
-        else => check.close(),
+        else => return err,
     };
+    server.deinit();
     return true;
 }
 
@@ -313,14 +313,14 @@ pub fn oneStartsWithOtherNotEqual(a: String, b: String) bool {
 }
 
 pub const ArgumentsMap = std.StringHashMapUnmanaged(String);
-pub fn queryToArgsMap(allocato: std.mem.Allocator, query: String) !ArgumentsMap {
+pub fn queryToArgsMap(allocato: std.mem.Allocator, query: []u8) !ArgumentsMap {
     var list = ArgumentsMap{};
     var iterator = std.mem.splitScalar(u8, query, '&');
     while (iterator.next()) |arg| {
         var arg_iterator = std.mem.splitScalar(u8, arg, '=');
         const key = arg_iterator.first();
         const value = arg_iterator.rest();
-        try list.put(allocato, key, try std.Uri.unescapeString(allocato, value));
+        try list.put(allocato, key, std.Uri.percentDecodeInPlace(@constCast(value)));
     }
     return list;
 }

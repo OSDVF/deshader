@@ -170,10 +170,10 @@ pub const CommandListener = struct {
                 };
             }
 
-            fn argsFromFullCommand(allocator: std.mem.Allocator, uri: String) !?ArgumentsMap {
+            fn argsFromFullCommand(allocator: std.mem.Allocator, uri: []u8) !?ArgumentsMap {
                 const command_query = std.mem.splitScalar(u8, uri, '?');
                 const query = command_query.rest();
-                return if (query.len > 0) try queryArgsMap(allocator, query) else null;
+                return if (query.len > 0) try queryArgsMap(allocator, @constCast(query)) else null;
             }
 
             fn wrapper(provider: *positron.Provider, _: *Route, context: *serve.HttpContext) Route.Error!void {
@@ -189,18 +189,18 @@ pub const CommandListener = struct {
                 const result_or_err = switch (@typeInfo(@TypeOf(command)).Fn.params.len) {
                     0 => comm(),
                     1 => blk: {
-                        var args = try argsFromFullCommand(provider.allocator, context.request.url);
+                        const url = try provider.allocator.dupe(u8, context.request.url);
+                        defer provider.allocator.free(url);
+                        var args = try argsFromFullCommand(provider.allocator, url);
                         defer if (args) |*a| {
-                            var it = a.valueIterator();
-                            while (it.next()) |s| {
-                                provider.allocator.free(s.*);
-                            }
                             a.deinit(provider.allocator);
                         };
                         break :blk comm(args);
                     },
                     2 => blk: {
-                        var args = try argsFromFullCommand(provider.allocator, context.request.url);
+                        const url = try provider.allocator.dupe(u8, context.request.url);
+                        defer provider.allocator.free(url);
+                        var args = try argsFromFullCommand(provider.allocator, url);
                         defer if (args) |*a| {
                             var it = a.valueIterator();
                             while (it.next()) |s| {
@@ -276,7 +276,7 @@ pub const CommandListener = struct {
         };
         const decls = @typeInfo(commands).Struct.decls;
         const comInfo = struct { r: CommandReturnType, a: usize, c: *const anyopaque, free: ?*const anyopaque };
-        comptime var command_array: [decls.len]struct { String, comInfo } = undefined;
+        var command_array: [decls.len]struct { String, comInfo } = undefined;
         for (decls, 0..) |function, i| {
             const command = @field(commands, function.name);
             const return_type = @typeInfo(@TypeOf(command)).Fn.return_type.?;
@@ -386,15 +386,13 @@ pub const CommandListener = struct {
             var command_query = std.mem.splitScalar(u8, request, '?');
             const command_name = command_query.first();
             const query = command_query.rest();
+            const query_d = try common.allocator.dupe(u8, query);
+            defer common.allocator.free(query_d);
 
             const target_command = ws_commands.get(command_name);
             if (target_command) |tc| {
-                var parsed_args: ?ArgumentsMap = if (query.len > 0) try queryArgsMap(common.allocator, query) else null;
+                var parsed_args: ?ArgumentsMap = if (query.len > 0) try queryArgsMap(common.allocator, query_d) else null;
                 defer if (parsed_args) |*a| {
-                    var it = a.valueIterator();
-                    while (it.next()) |s| {
-                        common.allocator.free(s.*);
-                    }
                     a.deinit(common.allocator);
                 };
                 if (parsed_args) |a| if (a.get("seq")) |seq| {
@@ -1065,7 +1063,7 @@ pub const CommandListener = struct {
 
         var help_out: [
             blk: { // Compute the number of functions
-                comptime var count = 0;
+                var count = 0;
                 for (@typeInfo(commands).Struct.decls) |decl_info| {
                     const decl = @field(commands, decl_info.name);
                     if (@typeInfo(@TypeOf(decl)) == .Fn) {

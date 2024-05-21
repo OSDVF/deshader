@@ -7,17 +7,17 @@ pub fn main() !void {
 }
 
 pub const GenerateStubsStep = struct {
-    step: std.build.Step,
+    step: std.Build.Step,
     output: std.fs.File,
     short_names: bool,
 
-    pub fn init(b: *std.build.Builder, output: std.fs.File, short_names: bool) GenerateStubsStep {
+    pub fn init(b: *std.Build, output: std.fs.File, short_names: bool) GenerateStubsStep {
         return @as(
             GenerateStubsStep,
             .{
                 .output = output,
                 .short_names = short_names,
-                .step = std.build.Step.init(
+                .step = std.Build.Step.init(
                     .{
                         .name = "generate_stubs_impl",
                         .makeFn = GenerateStubsStep.makeFn,
@@ -29,8 +29,8 @@ pub const GenerateStubsStep = struct {
         );
     }
 
-    pub fn makeFn(step: *std.build.Step, progressNode: *std.Progress.Node) anyerror!void {
-        const self: *@This() = @fieldParentPtr(@This(), "step", step);
+    pub fn makeFn(step: *std.Build.Step, progressNode: *std.Progress.Node) anyerror!void {
+        const self: *@This() = @fieldParentPtr("step", step);
         progressNode.activate();
         try generateStubs(step.owner.allocator, self.output, self.short_names);
         progressNode.end();
@@ -70,7 +70,7 @@ pub fn generateStubs(allocator: std.mem.Allocator, output: std.fs.File, short_na
                     var buffer: [1]std.zig.Ast.Node.Index = undefined;
                     const f = tree.fullFnProto(&buffer, declNode.data.lhs);
                     const l_paren = tree.tokens.get(f.?.lparen).start;
-                    const return_type = tree.tokens.get(tree.nodes.get(f.?.ast.return_type).main_token).start;
+                    const return_type = tree.nodeToSpan(f.?.ast.return_type).start;
                     const func_name = tree.source[protoStart..l_paren];
 
                     if (std.mem.indexOf(u8, tree.source[protoStart - 7 .. protoStart], "export") != null) {

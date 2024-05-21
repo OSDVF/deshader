@@ -244,9 +244,9 @@ pub const Processor = struct {
         const temp = prefix ++ "temp";
 
         // selectors
-        const desired_bp: CString = prefix ++ "desired_bp";
-        const desired_step: CString = prefix ++ "desired_step";
-        const threads_selector: CString = prefix ++ "selected_thread";
+        const desired_bp = prefix ++ "desired_bp";
+        const desired_step = prefix ++ "desired_step";
+        const threads_selector = prefix ++ "selected_thread";
     };
 
     const echo_diagnostics = false;

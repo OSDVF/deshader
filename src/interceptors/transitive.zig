@@ -112,7 +112,7 @@ pub const TransitiveSymbols = struct {
                 var new_names: [count]String = undefined;
                 names = &new_names;
 
-                comptime var i = 0;
+                var i = 0;
                 eachRecursiveProc: for (recursive_procs_decls) |decl| {
                     const symbol_name = decl.name;
                     for (loaders.all_exported_names) |exported| {
