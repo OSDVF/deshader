@@ -8,6 +8,8 @@ const c = @cImport({
     if (builtin.os.tag == .windows) {
         @cInclude("windows.h");
         @cInclude("libloaderapi.h");
+    } else {
+        @cInclude("link.h");
     }
 });
 
@@ -27,6 +29,11 @@ pub const default_http_port = "8081";
 pub const default_ws_port = "8082";
 pub const default_lsp_port = "8083";
 pub var command_listener: ?*commands.CommandListener = null;
+
+pub const null_trace = std.builtin.StackTrace{
+    .index = 0,
+    .instruction_addresses = &.{},
+};
 
 pub fn init() !void {
     if (!initialized) {
@@ -71,6 +78,46 @@ pub fn setenv(name: String, value: String) void {
     };
 }
 
+pub fn joinInnerInnerZ(alloc: std.mem.Allocator, separator: []const u8, slices: [][]CString) std.mem.Allocator.Error![]u8 {
+    // Calculate the total length of the resulting string.
+    var lengths = try alloc.alloc(usize, slices.len * slices[0].len);
+    defer alloc.free(lengths);
+
+    const total_len = blk: {
+        var sum: usize = separator.len * (slices.len * slices[0].len - 1);
+        for (slices) |inner_slices| {
+            for (inner_slices, 0..) |slice, i| {
+                const len = std.mem.len(slice);
+                sum += len;
+                lengths[i] = len;
+            }
+        }
+        break :blk sum;
+    };
+
+    // Allocate memory for the resulting string.
+    const buf = try alloc.alloc(u8, total_len);
+    errdefer alloc.free(buf);
+
+    // Build the resulting string.
+    var buf_index: usize = 0;
+    for (slices) |inner_slices| {
+        var first_inner = true;
+        for (inner_slices, 0..) |slice, i| {
+            if (!first_inner) {
+                std.mem.copyForwards(u8, buf[buf_index..], separator);
+                buf_index += separator.len;
+            } else {
+                first_inner = false;
+            }
+            copyForwardsZ(u8, buf[buf_index..], slice, lengths[i]);
+            buf_index += lengths[i];
+        }
+    }
+
+    // No need for shrink since buf is exactly the correct size.
+    return buf;
+}
 pub fn joinInnerZ(alloc: std.mem.Allocator, separator: []const u8, slices: []const ?CString) std.mem.Allocator.Error![]u8 {
     if (slices.len == 0) return &[0]u8{};
     var lengths = try alloc.alloc(usize, slices.len);
@@ -143,24 +190,39 @@ pub fn isPortFree(address: ?String, port: u16) !bool {
     return true;
 }
 
+var so_path: [:0]const u8 = undefined;
+fn callback(info: ?*const c.struct_dl_phdr_info, _: usize, _: ?*anyopaque) callconv(.C) c_int {
+    if (info) |i| if (i.dlpi_name[0] != 0) {
+        const s = std.mem.span(i.dlpi_name);
+        if (std.mem.endsWith(u8, s, options.deshaderLibName)) {
+            so_path = s;
+            return 1;
+        }
+    };
+    return 0;
+}
+
 /// Gets the path of the Deshader DLL
 pub fn selfDllPathAlloc(a: std.mem.Allocator, concat_with: String) !String {
-    var path: [std.fs.MAX_PATH_BYTES]u8 = undefined;
-    var hm: [*c]c.struct_HINSTANCE__ = undefined;
-    if (c.GetModuleHandleExW(c.GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-        c.GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, @ptrCast(&options.version), &hm) != 0)
-    {
-        const length = c.GetModuleFileNameA(hm, &path, std.fs.MAX_PATH_BYTES);
-        if (length == 0) {
-            return std.os.windows.unexpectedError(std.os.windows.kernel32.GetLastError());
+    if (builtin.os.tag == .windows) {
+        var hm: [*c]c.struct_HINSTANCE__ = undefined;
+        if (c.GetModuleHandleExW(c.GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+            c.GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, @ptrCast(&options.version), &hm) != 0)
+        {
+            var path: [std.fs.MAX_PATH_BYTES]u8 = undefined;
+            const length = c.GetModuleFileNameA(hm, &path, std.fs.MAX_PATH_BYTES);
+            if (length == 0) {
+                return std.os.windows.unexpectedError(std.os.windows.kernel32.GetLastError());
+            } else {
+                return try std.mem.concat(a, u8, &.{ path[0..length], concat_with });
+            }
         } else {
-            return try std.mem.concat(a, u8, &.{ path[0..length], concat_with });
+            return std.os.windows.unexpectedError(std.os.windows.kernel32.GetLastError());
         }
     } else {
-        return std.os.windows.unexpectedError(std.os.windows.kernel32.GetLastError());
+        _ = c.dl_iterate_phdr(callback, null);
     }
-
-    return path;
+    return a.dupe(u8, so_path);
 }
 
 /// Wraps std.fs.selfExePathAlloc or gets argv[0] on Windows to workaround Wine bug
@@ -249,3 +311,39 @@ pub fn oneStartsWithOtherNotEqual(a: String, b: String) bool {
         return !std.mem.eql(u8, a, b);
     }
 }
+
+pub const ArgumentsMap = std.StringHashMapUnmanaged(String);
+pub fn queryToArgsMap(allocato: std.mem.Allocator, query: String) !ArgumentsMap {
+    var list = ArgumentsMap{};
+    var iterator = std.mem.splitScalar(u8, query, '&');
+    while (iterator.next()) |arg| {
+        var arg_iterator = std.mem.splitScalar(u8, arg, '=');
+        const key = arg_iterator.first();
+        const value = arg_iterator.rest();
+        try list.put(allocato, key, try std.Uri.unescapeString(allocato, value));
+    }
+    return list;
+}
+
+pub const CliArgsIterator = struct {
+    i: usize = 0,
+    s: String,
+    pub fn next(self: *@This()) ?String {
+        var token: ?String = null;
+        if (self.i < self.s.len) {
+            if (self.s[self.i] == '\"') {
+                const end = std.mem.indexOfScalar(u8, self.s[self.i + 1 ..], '\"') orelse return null;
+                token = self.s[self.i + 1 .. self.i + 1 + end];
+                self.i += end + 2;
+            } else {
+                const end = std.mem.indexOfScalar(u8, self.s[self.i..], ' ') orelse (self.s.len - self.i);
+                token = self.s[self.i .. self.i + end];
+                self.i += end;
+            }
+            if (self.i < self.s.len and self.s[self.i] == ' ') {
+                self.i += 1;
+            }
+        }
+        return token;
+    }
+};

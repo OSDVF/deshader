@@ -15,7 +15,7 @@ pub const ExistsBehavior = enum(c_int) {
 pub const LanguageType = enum(c_int) { GLSL = 1, _ };
 
 /// Specifies both shader type and API backend type
-pub const SourceType = enum(c_int) {
+pub const Stage = enum(c_int) {
     gl_vertex = 0x8b31,
     gl_fragment = 0x8b30,
     gl_geometry = 0x8dd9,
@@ -41,8 +41,8 @@ pub const SourceType = enum(c_int) {
     unknown = 0,
 
     /// Including the dot
-    pub fn toExtension(typ: SourceType) []const u8 {
-        return switch (typ) {
+    pub fn toExtension(stage: Stage) []const u8 {
+        return switch (stage) {
             .gl_fragment, .vk_fragment => ".frag",
             .gl_vertex, .vk_vertex => ".vert",
             .gl_geometry, .vk_geometry => ".geom",
@@ -58,6 +58,24 @@ pub const SourceType = enum(c_int) {
             .vk_miss => ".rmiss",
             .vk_callable => ".rcall",
             else => ".glsl",
+        };
+    }
+
+    pub fn toString(stage: Stage) []const u8 {
+        return stage.toExtension()[1..];
+    }
+
+    pub fn isFragment(self: Stage) bool {
+        return switch (self) {
+            .gl_fragment, .vk_fragment => true,
+            else => false,
+        };
+    }
+
+    pub fn isVertex(self: Stage) bool {
+        return switch (self) {
+            .gl_vertex, .vk_vertex => true,
+            else => false,
         };
     }
 };
@@ -78,17 +96,17 @@ pub const SourcesPayload = extern struct {
     paths: ?[*]?CString = null,
     /// Shader GLSL source code parts. Each of them has different path and context. Has the size of 'count'
     /// Sources are never duplicated or freed
-    sources: ?[*]CString = null,
+    sources: ?[*]const CString = null,
     /// Source code lengths
     /// is copied when intercepted because opengl specifies source length in 32-bit int
-    lengths: ?[*]usize = null,
+    lengths: ?[*]const usize = null,
     /// User-specified contexts. Can be anything. Has the size of 'count'
     /// Contexts are never duplicated or freed
     contexts: ?[*]?*const anyopaque = null,
     // Count of paths/sources/contexts
     count: usize = 0,
     /// Represents both type of the shader (vertex, fragment, etc) and the graphics backend (GL, VK)
-    type: SourceType = @enumFromInt(0), // Default to unknown (_) value
+    stage: Stage = @enumFromInt(0), // Default to unknown (_) value
     /// Represents the language of the shader source (GLSL ...)
     language: LanguageType = @enumFromInt(0), // Default to unknown (_) value
     /// (Non-null => user-specified) or default source assignment and compile function to be executed when Deshader inejcts something and wants to apply it
@@ -100,7 +118,7 @@ pub const SourcesPayload = extern struct {
     save: ?*const fn (source: SourcesPayload, physical: ?CString) callconv(.C) u8 = null,
 
     pub fn toString(self: *const @This()) []const u8 {
-        return self.type.toExtension();
+        return self.stage.toExtension();
     }
 };
 

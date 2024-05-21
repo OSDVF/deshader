@@ -60,20 +60,20 @@ pub fn build(b: *std.Build) !void {
     };
 
     // Compile options
-    const optionLinkage = b.option(Linkage, "linkage", "Select linkage type for deshader library. Cannot be combined with -Dofmt.") orelse Linkage.Dynamic;
-    const optionIgnoreMissingLibs = b.option(bool, "ignoreMissingLibs", "Ignore missing VK and GL libraries. GLX, EGL and VK will be required by default") orelse false;
-    const optionWolfSSL = b.option(bool, "wolfSSL", "Link dynamically WolfSSL available on this system or vcpkg_installed (produces smaller binaries)") orelse false;
-    const option_embed_editor = b.option(bool, "embedEditor", "Embed VSCode editor into the library (default yes)") orelse true;
-    const optionAdditionalLibraries = b.option([]const String, "customLibrary", "Names of additional libraroes to intercept");
-    const optionInterceptionLog = b.option(bool, "logIntercept", "Log intercepted GL and VK procedure list to stdout") orelse false;
-    const optionMemoryTraceFrames = b.option(u32, "memoryFrames", "Number of frames in memory leak backtrace") orelse 7;
-    const optionIncludeDir = b.option(String, "include", "Path to directory with additional headers to include");
-    const optionDependencies = b.option(bool, "deps", "Also build dependencies before Deshader") orelse false;
-    const optionLibDir = b.option(String, "lib", "Path to directory with additional libraries to link");
+    const option_custom_library = b.option([]const String, "customLibrary", "Names of additional libraries to intercept");
+    const option_dependencies = b.option(bool, "deps", "Build dependencies first: VCPKG managed libs, GL definitions, VSCode, extension") orelse false;
+    const option_docs = b.option(bool, "docs", "Generate API documentation") orelse false;
+    const option_embed_gui = b.option(bool, "embedGUI", "Embed Runner GUI and VSCode editor into the library (default yes)") orelse true;
+    const option_ignore_missing = b.option(bool, "ignoreMissing", "Ignore missing VK and GL libraries. GLX, EGL and VK will be required by default") orelse false;
+    const option_include = b.option(String, "include", "Path to directory with additional headers to include");
+    const option_lib_dir = b.option(String, "lib", "Path to directory with additional libraries to link");
+    const option_linkage = b.option(Linkage, "linkage", "Select linkage type for deshader library. Cannot be combined with -Dofmt.") orelse Linkage.Dynamic;
+    const option_log_intercept = b.option(bool, "logIntercept", "Log intercepted GL and VK procedure list to stdout") orelse false;
+    const option_memory_frames = b.option(u32, "memoryFrames", "Number of frames in memory leak backtrace") orelse 7;
+    const option_wolf = b.option(bool, "wolfSSL", "Link dynamically WolfSSL available on this system or vcpkg_installed (produces smaller binaries)") orelse false;
 
-    const deshader_lib: *std.build.Step.Compile = if (optionLinkage == .Static) b.addStaticLibrary(deshaderCompileOptions) else b.addSharedLibrary(deshaderCompileOptions);
-    deshader_lib.disable_stack_probing = true;
-    deshader_lib.stack_protector = false;
+    const deshader_lib: *std.build.Step.Compile = if (option_linkage == .Static) b.addStaticLibrary(deshaderCompileOptions) else b.addSharedLibrary(deshaderCompileOptions);
+    deshader_lib.defineCMacro("_GNU_SOURCE", null); // To access dl_iterate_phdr
     const deshader_lib_name = try std.mem.concat(b.allocator, u8, &.{ if (targetTarget == .windows) "" else "lib", deshader_lib.name, targetTarget.dynamicLibSuffix() });
     const deshader_lib_cmd = b.step("deshader", "Install deshader library");
     switch (optionOfmt) {
@@ -94,10 +94,10 @@ pub fn build(b: *std.Build) !void {
     const deshader_lib_install = b.addInstallArtifact(deshader_lib, .{});
     deshader_lib_cmd.dependOn(&deshader_lib_install.step);
     deshader_lib.addIncludePath(.{ .path = try b.build_root.join(b.allocator, &.{ "src", "declarations" }) });
-    if (optionIncludeDir) |includeDir| {
+    if (option_include) |includeDir| {
         deshader_lib.addIncludePath(.{ .path = includeDir });
     }
-    if (optionLibDir) |libDir| {
+    if (option_lib_dir) |libDir| {
         deshader_lib.addLibraryPath(.{ .path = libDir });
     }
 
@@ -115,21 +115,12 @@ pub fn build(b: *std.Build) !void {
     var deshader_dependent_dlls = std.ArrayList(String).init(b.allocator);
     try addVcpkgInstalledPaths(deshader_lib);
     // WolfSSL
-    var wolfssl: *std.build.Step.Compile = undefined;
-    if (optionWolfSSL) {
-        const wolfssl_lib_name = if (targetTarget == .windows and builtin.os.tag != .windows) "libwolfssl" else "wolfssl";
-        deshader_lib.linkSystemLibrary(wolfssl_lib_name);
-        try installVcpkgLibrary(deshader_lib_install, wolfssl_lib_name); // This really depends on host build system
-        const with_ext = try std.mem.concat(b.allocator, u8, &.{ wolfssl_lib_name, targetTarget.dynamicLibSuffix() });
+    if (try linkWolfSSL(deshader_lib, deshader_lib_install, option_wolf)) |lib_name| {
+        const with_ext = try std.mem.concat(b.allocator, u8, &.{ lib_name, targetTarget.dynamicLibSuffix() });
         try deshader_dependent_dlls.append(with_ext);
-        if (targetTarget == .windows) {
-            deshader_lib.defineCMacro("SINGLE_THREADED", null); // To workaround missing pthread.h
-        }
-    } else {
-        wolfssl = ZigServe.createWolfSSL(b, target, optimize);
-        deshader_lib.linkLibrary(wolfssl);
-        deshader_lib.addIncludePath(.{ .path = ZigServe.sdkPath("/vendor/wolfssl/") });
     }
+    // Native file dialogs library
+    deshader_lib.linkSystemLibrary(if (optimize == .Debug) "nfd_d" else "nfd"); //Native file dialog library from VCPKG
 
     const noSystemGLSLang = blk: {
         const libname = try std.mem.concat(b.allocator, u8, &.{ target.libPrefix(), "glslang" });
@@ -196,12 +187,12 @@ pub fn build(b: *std.Build) !void {
     options.addOption(?String, "glAddLoader", optionGLAdditionalLoader);
     options.addOption(?String, "vkAddDeviceLoader", optionvkAddDeviceLoader);
     options.addOption(?String, "vkAddInstanceLoader", optionvkAddInstanceLoader);
-    options.addOption(bool, "logIntercept", optionInterceptionLog);
+    options.addOption(bool, "logIntercept", option_log_intercept);
     options.addOption(String, "deshaderLibName", deshader_lib_name);
     options.addOption(ObjectFormat, "ofmt", optionOfmt);
-    options.addOption(u32, "memoryFrames", optionMemoryTraceFrames);
+    options.addOption(u32, "memoryFrames", option_memory_frames);
     const version_result = try exec(.{ .allocator = b.allocator, .argv = &.{ "git", "describe", "--tags", "--always" } });
-    options.addOption(String, "version", std.mem.trim(u8, version_result.stdout, " \n\t"));
+    options.addOption([:0]const u8, "version", try b.allocator.dupeZ(u8, std.mem.trim(u8, version_result.stdout, " \n\t")));
     if (targetTarget == .windows) {
         options.addOption([]const String, "dependencies", deshader_dependent_dlls.items);
     }
@@ -218,7 +209,7 @@ pub fn build(b: *std.Build) !void {
         if (try fileWithPrefixExists(b.allocator, host_libs_location, libName)) |real_name| {
             run_symbol_enum.addArg(std.fmt.allocPrint(b.allocator, "{s}{s}", .{ native_libs_location, real_name }) catch unreachable);
         } else {
-            if (optionIgnoreMissingLibs) {
+            if (option_ignore_missing) {
                 std.log.warn("Missing library {s}", .{libName});
             } else {
                 return deshader_lib.step.fail("Missing library {s}", .{libName});
@@ -228,7 +219,7 @@ pub fn build(b: *std.Build) !void {
     if (try fileWithPrefixExists(b.allocator, host_libs_location, VulkanLibName)) |real_name| {
         run_symbol_enum.addArg(std.fmt.allocPrint(b.allocator, "{s}{s}", .{ native_libs_location, real_name }) catch unreachable);
     } else {
-        if (optionIgnoreMissingLibs) {
+        if (option_ignore_missing) {
             std.log.warn("Missing library {s}", .{VulkanLibName});
         } else {
             return deshader_lib.step.fail("Missing library {s}", .{VulkanLibName});
@@ -241,9 +232,9 @@ pub fn build(b: *std.Build) !void {
     var allLibraries = std.ArrayList(String).init(b.allocator);
     allLibraries.appendSlice(GlLibNames) catch unreachable;
     allLibraries.append(VulkanLibName) catch unreachable;
-    if (optionAdditionalLibraries != null) {
-        run_symbol_enum.addArgs(optionAdditionalLibraries.?);
-        allLibraries.appendSlice(optionAdditionalLibraries.?) catch unreachable;
+    if (option_custom_library != null) {
+        run_symbol_enum.addArgs(option_custom_library.?);
+        allLibraries.appendSlice(option_custom_library.?) catch unreachable;
     }
     // Parse symbol enumerator output
     var addGlProcsStep = ListGlProcsStep.init(b, targetTarget, "add_gl_procs", allLibraries.items, GlSymbolPrefixes, run_symbol_enum.captureStdOut());
@@ -256,8 +247,8 @@ pub fn build(b: *std.Build) !void {
     const positron = PositronSdk.getPackage(b, "positron");
     deshader_lib.addModule("positron", positron);
     deshader_lib.addModule("serve", b.modules.get("serve").?);
-    if (option_embed_editor) {
-        PositronSdk.linkPositron(deshader_lib, null, optionLinkage == .Static);
+    if (option_embed_gui) {
+        PositronSdk.linkPositron(deshader_lib, null, option_linkage == .Static);
         if (targetTarget == .windows) {
             try deshader_dependent_dlls.append("WebView2Loader.dll");
         }
@@ -310,9 +301,9 @@ pub fn build(b: *std.Build) !void {
         // Build dependencies
         const dependencies_cmd = b.step("dependencies", "Bootstrap building nested deshader components and dependencies");
         var dependencies_step: *DependenciesStep = try b.allocator.create(DependenciesStep);
-        dependencies_step.* = DependenciesStep.init(b, target, optionWolfSSL or targetTarget == .windows or noSystemGLSLang); // If wolfSSL is meant to be linked dynamically, it must be built first
+        dependencies_step.* = DependenciesStep.init(b, target, option_wolf or targetTarget == .windows or noSystemGLSLang); // If wolfSSL is meant to be linked dynamically, it must be built first
         dependencies_cmd.dependOn(&dependencies_step.step);
-        if (optionDependencies) {
+        if (option_dependencies) {
             deshader_lib.step.dependOn(&dependencies_step.step);
         }
 
@@ -324,7 +315,7 @@ pub fn build(b: *std.Build) !void {
 
         // Add all file names in the editor dist folder to `files`
         const editor_directory = "editor";
-        if (option_embed_editor) {
+        if (option_embed_gui) {
             const editor_files = try b.build_root.handle.readFileAlloc(b.allocator, editor_directory ++ "/required.txt", 1024 * 1024);
             var editor_files_lines = std.mem.splitScalar(u8, editor_files, '\n');
             editor_files_lines.reset();
@@ -332,7 +323,7 @@ pub fn build(b: *std.Build) !void {
                 const path = try std.fmt.allocPrint(b.allocator, "{s}/{s}", .{ editor_directory, line });
                 try files.append(path);
                 if (optimize != .Debug) { // In debug mode files are served from physical filesystem so one does not need to recompile Deshader each time
-                    try embedCompressedFile(deshader_lib, if (optionDependencies) &dependencies_step.step else null, path);
+                    try embedCompressedFile(deshader_lib, if (option_dependencies) &dependencies_step.step else null, path);
                 }
             }
         }
@@ -341,7 +332,8 @@ pub fn build(b: *std.Build) !void {
         // as a string array at comptime in main.zig
         options.addOption([]const String, "files", files.items);
         options.addOption(String, "editorDir", editor_directory);
-        options.addOption(bool, "embedEditor", option_embed_editor);
+        options.addOption(String, "editorDirRelative", try std.fs.path.relative(b.allocator, b.lib_dir, b.pathFromRoot(editor_directory)));
+        options.addOption(bool, "embedGUI", option_embed_gui);
         deshader_lib.addOptions("options", options);
 
         //
@@ -424,6 +416,15 @@ pub fn build(b: *std.Build) !void {
     //}
 
     //
+    // Docs
+    //
+    if (option_docs) b.installDirectory(.{
+        .source_dir = deshader_lib.getEmittedDocs(),
+        .install_dir = .prefix,
+        .install_subdir = "docs",
+    });
+
+    //
     // Runner utility
     //
     const runner_exe = b.addExecutable(.{
@@ -439,7 +440,7 @@ pub fn build(b: *std.Build) !void {
 
     const runner_options = b.addOptions();
     runner_options.addOption(String, "deshaderLibName", deshader_lib_name);
-    runner_options.addOption(u32, "memoryFrames", optionMemoryTraceFrames);
+    runner_options.addOption(u32, "memoryFrames", option_memory_frames);
     runner_options.addOption([]const String, "dependencies", deshader_dependent_dlls.items);
     runner_options.addOption(String, "deshaderRelativeRoot", try std.fs.path.relative(b.allocator, b.exe_dir, b.lib_dir));
     runner_exe.addOptions("options", runner_options);
@@ -580,6 +581,7 @@ pub fn build(b: *std.Build) !void {
         .linux, .macos => &[_]String{ "rm", "-rf" },
         else => unreachable,
     } ++ &[_]String{ "zig-out", "zig-cache" });
+    clean_run.step.dependOn(b.getUninstallStep());
     clean_step.dependOn(&clean_run.step);
 }
 
@@ -723,4 +725,23 @@ fn winepath(alloc: std.mem.Allocator, path: String, toWindows: bool) !String {
         std.log.err("Failed to run winepath: {}", .{result.term});
         return error.Winepath;
     }
+}
+
+fn linkWolfSSL(compile: *std.build.Step.Compile, install: *std.build.Step.InstallArtifact, from_vcpkg: bool) !?String {
+    var wolfssl: *std.build.Step.Compile = undefined;
+    const os = compile.target.os_tag orelse builtin.os.tag;
+    if (from_vcpkg) {
+        const wolfssl_lib_name = if (os == .windows and builtin.os.tag != .windows) "libwolfssl" else "wolfssl";
+        compile.linkSystemLibrary(wolfssl_lib_name);
+        try installVcpkgLibrary(install, wolfssl_lib_name); // This really depends on host build system
+        if (os == .windows) {
+            compile.defineCMacro("SINGLE_THREADED", null); // To workaround missing pthread.h
+        }
+        return wolfssl_lib_name;
+    } else {
+        wolfssl = ZigServe.createWolfSSL(compile.step.owner, compile.target, compile.optimize);
+        compile.linkLibrary(wolfssl);
+        compile.addIncludePath(.{ .path = ZigServe.sdkPath("/vendor/wolfssl/") });
+    }
+    return null;
 }

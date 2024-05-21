@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Deshader Runner Tool</title>
+</head>
+
+<body
+    style="margin:0; font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;">
+    <form id="form" class="full flex col between">
+        <div>
+            <p>
+                <label for="program">Program</label>
+                <input type="text" id="program" required oninput="setCustomValidity('')"
+                    oninvalid="setCustomValidity('Enter program path')"><button type="button"
+                    onclick="pickFile()">Browse</button>
+            </p>
+            <p>
+                <label for="arguments">Arguments</label><input type="text" id="arguments">
+            </p>
+            <p>
+                <label for="directory">Working directory</label><input type="text" id="directory"
+                    placeholder="(PROGRAM DIRECTORY)"><button type="button" onclick="pickDirectory()">Browse</button>
+            </p>
+            <input type="checkbox" id="editor" checked><label for="editor">Show Editor GUI</label>
+            <input type="checkbox" id="lsp" checked><label for="lsp">GLSL Language Server</label>
+            <input type="checkbox" id="whitelist" checked><label for="whitelist">Intercept only target process</label>
+        </div>
+
+        <div class="flex between">
+            <div id="error"></div>
+            <a href="https://github.com/OSDVF/deshader" target="_blank">Help</a>
+            <input type="submit" value="Run">
+        </div>
+    </form>
+    <div id="overlay"><div>Running...</div></div>
+    <script>
+        const program = document.getElementById('program');
+        const directory = document.getElementById('directory');
+        const whitelist = document.getElementById('whitelist');
+        const error = document.getElementById('error');
+        const args = document.getElementById('arguments')
+        const overlay = document.getElementById('overlay')
+        const lsp = document.getElementById('lsp')
+        editor.addEventListener('change', e => {
+            lsp.disabled = !e.target.checked
+        })
+
+
+        function pickFile() {
+            browseFile(program.value).then(v => { if (v) program.value = v })
+        }
+        function pickDirectory() {
+            browseDirectory(directory.value ? directory.value : null).then(v => { if (v) directory.value = v })
+        }
+        document.getElementById('form').addEventListener('submit', e => {
+            e.preventDefault();
+            const env = [
+                'DESHADER_GUI=' + (editor.checked ? '1' : '0'),
+                'DESHADER_LSP=' + (editor.checked && lsp.checked ? '8083' : ''),
+                'DESHADER_PROCESS=' + whitelist.checked ? program.value : ''
+            ]
+
+            overlay.style.display = "flex"
+            setTimeout(() => {
+                run(program.value, directory.value, args.value, env.join('\n')).then(() => {
+                    error.innerText = ''
+                }).catch(e => {
+                    error.innerText = e;
+                }).finally(() => overlay.style.display = "none")
+            }, 100)
+        })
+    </script>
+    <style>
+        @media (prefers-color-scheme:dark) {
+            body {
+                background: black;
+                color: white
+            }
+
+            input[type=text] {
+                background: #3a3a3a;
+                border-radius: .2rem;
+                border: 1px solid #555555;
+                color: white
+            }
+
+            button {
+                color: black
+            }
+
+            a {
+                color: #006dac
+            }
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        .flex {
+            display: flex;
+        }
+
+        .col {
+            flex-direction: column;
+        }
+
+        .between {
+            justify-content: space-between;
+        }
+
+        .full {
+            min-height: 100vh;
+            padding: .5rem;
+        }
+
+        #form p {
+            display: flex;
+            gap: .5rem
+        }
+
+        #form p input {
+            flex-grow: 1;
+        }
+
+        #overlay {
+            background: #00000042;
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            font-size: 4rem;
+            align-items: center;
+            justify-content: center;
+            display: none;
+        }
+    </style>
+</body>
+
+</html>

@@ -7,7 +7,7 @@ const common = @import("common.zig");
 const logging = @import("log.zig");
 const DeshaderLog = logging.DeshaderLog;
 const options = @import("options");
-const editor = if (options.embedEditor) @import("tools/editor.zig") else null;
+const gui = if (options.embedGUI) @import("tools/gui.zig") else null;
 const storage = @import("services/storage.zig");
 const dap = @import("services/debug.zig");
 const shaders = @import("services/shaders.zig");
@@ -19,26 +19,31 @@ const CString = [*:0]const u8;
 const Route = positron.Provider.Route;
 const logParsing = false;
 
+pub const setting_vars = struct {
+    pub var logIntoResponses = false;
+    pub var languageServerPort: u16 = std.fmt.parseInt(u16, common.default_lsp_port, 10) catch 8083;
+    // TODO recreate providers on port change
+    pub var commandsHttpPort: u16 = std.fmt.parseInt(u16, common.default_http_port, 10) catch 8080;
+    pub var commandsWsPort: u16 = std.fmt.parseInt(u16, common.default_ws_port, 10) catch 8081;
+    /// Are shader parts automatically merged in glShaderSource? (so they will all belong to the same tag)
+    pub var singleChunkShader: bool = true;
+    pub var stackTraces: bool = false;
+};
+
 pub const CommandListener = struct {
-    pub const ArgumentsList = std.StringHashMap(String);
-    pub const setting_vars = struct {
-        pub var logIntoResponses = false;
-        pub var languageServerPort: u16 = std.fmt.parseInt(u16, common.default_lsp_port, 10) catch 8083;
-        // TODO recreate providers on port change
-        pub var commandsHttpPort: u16 = std.fmt.parseInt(u16, common.default_http_port, 10) catch 8080;
-        pub var commandsWsPort: u16 = std.fmt.parseInt(u16, common.default_ws_port, 10) catch 8081;
-    };
+    const ArgumentsMap = common.ArgumentsMap;
+    const queryArgsMap = common.queryToArgsMap;
     const json_options = std.json.StringifyOptions{ .whitespace = .minified, .emit_null_optional_fields = false };
 
     // various command providers
     http: ?*positron.Provider = null,
-    ws: ?*websocket.Conn = null,
-    ws_server: std.net.StreamServer = undefined,
+    ws: std.ArrayList(*websocket.Conn) = undefined,
     ws_config: ?websocket.Config.Server = null,
+    ws_running: bool = true,
     provide_thread: ?std.Thread = null,
     websocket_thread: ?std.Thread = null,
-    server_arena: std.heap.ArenaAllocator = undefined,
-    provider_allocator: std.mem.Allocator = undefined,
+    websocket_arena: std.heap.ArenaAllocator = undefined,
+    provider_arena: std.heap.ArenaAllocator = undefined,
     secure: bool = false, //TODO use SSL
     break_mutex: std.Thread.Mutex = .{},
     resume_condition: std.Thread.Condition = .{},
@@ -47,10 +52,13 @@ pub const CommandListener = struct {
         const self = try allocator.create(@This());
         self.* = @This(){}; // zero out the struct
         errdefer allocator.destroy(self);
+        self.ws = std.ArrayList(*websocket.Conn).init(allocator);
+        errdefer self.ws.deinit();
 
-        self.server_arena = std.heap.ArenaAllocator.init(allocator);
+        self.provider_arena = std.heap.ArenaAllocator.init(allocator);
         // WS Command Listener
         if (ws_port) |port| {
+            self.ws_running = true;
             setting_vars.commandsWsPort = port;
             if (!try common.isPortFree(null, port)) {
                 return error.AddressInUse;
@@ -62,15 +70,18 @@ pub const CommandListener = struct {
                 .address = "127.0.0.1",
             };
             self.websocket_thread = try std.Thread.spawn(
-                .{},
+                .{ .allocator = common.allocator },
                 struct {
-                    fn listen(list: *CommandListener, alloc: std.mem.Allocator, conf: websocket.Config.Server, out_listener: *std.net.StreamServer) void {
-                        websocket.listen(WSHandler, alloc, list, conf, out_listener) catch |err| {
+                    fn listen(list: *CommandListener, alloc: std.mem.Allocator, conf: websocket.Config.Server, ws_running: *bool) void {
+                        var arena = std.heap.ArenaAllocator.init(alloc);
+                        defer arena.deinit();
+
+                        websocket.listen(WSHandler, arena.allocator(), list, conf, ws_running) catch |err| {
                             DeshaderLog.err("Error while listening for websocket commands: {any}", .{err});
                         };
                     }
                 }.listen,
-                .{ self, self.server_arena.allocator(), self.ws_config.?, &self.ws_server },
+                .{ self, allocator, self.ws_config.?, &self.ws_running },
             );
             try self.websocket_thread.?.setName("CmdListWS");
         }
@@ -78,8 +89,7 @@ pub const CommandListener = struct {
         // HTTP Command listener
         if (http_port) |port| {
             setting_vars.commandsHttpPort = port;
-            self.provider_allocator = self.server_arena.allocator();
-            self.http = try positron.Provider.create(self.provider_allocator, port);
+            self.http = try positron.Provider.create(self.provider_arena.allocator(), port);
             errdefer {
                 self.http.?.destroy();
                 self.http = null;
@@ -90,7 +100,7 @@ pub const CommandListener = struct {
                 const command = @field(commands, function.name);
                 _ = try self.addHTTPCommand("/" ++ function.name, command, if (@hasDecl(free_funcs, function.name)) @field(free_funcs, function.name) else null);
             }
-            self.provide_thread = try std.Thread.spawn(.{}, struct {
+            self.provide_thread = try std.Thread.spawn(.{ .allocator = common.allocator }, struct {
                 fn wrapper(provider: *positron.Provider) void {
                     provider.run() catch |err| {
                         DeshaderLog.err("Error while providing HTTP commands: {any}", .{err});
@@ -113,36 +123,26 @@ pub const CommandListener = struct {
     }
 
     pub fn stop(self: *@This()) void {
-        if (self.http != null) {
-            self.http.?.destroy();
+        if (self.http) |http| {
+            http.destroy();
             self.provide_thread.?.join();
-            self.provider_allocator.destroy(self.http.?);
+            self.provider_arena.deinit();
             self.provide_thread = null;
             self.http = null;
         }
-        if (self.ws != null) {
-            self.ws.?.writeText("432: Closing connection\n") catch {};
-            self.ws.?.writeClose() catch {};
-            self.ws.?.close();
-            self.ws_server.close();
-            self.websocket_thread.?.detach();
-            self.ws = null;
+        for (self.ws.items) |ws| {
+            ws.writeText("432: Closing connection\n") catch {};
+            ws.writeClose() catch {};
+            ws.close();
+        }
+        if (self.hasClient()) {
+            self.ws_running = false;
+            self.websocket_thread.?.join();
             self.websocket_thread = null;
+            self.ws.clearAndFree();
         }
-        self.server_arena.deinit();
+        self.provider_arena.deinit();
         analysis.serverStop() catch {};
-    }
-
-    fn queryArgsMap(allocator: std.mem.Allocator, query: String) !ArgumentsList {
-        var list = ArgumentsList.init(allocator);
-        var iterator = std.mem.splitScalar(u8, query, '&');
-        while (iterator.next()) |arg| {
-            var arg_iterator = std.mem.splitScalar(u8, arg, '=');
-            const key = arg_iterator.first();
-            const value = arg_iterator.rest();
-            try list.put(key, try std.Uri.unescapeString(allocator, value));
-        }
-        return list;
     }
 
     //
@@ -170,15 +170,13 @@ pub const CommandListener = struct {
                 };
             }
 
-            fn argsFromFullCommand(allocator: std.mem.Allocator, uri: String) !?ArgumentsList {
+            fn argsFromFullCommand(allocator: std.mem.Allocator, uri: String) !?ArgumentsMap {
                 const command_query = std.mem.splitScalar(u8, uri, '?');
                 const query = command_query.rest();
                 return if (query.len > 0) try queryArgsMap(allocator, query) else null;
             }
 
-            fn wrapper(provider: *positron.Provider, route2: *Route, context: *serve.HttpContext) Route.Error!void {
-                _ = route2;
-
+            fn wrapper(provider: *positron.Provider, _: *Route, context: *serve.HttpContext) Route.Error!void {
                 if (setting_vars.logIntoResponses) {
                     writer = try context.response.writer();
                     logging.log_listener = log;
@@ -197,7 +195,7 @@ pub const CommandListener = struct {
                             while (it.next()) |s| {
                                 provider.allocator.free(s.*);
                             }
-                            a.deinit();
+                            a.deinit(provider.allocator);
                         };
                         break :blk comm(args);
                     },
@@ -208,7 +206,7 @@ pub const CommandListener = struct {
                             while (it.next()) |s| {
                                 provider.allocator.free(s.*);
                             }
-                            a.deinit();
+                            a.deinit(provider.allocator);
                         };
                         var reader = try context.request.reader();
                         defer reader.deinit();
@@ -216,7 +214,7 @@ pub const CommandListener = struct {
                         defer provider.allocator.free(body);
                         break :blk comm(args, body);
                     },
-                    else => @compileError("Command " ++ @typeName(comm) ++ " has invalid number of arguments. Only none, parameters and body are available."),
+                    else => @compileError("Command " ++ @typeName(comm) ++ " has invalid number of arguments. First is state. Further only none, parameters and body are available."),
                 };
 
                 defer if (free) |f| f(result_or_err);
@@ -253,7 +251,7 @@ pub const CommandListener = struct {
                         writer = try context.response.writer();
                     }
 
-                    const result = try std.fmt.allocPrint(provider.allocator, "Error while executing command {s}: {any}", .{ name, err });
+                    const result = try std.fmt.allocPrint(provider.allocator, "Error while executing command {s}: {}\n{?}", .{ name, err, if (setting_vars.stackTraces) @errorReturnTrace() else &common.null_trace });
                     defer provider.allocator.free(result);
                     DeshaderLog.err("{s}", .{result});
                     try writer.writeAll(result);
@@ -310,7 +308,7 @@ pub const CommandListener = struct {
         const Handshake = websocket.Handshake;
 
         pub fn init(h: Handshake, conn: *Conn, context: *CommandListener) !@This() {
-            context.ws = conn;
+            try context.ws.append(conn);
             _ = h;
 
             return @This(){
@@ -360,7 +358,7 @@ pub const CommandListener = struct {
                     else => unreachable,
                 }
             } else |err| {
-                const text = try std.fmt.allocPrint(common.allocator, "500: Internal Server Error\n{s}\n{any}", .{ command_echo, err });
+                const text = try std.fmt.allocPrint(common.allocator, "500: Internal Server Error\n{s}\n{}\n{?}", .{ command_echo, err, if (setting_vars.stackTraces) @errorReturnTrace() else &common.null_trace });
                 defer common.allocator.free(text);
                 try self.conn.writeText(text);
             }
@@ -391,13 +389,13 @@ pub const CommandListener = struct {
 
             const target_command = ws_commands.get(command_name);
             if (target_command) |tc| {
-                var parsed_args: ?ArgumentsList = if (query.len > 0) try queryArgsMap(common.allocator, query) else null;
+                var parsed_args: ?ArgumentsMap = if (query.len > 0) try queryArgsMap(common.allocator, query) else null;
                 defer if (parsed_args) |*a| {
                     var it = a.valueIterator();
                     while (it.next()) |s| {
                         common.allocator.free(s.*);
                     }
-                    a.deinit();
+                    a.deinit(common.allocator);
                 };
                 if (parsed_args) |a| if (a.get("seq")) |seq| {
                     request = seq;
@@ -406,32 +404,32 @@ pub const CommandListener = struct {
                 try switch (tc.r) {
                     .Void => switch (tc.a) {
                         0 => handleInner(self, @as(*const fn () anyerror!void, @ptrCast(tc.c))(), request, @ptrCast(tc.free)),
-                        1 => handleInner(self, @as(*const fn (?ArgumentsList) anyerror!void, @ptrCast(tc.c))(parsed_args), request, @ptrCast(tc.free)),
-                        2 => handleInner(self, @as(*const fn (?ArgumentsList, String) anyerror!void, @ptrCast(tc.c))(parsed_args, body), request, @ptrCast(tc.free)),
+                        1 => handleInner(self, @as(*const fn (?ArgumentsMap) anyerror!void, @ptrCast(tc.c))(parsed_args), request, @ptrCast(tc.free)),
+                        2 => handleInner(self, @as(*const fn (?ArgumentsMap, String) anyerror!void, @ptrCast(tc.c))(parsed_args, body), request, @ptrCast(tc.free)),
                         else => unreachable,
                     },
                     .String => switch (tc.a) {
                         0 => handleInner(self, @as(*const fn () anyerror!String, @ptrCast(tc.c))(), request, @ptrCast(tc.free)),
-                        1 => handleInner(self, @as(*const fn (?ArgumentsList) anyerror!String, @ptrCast(tc.c))(parsed_args), request, @ptrCast(tc.free)),
-                        2 => handleInner(self, @as(*const fn (?ArgumentsList, String) anyerror!String, @ptrCast(tc.c))(parsed_args, body), request, @ptrCast(tc.free)),
+                        1 => handleInner(self, @as(*const fn (?ArgumentsMap) anyerror!String, @ptrCast(tc.c))(parsed_args), request, @ptrCast(tc.free)),
+                        2 => handleInner(self, @as(*const fn (?ArgumentsMap, String) anyerror!String, @ptrCast(tc.c))(parsed_args, body), request, @ptrCast(tc.free)),
                         else => unreachable,
                     },
                     .CStringArray => switch (tc.a) {
                         0 => handleInner(self, @as(*const fn () anyerror![]const CString, @ptrCast(tc.c))(), request, @ptrCast(tc.free)),
-                        1 => handleInner(self, @as(*const fn (?ArgumentsList) anyerror![]const CString, @ptrCast(tc.c))(parsed_args), request, @ptrCast(tc.free)),
-                        2 => handleInner(self, @as(*const fn (?ArgumentsList, String) anyerror![]const CString, @ptrCast(tc.c))(parsed_args, body), request, @ptrCast(tc.free)),
+                        1 => handleInner(self, @as(*const fn (?ArgumentsMap) anyerror![]const CString, @ptrCast(tc.c))(parsed_args), request, @ptrCast(tc.free)),
+                        2 => handleInner(self, @as(*const fn (?ArgumentsMap, String) anyerror![]const CString, @ptrCast(tc.c))(parsed_args, body), request, @ptrCast(tc.free)),
                         else => unreachable,
                     },
                     .StringArray => switch (tc.a) {
                         0 => handleInner(self, @as(*const fn () anyerror![]const String, @ptrCast(tc.c))(), request, @ptrCast(tc.free)),
-                        1 => handleInner(self, @as(*const fn (?ArgumentsList) anyerror![]const String, @ptrCast(tc.c))(parsed_args), request, @ptrCast(tc.free)),
-                        2 => handleInner(self, @as(*const fn (?ArgumentsList, String) anyerror![]const String, @ptrCast(tc.c))(parsed_args, body), request, @ptrCast(tc.free)),
+                        1 => handleInner(self, @as(*const fn (?ArgumentsMap) anyerror![]const String, @ptrCast(tc.c))(parsed_args), request, @ptrCast(tc.free)),
+                        2 => handleInner(self, @as(*const fn (?ArgumentsMap, String) anyerror![]const String, @ptrCast(tc.c))(parsed_args, body), request, @ptrCast(tc.free)),
                         else => unreachable,
                     },
                     .HttpStatusCode => switch (tc.a) {
                         0 => handleInner(self, @as(*const fn () anyerror!serve.HttpStatusCode, @ptrCast(tc.c))(), request, @ptrCast(tc.free)),
-                        1 => handleInner(self, @as(*const fn (?ArgumentsList) anyerror!serve.HttpStatusCode, @ptrCast(tc.c))(parsed_args), request, @ptrCast(tc.free)),
-                        2 => handleInner(self, @as(*const fn (?ArgumentsList, String) anyerror!serve.HttpStatusCode, @ptrCast(tc.c))(parsed_args, body), request, @ptrCast(tc.free)),
+                        1 => handleInner(self, @as(*const fn (?ArgumentsMap) anyerror!serve.HttpStatusCode, @ptrCast(tc.c))(parsed_args), request, @ptrCast(tc.free)),
+                        2 => handleInner(self, @as(*const fn (?ArgumentsMap, String) anyerror!serve.HttpStatusCode, @ptrCast(tc.c))(parsed_args, body), request, @ptrCast(tc.free)),
                         else => unreachable,
                     },
                 };
@@ -444,9 +442,7 @@ pub const CommandListener = struct {
 
         // optional hooks
         pub fn afterInit(_: *WSHandler) !void {}
-        pub fn close(self: *WSHandler) void {
-            self.context.ws = null;
-        }
+        pub fn close(_: *WSHandler) void {}
     };
 
     fn stringToBool(val: ?String) bool {
@@ -466,8 +462,7 @@ pub const CommandListener = struct {
         @"error",
         close,
         invalidated,
-        stopOnEntry,
-        stopOnStep,
+        stop,
         stopOnBreakpoint,
         stopOnDataBreakpoint,
         stopOnFunction,
@@ -479,7 +474,7 @@ pub const CommandListener = struct {
     pub fn sendEvent(self: *const @This(), comptime event: Event, body: anytype) !void {
         const string = try std.json.stringifyAlloc(common.allocator, body, json_options);
         defer common.allocator.free(string);
-        if (self.ws) |ws| {
+        for (self.ws.items) |ws| {
             try ws.writeAllFrame(.text, &.{
                 "600: Event\n",
                 @tagName(event) ++ "\n",
@@ -502,7 +497,7 @@ pub const CommandListener = struct {
     }
 
     pub fn hasClient(self: @This()) bool {
-        return self.ws != null;
+        return self.ws.items.len > 0;
     }
 
     /// Parse single parameter value
@@ -518,11 +513,17 @@ pub const CommandListener = struct {
 
                 .Int => try std.fmt.parseInt(inner.type, v, 0),
 
-                .Array, .Pointer => { // Probably string
+                .Array, .Pointer => {
                     if (logParsing) {
                         DeshaderLog.debug("Parsing array/pointer {x}: {s}", .{ @intFromPtr(v.ptr), v });
                     }
-                    return v;
+                    if (std.meta.Child(inner.type) == u8) {
+                        // Probably string
+                        return v;
+                    } else {
+                        const parsed = try std.json.parseFromSlice(inner.type, common.allocator, v, .{});
+                        return parsed.value;
+                    }
                 },
                 .Enum => if (std.meta.stringToEnum(inner.type, v)) |e| e else return error.InvalidEnumValue,
 
@@ -543,7 +544,7 @@ pub const CommandListener = struct {
         }
     }
 
-    fn parseArgs(comptime result: type, args: ?ArgumentsList) !result {
+    fn parseArgs(comptime result: type, args: ?ArgumentsMap) !result {
         const result_type = getInnerType(result);
         if (args) |sure_args| {
             var result_payload: result_type.type = undefined;
@@ -567,36 +568,45 @@ pub const CommandListener = struct {
         return error.WrongParameters;
     }
 
-    fn processDAPArgs(comptime InT: type, comptime OutT: type, args: ?ArgumentsList, out: *OutT) !InT {
-        const in = try parseArgs(InT, args);
-        out.seq = in.seq;
-        out.type = dap.MessageType.response;
-        return in;
-    }
-
     pub const commands = struct {
         pub fn @"continue"() !void {
+            shaders.user_action = true;
             common.command_listener.?.break_mutex.lock();
             common.command_listener.?.break_mutex.unlock();
             common.command_listener.?.resume_condition.broadcast();
         }
 
-        pub fn cancel(_: ?ArgumentsList) !void {
-            //TODO
+        pub fn terminate(args: ?ArgumentsMap) !void {
+            shaders.user_action = true;
+            const in_params = try parseArgs(dap.TerminateRequest, args);
+            if (in_params.restart) |r| {
+                if (r) {
+                    try noDebug();
+                }
+            } else {
+                try abort(); // TODO better way
+            }
         }
 
-        pub fn clearDataBreakpoints(_: ?ArgumentsList) !void {
-            shaders.instance.clearDataBreakpoints();
+        pub fn clearDataBreakpoints(_: ?ArgumentsMap) !void {
+            shaders.user_action = true;
+            shaders.clearDataBreakpoints();
         }
 
-        pub fn clearBreakpoints(args: ?ArgumentsList) !void {
+        pub fn clearBreakpoints(args: ?ArgumentsMap) !void {
+            shaders.user_action = true;
             if (args) |sure_args| {
                 if (sure_args.get("path")) |path| {
-                    const source = try shaders.GenericLocator.parse(path);
-                    switch (source) {
-                        .programs => |locator| if (try shaders.instance.Programs.getNestedByLocator(locator.program orelse return error.TargetNotFound, locator.source orelse return error.TargetNotFound)) |shader| shader.clearBreakpoints(),
-                        .sources => |locator| if (try shaders.instance.Shaders.getStoredByLocator(locator orelse return error.TargetNotFound)) |shader| shader.*.clearBreakpoints(),
+                    const context = try shaders.ContextLocator.parse(path);
+                    if (context.service) |s| {
+                        if (context.resource) |r| {
+                            switch (r) {
+                                .programs => |locator| if (try s.Programs.getNestedByLocator(locator.sub orelse return error.TargetNotFound, locator.nested)) |shader| shader.clearBreakpoints(),
+                                .sources => |locator| if (try s.Shaders.getStoredByLocator(locator orelse return error.TargetNotFound)) |shader| shader.*.clearBreakpoints(),
+                            }
+                        }
                     }
+                    return error.InvalidPath;
                 } else {
                     return error.ParameterMissing;
                 }
@@ -605,11 +615,11 @@ pub const CommandListener = struct {
             }
         }
 
-        pub fn completion(_: ?ArgumentsList) !void {
+        pub fn completion(_: ?ArgumentsMap) !void {
             //TODO
         }
 
-        pub fn dataBreakpointInfo(_: ?ArgumentsList) !void {
+        pub fn dataBreakpointInfo(_: ?ArgumentsMap) !void {
             //TODO
         }
 
@@ -617,258 +627,294 @@ pub const CommandListener = struct {
             std.process.abort();
         }
 
-        fn getUnsentBreakpoints() !std.ArrayListUnmanaged(dap.Breakpoint) {
-            var breakpoints_to_send = try std.ArrayListUnmanaged(dap.Breakpoint).initCapacity(common.allocator, shaders.instance.breakpoints_to_send.items.len);
-            for (shaders.instance.breakpoints_to_send.items) |bp| {
-                if (shaders.instance.Shaders.all.get(bp[0])) |shader| {
+        fn getUnsentBreakpoints(s: *shaders, breakpoints_to_send: *std.ArrayListUnmanaged(dap.Breakpoint)) !void {
+            for (s.breakpoints_to_send.items) |bp| {
+                if (s.Shaders.all.get(bp[0])) |shader| {
                     if (shader.items.len > bp[1]) {
-                        if (shader.items[bp[1]].breakpoints.items[bp[2]]) |yes_bp| {
-                            const dap_bp = try yes_bp.toDAPAlloc(common.allocator, null, bp[1]);
-                            try breakpoints_to_send.append(common.allocator, dap_bp);
-                        }
+                        const part = &shader.items[bp[1]];
+                        const stops = try part.possibleSteps();
+                        const local_stop = stops.items(.pos)[bp[2]];
+                        const dap_bp = dap.Breakpoint{
+                            .id = bp[2],
+                            .line = local_stop.line,
+                            .column = local_stop.character,
+                            .path = try s.fullPath(common.allocator, part, null, bp[1]),
+                        };
+                        try breakpoints_to_send.append(common.allocator, dap_bp);
                     }
                 }
             }
-            return breakpoints_to_send;
         }
 
-        pub fn debug() !String {
-            shaders.instance.debugging = true;
-            var breakpoints_to_send = try getUnsentBreakpoints();
+        pub fn debug(args: ?ArgumentsMap) !String {
+            shaders.user_action = true;
+            const in_args = try parseArgs(dap.AttachRequest, args);
+
+            var breakpoints_to_send = std.ArrayListUnmanaged(dap.Breakpoint){};
+            shaders.debugging = true;
+            for (shaders.services.values()) |*s| {
+                try getUnsentBreakpoints(s, &breakpoints_to_send);
+            }
             defer {
                 for (breakpoints_to_send.items) |bp| {
                     common.allocator.free(bp.path);
                 }
                 breakpoints_to_send.deinit(common.allocator);
+            }
+
+            if (in_args.console) |console_type| {
+                switch (console_type) {
+                    .integratedTerminal => {},
+                    else => {},
+                }
             }
 
             return std.json.stringifyAlloc(common.allocator, breakpoints_to_send.items, json_options);
         }
 
         pub fn noDebug() !void {
+            shaders.user_action = true;
             try @"continue"();
-            shaders.instance.revert_requested = true;
+            for (shaders.services.values()) |*s| {
+                s.revert_requested = true;
+            }
         }
 
-        pub fn evaluate(_: ?ArgumentsList) !void {
-            //TODO
+        pub fn evaluate(args: ?ArgumentsMap) !String {
+            const in_args = try parseArgs(dap.EvaluateArguments, args);
+            return std.json.stringifyAlloc(common.allocator, dap.EvaluateResponse{
+                .result = in_args.expression,
+                .type = "TODO",
+            }, json_options);
         }
 
-        fn getPossibleBreakpointsAlloc(tree: *const analyzer.parse.Tree, params: dap.BreakpointLocationArguments, source: String) ![]dap.BreakpointLocation {
+        fn getPossibleBreakpointsAlloc(positions: []const analyzer.lsp.Position, params: dap.BreakpointLocationArguments) ![]dap.BreakpointLocation {
             var result = std.ArrayListUnmanaged(dap.BreakpointLocation){};
-            // find all statements
-            for (tree.nodes.items(.tag), 0..) |tag, node| {
-                if (tag == .statement) {
-                    const range = tree.nodeSpan(@intCast(node)).range(source);
-                    if (range.start.line < params.line) {
-                        continue;
-                    }
+            // for (ranges) |range| {
+            //     if (range.start.line < params.line) {
+            //         continue;
+            //     }
 
-                    if (params.endLine) |el| if (range.start.line > el) {
-                        break;
-                    };
-                    if (params.column == null and params.endLine == null and params.endColumn == null) {
-                        if (range.start.line > params.line) {
-                            break;
-                        }
-                    }
-                    try result.append(common.allocator, dap.BreakpointLocation{
-                        .line = range.start.line,
-                        .column = range.start.character,
-                        .endLine = range.end.line,
-                        .endColumn = range.end.character,
-                    });
+            //     if (params.endLine) |el| if (range.start.line > el) {
+            //         break;
+            //     };
+            //     if (params.column == null and params.endLine == null and params.endColumn == null) {
+            //         if (range.start.line > params.line) {
+            //             break;
+            //         }
+            //     }
+            //     try result.append(common.allocator, dap.BreakpointLocation{
+            //         .line = range.start.line,
+            //         .column = range.start.character,
+            //         .endLine = range.end.line,
+            //         .endColumn = range.end.character,
+            //     });
+            // }
+            for (positions) |pos| {
+                if (pos.line < params.line) {
+                    continue;
                 }
+                if (params.endLine) |el| if (pos.line > el) {
+                    break;
+                };
+                if (params.column == null and params.endLine == null and params.endColumn == null) {
+                    if (pos.line > params.line) {
+                        break;
+                    }
+                }
+                try result.append(common.allocator, dap.BreakpointLocation{
+                    .line = pos.line,
+                    .column = pos.character,
+                });
             }
             return try result.toOwnedSlice(common.allocator);
         }
 
-        pub fn possibleBreakpoints(args: ?ArgumentsList) !String {
+        pub fn pauseMode(args: ?ArgumentsMap) !void {
+            const in_params = try parseArgs(struct { single: bool }, args);
+            if (shaders.single_pause_mode != in_params.single) {
+                shaders.single_pause_mode = in_params.single;
+                for (shaders.services.values()) |*s| {
+                    s.invalidate();
+                }
+            }
+        }
+
+        pub fn possibleBreakpoints(args: ?ArgumentsMap) !String {
             //var result = std.ArrayList(debug.BreakpointLocation).init(common.allocator);
             const in_params = try parseArgs(dap.BreakpointLocationArguments, args);
             // bounded by source, lines and cols in params
-            var tree: *const analyzer.parse.Tree = undefined;
-            var source: String = undefined;
+            var positions: []const analyzer.lsp.Position = undefined;
+            const context = try shaders.ContextLocator.parse(in_params.path);
+            if (context.service) |s| {
+                if (context.resource) |r| {
+                    switch (r) {
+                        .programs => |locator| if (try s.Programs.getNestedByLocator(locator.sub orelse return error.TargetNotFound, locator.nested orelse return error.TargetNotFound)) |shader| {
+                            positions = (try shader.possibleSteps()).items(.pos);
+                        },
+                        .sources => |locator| if (try s.Shaders.getStoredByLocator(locator orelse return error.TargetNotFound)) |shader| {
+                            positions = (try shader.*.possibleSteps()).items(.pos);
+                        },
+                    }
+                } else return error.InvalidPath;
+            } else return error.InvalidPath;
 
-            if (try analysis.state.workspace.getDocument(.{ .uri = in_params.path })) |document| {
-                source = document.source();
-                tree = &(try document.parseTree()).tree;
-            } else switch (try shaders.GenericLocator.parse(in_params.path)) {
-                .programs => |locator| if (try shaders.instance.Programs.getNestedByLocator(locator.program orelse return error.TargetNotFound, locator.source orelse return error.TargetNotFound)) |shader| {
-                    source = shader.getSource() orelse return error.NoSource;
-                    tree = try shader.parseTree();
-                },
-                .sources => |locator| if (try shaders.instance.Shaders.getStoredByLocator(locator orelse return error.TargetNotFound)) |shader| {
-                    source = shader.*.getSource() orelse return error.NoSource;
-                    tree = try shader.*.parseTree();
-                },
-            }
-
-            const result = try getPossibleBreakpointsAlloc(tree, in_params, source);
+            const result = try getPossibleBreakpointsAlloc(positions, in_params);
             defer common.allocator.free(result);
             return std.json.stringifyAlloc(common.allocator, dap.BreakpointLocationsResponse{
                 .breakpoints = result,
             }, json_options);
         }
 
-        pub fn getStepInTargets(_: ?ArgumentsList) !void {
+        pub fn getStepInTargets(_: ?ArgumentsMap) !void {
             //TODO
         }
 
-        pub fn readMemory(_: ?ArgumentsList) !void {
+        pub fn next(args: ?ArgumentsMap) !void {
+            shaders.user_action = true;
+            const in_params = try parseArgs(dap.NextArguments, args);
+            const locator: *shaders.ShaderLocator = @ptrFromInt(in_params.threadId);
+            try locator.service.advanceStepping(locator.shader, null);
+            try @"continue"(); // TODO odpalovat draw cally
+        }
+
+        pub fn readMemory(_: ?ArgumentsMap) !void {
             //TODO
         }
 
-        pub fn scopes(_: ?ArgumentsList) !void {
+        pub fn scopes(_: ?ArgumentsMap) !void {
             //TODO
         }
 
-        fn getPartOr0(locator: storage.Locator) usize {
-            return switch (locator) {
-                .untagged => |combined| combined.part,
-                else => 0,
-            };
-        }
-
-        pub fn setBreakpoint(args: ?ArgumentsList) !String {
+        pub fn addBreakpoint(args: ?ArgumentsMap) !String {
+            shaders.user_action = true;
             const breakpoint = try parseArgs(struct {
                 path: String,
                 line: usize,
                 column: usize,
             }, args);
-            const new = shaders.Breakpoint{
+            const new = dap.SourceBreakpoint{
                 .line = breakpoint.line,
                 .column = breakpoint.column,
             };
-            const result = blk: {
-                const source = try shaders.GenericLocator.parse(breakpoint.path);
-                break :blk switch (source) {
-                    .programs => |locator| if (try shaders.instance.Programs.getNestedByLocator(locator.program orelse return error.TargetNotFound, locator.source orelse return error.TargetNotFound)) |shader| //
-                        try shader.addBreakpoint(
-                            new,
-                            common.allocator,
-                            try shaders.instance.Programs.getStoredByLocator(locator.program.?),
-                            getPartOr0(locator.source orelse return error.TargetNotFound),
-                        )
-                    else
-                        return error.TargetNotFound,
-                    .sources => |locator| if (try shaders.instance.Shaders.getStoredByLocator(locator orelse return error.TargetNotFound)) |shader| try shader.*.addBreakpoint(
-                        new,
-                        common.allocator,
-                        null,
-                        getPartOr0(locator.?),
-                    ) else return error.TargetNotFound,
-                };
-            };
+            const context = try shaders.ContextLocator.parse(breakpoint.path);
+            const s = context.service orelse return error.InvalidPath;
+            const r = context.resource orelse return error.InvalidPath;
+            const result = try s.addBreakpointAlloc(r, new, common.allocator);
             defer common.allocator.free(result.path);
-            return std.json.stringifyAlloc(common.allocator, result, .{});
+
+            return std.json.stringifyAlloc(common.allocator, result, json_options);
         }
 
-        pub fn setDataBreakpoint(args: ?ArgumentsList) !String {
+        pub fn selectThread(args: ?ArgumentsMap) !void {
+            shaders.user_action = true;
+            const in_params = try parseArgs(struct { shader: usize, thread: []usize, group: ?[]usize }, args);
+            try shaders.selectThread(in_params.shader, in_params.thread, in_params.group);
+        }
+
+        pub fn setDataBreakpoint(args: ?ArgumentsMap) !String {
+            shaders.user_action = true;
             const d_breakpoint = try parseArgs(dap.DataBreakpoint, args);
-            const response_b = try shaders.instance.setDataBreakpoint(d_breakpoint);
-            return std.json.stringifyAlloc(common.allocator, response_b, .{});
+            const response_b = try shaders.setDataBreakpoint(d_breakpoint);
+            return std.json.stringifyAlloc(common.allocator, response_b, json_options);
         }
 
-        pub fn setExpression(_: ?ArgumentsList) !void {
+        pub fn setExpression(_: ?ArgumentsMap) !void {
             //TODO
         }
 
-        pub fn setFunctionBreakpoint(_: ?ArgumentsList) !void {
+        pub fn setFunctionBreakpoint(_: ?ArgumentsMap) !void {
             //TODO
         }
 
-        pub fn setVariable(_: ?ArgumentsList) !void {
+        pub fn setVariable(_: ?ArgumentsMap) !void {
             //TODO
         }
 
-        pub fn stackTrace(_: ?ArgumentsList) !void {
+        pub fn stackTrace(args: ?ArgumentsMap) !String {
+            // Get program and shader ref
+            const parsed_args = try parseArgs(dap.StackTraceArguments, args);
+            const trace = try shaders.stackTrace(common.allocator, parsed_args);
+            defer {
+                for (trace.stackFrames) |fr| {
+                    common.allocator.free(fr.path);
+                }
+                common.allocator.free(trace.stackFrames);
+            }
+            return try std.json.stringifyAlloc(common.allocator, trace, json_options);
+        }
+
+        pub fn stepIn(_: ?ArgumentsMap) !void {
             //TODO
         }
 
-        pub fn stepIn(_: ?ArgumentsList) !void {
-            //TODO
-        }
-
-        pub fn stepLine(_: ?ArgumentsList) !void {
-            //TODO
-        }
-
-        pub fn stepOut(_: ?ArgumentsList) !void {
-            //TODO
-        }
-
-        pub fn stepStatement(_: ?ArgumentsList) !void {
+        pub fn stepOut(_: ?ArgumentsMap) !void {
             //TODO
         }
 
         pub fn state() !String {
-            var breakpoints_to_send = try getUnsentBreakpoints();
+            var breakpoints_to_send = std.ArrayListUnmanaged(dap.Breakpoint){};
             defer {
                 for (breakpoints_to_send.items) |bp| {
                     common.allocator.free(bp.path);
                 }
                 breakpoints_to_send.deinit(common.allocator);
             }
-            const threads_to_send = try shaders.instance.listThreads(common.allocator);
+            var running_to_send = std.ArrayListUnmanaged(shaders.RunningShader){};
+            for (shaders.services.values()) |*s| {
+                try getUnsentBreakpoints(s, &breakpoints_to_send);
+                try s.runningShaders(common.allocator, &running_to_send);
+            }
             defer {
-                for (threads_to_send) |thread| {
-                    thread.deinit(common.allocator);
+                for (running_to_send.items) |runnning| {
+                    runnning.deinit(common.allocator);
                 }
-                common.allocator.free(threads_to_send);
+                running_to_send.deinit(common.allocator);
             }
             return std.json.stringifyAlloc(common.allocator, .{
-                .threads = threads_to_send,
                 .breakpoints = breakpoints_to_send.items,
+                .debugging = shaders.debugging,
                 .lsp = if (analysis.isRunning()) setting_vars.languageServerPort else null,
-            }, .{});
+                .runningShaders = running_to_send.items,
+                .singlePauseMode = shaders.single_pause_mode,
+            }, json_options);
         }
 
-        pub fn threads() !String {
-            const threads_list = try shaders.instance.listThreads(common.allocator);
+        pub fn runningShaders() !String {
+            var threads_list = std.ArrayListUnmanaged(shaders.RunningShader){};
+            for (shaders.services.values()) |*s| {
+                try s.runningShaders(common.allocator, &threads_list);
+            }
             defer {
-                for (threads_list) |thread| {
+                for (threads_list.items) |thread| {
                     thread.deinit(common.allocator);
                 }
-                common.allocator.free(threads_list);
+                threads_list.deinit(common.allocator);
             }
-            return std.json.stringifyAlloc(common.allocator, threads_list, .{});
+            return std.json.stringifyAlloc(common.allocator, threads_list.items, json_options);
         }
 
-        pub fn variables(_: ?ArgumentsList) !void {
+        pub fn variables(_: ?ArgumentsMap) !void {
             //TODO
         }
 
-        pub fn writeMemory(_: ?ArgumentsList) !void {
+        pub fn writeMemory(_: ?ArgumentsMap) !void {
             //TODO
         }
 
         const ListArgs = struct { path: String, recursive: ?bool, physical: ?bool };
-        fn listStorage(stor: anytype, locator: ?storage.Locator, args: ListArgs) !String {
+        fn listStorage(stor: anytype, locator: ?storage.Locator, args: ListArgs, postfix: ?String) ![]CString {
             switch (locator orelse storage.Locator{ .untagged = .{ .ref = 0, .part = 0 } }) {
                 .tagged => |path| {
-                    var result = try stor.listTagged(common.allocator, path, args.recursive orelse false, args.physical orelse true);
+                    var result = try stor.listTagged(common.allocator, path, args.recursive orelse false, args.physical orelse true, postfix);
                     if (path.len == 0 or std.mem.eql(u8, path, "/")) {
                         result = try common.allocator.realloc(result, result.len + 1);
-                        result[result.len - 1] = try common.allocator.dupeZ(u8, storage.untagged_path ++ "/"); // add vthe irtual untagged directory
+                        result[result.len - 1] = try common.allocator.dupeZ(u8, storage.untagged_path ++ "/"); // add the virtual /untagged/ directory
                     }
-                    defer {
-                        for (result) |p| {
-                            common.allocator.free(std.mem.span(p));
-                        }
-                        common.allocator.free(result);
-                    }
-                    return try common.joinInnerZ(common.allocator, "\n", result);
+                    return result;
                 },
                 .untagged => |ref| {
-                    const result = try stor.listUntagged(common.allocator, ref.ref);
-                    defer {
-                        for (result) |path| {
-                            common.allocator.free(std.mem.span(path));
-                        }
-                        common.allocator.free(result);
-                    }
-                    return try common.joinInnerZ(common.allocator, "\n", result);
+                    return try stor.listUntagged(common.allocator, ref.ref, ">");
                 },
             }
         }
@@ -878,80 +924,114 @@ pub const CommandListener = struct {
         //
         /// The path must start with `/sources/` or `/programs/`
         /// path: String, recursive: bool[false]
-        pub fn list(args: ?ArgumentsList) !String {
-            const args_result = try parseArgs(ListArgs, args);
+        pub fn list(args: ?ArgumentsMap) !String {
+            const in_args = try parseArgs(ListArgs, args);
 
-            return switch (try shaders.GenericLocator.parse(args_result.path)) {
-                .programs => |locator| listStorage(shaders.instance.Programs, locator.program, args_result),
-                .sources => |locator| listStorage(shaders.instance.Shaders, locator, args_result),
-            };
+            const context = try shaders.ContextLocator.parse(in_args.path);
+            if (context.service) |service| {
+                if (context.resource) |res| {
+                    const lines = try switch (res) {
+                        .programs => |locator| listStorage(&service.Programs, locator.sub, in_args, ">"), //indicate that sources under programs are "symlinks"
+                        .sources => |locator| listStorage(&service.Shaders, locator, in_args, null),
+                    };
+                    defer {
+                        for (lines) |line| {
+                            common.allocator.free(std.mem.span(line));
+                        }
+                        common.allocator.free(lines);
+                    }
+                    return try common.joinInnerZ(common.allocator, "\n", lines);
+                } else {
+                    return try common.allocator.dupe(u8, "/sources/\n/programs/\n");
+                }
+            } else {
+                const contexts = shaders.services.keys();
+                const result = try common.allocator.alloc(String, contexts.len);
+                for (contexts, result) |c, *r| {
+                    r.* = try std.fmt.allocPrint(common.allocator, "/{x}/", .{@intFromPtr(c)});
+                }
+                defer {
+                    for (result) |r| {
+                        common.allocator.free(r);
+                    }
+                    common.allocator.free(result);
+                }
+                return std.mem.join(common.allocator, "\n", result);
+            }
         }
 
-        pub fn readFile(args: ?ArgumentsList) !String {
+        pub fn readFile(args: ?ArgumentsMap) !String {
             const args_result = try parseArgs(struct { path: String }, args);
 
-            switch (try shaders.GenericLocator.parse(args_result.path)) {
-                .programs => |locator| if (try shaders.instance.Programs.getNestedByLocator(locator.program orelse return error.TargetNotFound, locator.source orelse return error.TargetNotFound)) |shader| {
-                    const source = shader.getSource();
-                    if (source) |s| {
-                        return s;
-                    } else {
-                        return error.NoSource;
+            const context = try shaders.ContextLocator.parse(args_result.path);
+            if (context.service) |service| {
+                if (context.resource) |res| {
+                    switch (res) {
+                        .programs => |locator| if (try service.Programs.getNestedByLocator(locator.sub orelse return error.TargetNotFound, locator.nested orelse return error.TargetNotFound)) |shader| {
+                            return shader.getSource() orelse "";
+                        },
+                        .sources => |locator| if (try service.Shaders.getStoredByLocator(locator orelse return error.TargetNotFound)) |shader| {
+                            return shader.*.getSource() orelse "";
+                        },
                     }
-                } else {
-                    return error.TargetNotFound;
-                },
-                .sources => |locator| if (try shaders.instance.Shaders.getStoredByLocator(locator orelse return error.TargetNotFound)) |shader| {
-                    const source = shader.*.getSource();
-                    if (source) |s| {
-                        return s;
-                    } else {
-                        return error.NoSource;
-                    }
-                } else {
-                    return error.TargetNotFound;
-                },
+                }
             }
+            return error.TargetNotFound;
         }
         const StatRequest = struct {
             path: String,
         };
 
-        pub fn stat(args: ?ArgumentsList) !String { // TODO more effective than iterating through all mappings
+        pub fn stat(args: ?ArgumentsMap) !String {
             const args_result = try parseArgs(StatRequest, args);
 
-            return std.json.stringifyAlloc(common.allocator, try shaders.instance.stat(try shaders.GenericLocator.parse(args_result.path)), json_options);
+            const context = try shaders.ContextLocator.parse(args_result.path);
+            const now = std.time.milliTimestamp();
+            const virtual = storage.StatPayload{
+                .type = @intFromEnum(storage.FileType.Directory),
+                .accessed = now,
+                .created = 0,
+                .modified = now,
+                .size = 0,
+            };
+            return std.json.stringifyAlloc(common.allocator, if (context.service) |s|
+                if (context.resource) |locator|
+                    try s.stat(locator)
+                else
+                    virtual
+            else
+                virtual, json_options);
         }
 
         //
         // Services control commands
         //
         pub fn editorWindowShow() !void {
-            if (options.embedEditor) {
-                return editor.windowShow(common.command_listener);
+            if (options.embedGUI) {
+                return gui.editorShow(common.command_listener);
             }
         }
 
         pub fn editorWindowTerminate() !void {
-            if (options.embedEditor) {
-                return editor.windowTerminate();
+            if (options.embedGUI) {
+                return gui.editorTerminate();
             }
         }
 
         pub fn editorServerStart() !void {
-            if (options.embedEditor) {
-                return editor.serverStart(common.command_listener);
+            if (options.embedGUI) {
+                return gui.serverStart(common.command_listener);
             }
         }
 
         pub fn editorServerStop() !void {
-            if (options.embedEditor) {
-                return editor.serverStop();
+            if (options.embedGUI) {
+                return gui.serverStop();
             }
         }
 
         /// port: ?u16. 1st fallback: settings_vars.language_server_port, 2nd fallback: common.default_lsp_port
-        pub fn languageServerStart(args: ?ArgumentsList) !String {
+        pub fn languageServerStart(args: ?ArgumentsMap) !String {
             const parsed = try parseArgs(?struct { port: ?u16 }, args);
             const port = (if (parsed) |p| p.port else null) orelse setting_vars.languageServerPort;
             try analysis.serverStart(port);
@@ -963,15 +1043,19 @@ pub const CommandListener = struct {
         }
 
         /// path: String
-        pub fn listBreakpoints(args: ?ArgumentsList) ![]const String {
+        pub fn listBreakpoints(args: ?ArgumentsMap) ![]const String {
             if (args) |sure_args| {
                 if (sure_args.get("path")) |path| {
-                    const shader = try shaders.instance.Shaders.getStoredByPath(path);
+                    const context = try shaders.ContextLocator.parse(path);
+                    const s = context.service orelse return error.InvalidPath;
+                    const locator = context.resource orelse return error.InvalidPath;
+                    const shader = ((try s.getResourcesByLocator(locator)).shader orelse return error.TargetNotFound).source;
                     var result = std.ArrayList(String).init(common.allocator);
-                    for (shader.*.breakpoints.items) |maybe_bp| {
-                        if (maybe_bp) |bp| {
-                            try result.append(try std.fmt.allocPrint(common.allocator, "{?d},{?d}", .{ bp.line, bp.column }));
-                        }
+                    const steps = try shader.*.possibleSteps();
+                    const steps_pos = steps.items(.pos);
+                    var it = shader.*.breakpoints.keyIterator();
+                    while (it.next()) |bp| {
+                        try result.append(try std.fmt.allocPrint(common.allocator, "{?d},{?d}", .{ steps_pos[bp.*].line, steps_pos[bp.*].character }));
                     }
                     return result.toOwnedSlice();
                 }
@@ -1003,7 +1087,7 @@ pub const CommandListener = struct {
             return &help_out;
         }
 
-        pub fn settings(args: ?ArgumentsList) (error{ UnknownSettingName, OutOfMemory } || std.fmt.ParseIntError)![]const String {
+        pub fn settings(args: ?ArgumentsMap) (error{ UnknownSettingName, OutOfMemory } || std.fmt.ParseIntError)![]const String {
             const settings_decls = @typeInfo(setting_vars).Struct.decls;
             if (args == null) {
                 var values = try common.allocator.alloc(String, settings_decls.len);
@@ -1028,6 +1112,7 @@ pub const CommandListener = struct {
                     }
 
                     fn setAny(name: String, target_val: ?String) !void {
+                        shaders.user_action = true;
                         // switch on setting name
                         inline for (settings_decls) |decl| {
                             if (std.ascii.eqlIgnoreCase(decl.name, name)) {
@@ -1070,8 +1155,7 @@ pub const CommandListener = struct {
         const setBreakpoint = stringReturning;
         const stat = stringReturning;
         const state = stringReturning;
-        const cancel = stringReturning;
-        const completion = stringReturning;
+        //const completion = stringReturning;
         const debug = stringReturning;
         const dataBreakpointInfo = stringReturning;
         const evaluate = stringReturning;
@@ -1079,18 +1163,16 @@ pub const CommandListener = struct {
         const getStepInTargets = stringReturning;
         const languageServerStart = stringReturning;
         const readMemory = stringReturning;
-        const scopes = stringReturning;
+        const runningShaders = stringReturning;
+        //const scopes = stringReturning;
         const setDataBreakpoint = stringReturning;
-        const setExpression = stringReturning;
-        const setFunctionBreakpoint = stringReturning;
-        const setVariable = stringReturning;
+        // const setExpression = stringReturning;
+        //const setFunctionBreakpoint = stringReturning;
+        //const setVariable = stringReturning;
         const stackTrace = stringReturning;
-        const stepIn = stringReturning;
-        const stepLine = stringReturning;
-        const stepOut = stringReturning;
-        const stepStatement = stringReturning;
-        const threads = stringReturning;
-        const variables = stringReturning;
-        const writeMemory = stringReturning;
+        //const stepIn = stringReturning;
+        //const stepOut = stringReturning;
+        // const variables = stringReturning;
+        // const writeMemory = stringReturning;
     };
 };

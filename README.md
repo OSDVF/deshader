@@ -3,35 +3,37 @@ Shaders are often shiny but sometimes also shady, fishy and stinky!
 > What if I could just step-debug that shader as I do with my CPU programs?
 
 Now you can!
-Deshader intercepts OpenGL calls and adds instrumentation code to your shaders so you don't need to create your own debug visualizations to output shader execution process.
+Deshader intercepts OpenGL calls and adds instrumentation code to your shaders (so you don't need to write your own visualizations to debug shader execution process anymore).
 You can also:
 # Features
+- Step through the shader execution (...breakpoints, logging, conditional bps...)
+- Arrange shaders in a virtual filesystem (`#include` friendly!)
 - Track variable values for different output primitives and pixels
 - Incrementally visualise primitive and pixel output (so you can fix that weird vertex!)
-- Use inbuilt editor (VSCode for Web in an embedded window or at `http://localhost:8080/index.html` by default)
+- Open the integrated editor (VSCode in a separate window or in your browser - at `localhost:8080/index.html` by default)
 - Run it on Linux and Windows
+<!-- TODO check https://github.com/coder/code-server -->
 
 # Goals
 - Compatibility between OpenGL vendor implementations (ICDs)
+- Flexibility
 - Broader API support than [GLIntercept](https://github.com/dtrebilco/glintercept), different features than [ApiTrace](https://github.com/apitrace/apitrace)
 
 ## Non-goals
-And also some dead ends that have been encountered.
+...and some dead ends, which have been encountered.
 - Debugging other languages than GLSL (feel free to fork and add your own language)
 - Using vendor-specific GPU APIs and instructions
-- Assembly level debugging
+- Assembly (ISA) or pseudo-assembly (SPIR-V) level debugging
 - Profiling
-- Mac OS CGL Support
 - [Custom WebView profile data directory](https://github.com/webview/webview/issues/719)
 
 ## Possible future goals
 - View assembly
     - SPIR-V (compile by GLSLang)
     - ISA level ([nvdisasm](https://developer.download.nvidia.com/compute/cuda/redist/cuda_nvdisasm/), [nvcachetools](https://github.com/therontarigo/nvcachetools), [envytools](https://github.com/envytools/envytools/))
+- Mac OS CGL Support
 
 Feel free to fork and add your own goals or even better, break the non-goals!
-
-Deshader aims to assist researchers who want to leverage the edge features of graphical APIs to explore and create new software technologies. There is no development effort given into features like debugging of third party applications. If Deshader saved some of your time, you can leave a comment in the [discussions](https://github.com/OSDVF/deshader/discussions) or [star](https://github.com/OSDVF/deshader/star) the repo.
 
 # Build
 ## Components
@@ -48,7 +50,7 @@ Deshader consists of several (mostly third party; mostly forked) components that
     - [Web View (WebKit2Gtk)](https://github.com/ziglibs/positron) at [/libs/positron/](/libs/positron/)
     - Example applications
         - [/examples/](/examples/)
-    - [GLSL Analyzer](https://github.com/nolanderc/glsl_analyzer) at [/libs/glsl_analyzer/](/libs/glsl_analyzer/)
+    - Fork of [GLSL Analyzer](https://github.com/nolanderc/glsl_analyzer) at [/libs/glsl_analyzer/](/libs/glsl_analyzer/)
 - [Visual Studio Code for Web distribution](https://github.com/Felx-B/vscode-web)
     - [/editor/](/editor/)
     - With node.js packages
@@ -92,7 +94,7 @@ After you install all the required frameworks, clone this repository with submod
 ```sh
 git clone --recurse-submmodules https://github.com/OSDVF/deshader
 cd deshader
-zig build deshader --Ddeps
+zig build deshader -Ddeps
 ```
 If that does not output any errors, it will autmatically
 - Generate OpenGL bindings
@@ -160,16 +162,14 @@ Specify options as `-Doption=value` to `zig build` commands. See also `zig build
 Boolean options can be set to true using `-Doption=true` or `-Doption`.
 
 **NOTE**: Options must be specified when compiling both Deshader (`deshader-lib`/`deshader`) and Runner (`runner`).
-Name                  | Values                        | Description
-----------------------|-------------------------------|--------------------------------------------------------------------------------------------------
-`linkage`             | `Static`, `Dynamic` (default) | Select type of for Deshader library
-`wolfSSL`             | `true`, `false` (default)     | Link with system or VCPKG provided WolfSSL instead of compiling it from source
-`logIntercept`        | `true`, `false` (default)     | Enable logging of intercepted VK ang GL (not on Mac) procedure requests
-`deps`  | `true`, `false` (default) | Also build dependencies before the final Deshader library
-`embedEditor`         | `true` (default), `false`     | Embed VSCode into Deshader. Otherwise external editor must be used. Can save 4MB in ReleaseSmall.
-`glAddLoader`         | any string                    | Specify a single additional function name that will be exported and intercepted
-`vkAddDeviceLoader`   | any string                    | Export additional intercepted function that will call device procedure addresss loader
-`vkAddInstanceLoader` | any string                    | Same as `vkAddDeviceLoader` but for instance procedure addresses
+Name           | Values                        | Description
+---------------|-------------------------------|--------------------------------------------------------------------------------------------------
+`linkage`      | `Static`, `Dynamic` (default) | Select type of for Deshader library
+`wolfSSL`      | `true`, `false` (default)     | Link with system or VCPKG provided WolfSSL instead of compiling it from source
+`logIntercept` | `true`, `false` (default)     | Enable logging of intercepted GL (not on Mac) procedure requests
+`deps`         | `true`, `false` (default)     | Also build dependencies before the final Deshader library
+`embedEditor`  | `true` (default), `false`     | Embed VSCode into Deshader. Otherwise external editor must be used. Can save 4MB in ReleaseSmall.
+`glAddLoader`  | any string                    | Specify a single additional function name that will be exported and intercepted
  
 ### Production build
 - Add `-Doptimize` to `zig build` commands
@@ -188,7 +188,7 @@ Name                  | Values                        | Description
     - Disable GPU acceleration
         - Set environment variable `WEBKIT_DISABLE_COMPOSITING_MODE=1`
     - Or select a different GPU
-        - by setting `__GLX_VENDOR_LIBRARY_NAME=nvidia __NV_PRIME_RENDER_OFFLOAD=1 __VK_LAYER_NV_optimus=NVIDIA_only`
+        - by setting `__GLX_VENDOR_LIBRARY_NAME=nvidia __NV_PRIME_RENDER_OFFLOAD=1`
         - or `DRI_PRIME=1`
 
 
@@ -201,32 +201,38 @@ Name      | Default                                                   | Descript
 ----------|-----------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------
 LIB_ROOT  | `/usr/lib` / `C:\Windows\System32`                        | Override the default path to the folder where the original libraries are located
 LIB       | \[app work dir\]/`libdeshader.so`/`.dylib`/`deshader.dll` | Location/name of Deshader shared libraray
-HOOK_LIBS | combined values of `GL_LIBS` and `VK_LIB`                 | Set to comma separated list of **additional** libraries to replace with Deshader library (defaults always included)
+HOOK_LIBS | value of `GL_LIBS`                                        | Set to comma separated list of **additional** libraries to replace with Deshader library (defaults always included)
 ### Deshader library
-Name                | Default                                            | Description
---------------------|----------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------
-LIB_ROOT            | `/usr/lib` / `C:\Windows\System32`                 | **REQUIRED** and automatically set by the Runner. Path to the folder where the original libraries are located
-PORT                | 8080                                               | Port for the web editor at `http://localhost:DESHADER_PORT/index.html`
-SHOW                | none                                               | Pass `true` or `1` to show the editor window on startup
-START_SERVER        | none                                               | Pass `true` or `1` to start the editor server on startup	2300325930 / 2010 
-COMMANDS_HTTP       | 8081                                               | Port for HTTP server listening to Deshader commands
-COMMANDS_WS         | none                                               | Port for WebSocket server listening to Deshader commands (disabled by default)
-GL_LIBS             | `libGLX.so, libEGL.so` / `opengl32.dll`            | Path to libraries from which the original GL functions will be loaded
-GL_PROC_LOADERS     | none                                               | Specify additional lodader functions that will be called to retrieve GL function pointers[^1]
-SUBSTITUTE_LOADER   | `false`                                            | Specify `1`, `yes` or `true` for calling `DESHADER_GL_PROC_LOADERS` instead of standard GL loader functions internally[^2]
-VK_LIB              | `libvulkan.so` / `vulkan-1.dll`/ `libvulkan.dylib` | Path to library from which the original Vulkan functions will be loaded
-VK_DEV_PROC_LOADER  | none                                               | Specify original device procedure address loader function for Vulkan
-VK_INST_PROC_LOADER | none                                               | Specify original instance procedure address loader function for Vulkan
-HOOKED              | reserved                                           | Do not set this variable. IT is used by Deshader internally as a flag of already hooked app
-EDITOR_URL          | reserved                                           | Used internally as a startup URL for embedded Editor
-EDITOR_SHOWN        | reserved                                           |
-IGNORE_PROCESS      | none                                               | Comma separated list of process name postfixes that won't be intercepted. You often need to ignore `gdb,sh,bash,zsh,code`
-PROCESS             | none                                               | Comma separated list of process name postfixes that will be intercepted. If set, `DESHADER_IGNORE_PROCESS` is ignored.
+Name              | Default                                 | Description
+------------------|-----------------------------------------|---------------------------------------------------------------------------------------------------------------------------
+LIB_ROOT          | `/usr/lib` / `C:\Windows\System32`      | **REQUIRED** and automatically set by the Runner. Path to the folder where the original libraries are located
+GUI               | none                                    | Pass `true` or `1` to show the editor window on startup
+PORT              | 8080                                    | Port for the web editor at `http://localhost:DESHADER_PORT/index.html`
+START_SERVER      | none                                    | Pass `true` or `1` to start the editor server on startup	2300325930 / 2010
+COMMANDS_HTTP     | none                                    | Port for HTTP server listening to Deshader commands
+COMMANDS_WS       | 8082                                    | Port for WebSocket server listening to Deshader commands (disabled by default)
+LSP               | none                                    | Port for GLSL Language Server (based on [glsl_analyzer](https://github.com/nolanderc/glsl_analyzer/)) WebSocket
+GL_LIBS           | `libGLX.so, libEGL.so` / `opengl32.dll` | Path to libraries from which the original GL functions will be loaded
+GL_PROC_LOADERS   | none                                    | Specify additional lodader functions that will be called to retrieve GL function pointers[^1]
+SUBSTITUTE_LOADER | `false`                                 | Specify `1`, `yes` or `true` for calling `DESHADER_GL_PROC_LOADERS` instead of standard GL loader functions internally[^2]
+HOOKED            | reserved                                | Do not set this variable. IT is used by Deshader internally as a flag of already hooked app
+EDITOR_URL        | reserved                                | Used internally as a startup URL for embedded Editor
+EDITOR_SHOWN      | reserved                                |
+IGNORE_PROCESS    | none                                    | Comma separated list of process name postfixes that won't be intercepted. You may need to ignore `gdb,sh,bash,zsh,code,llvm-symbolizer`
+PROCESS           | none                                    | Comma separated list of process name postfixes that will be intercepted. If set, `DESHADER_IGNORE_PROCESS` is ignored.
 
 [^1]: Should be a comma separated list. The first found function will be used.
 [^2]: In this case `DESHADER_GL_PROC_LOADERS` must be a single function. Does not work on Mac OS.
 
 # Usage
+Deshader exposes several interfaces for controlling its behavior.
+- Remote commands server
+- `#pragma` clauses in shaders
+- C API
+- GUI (VSCode based editor)
+
+Generally more than one interface can be used at the same time and they can control the same features.
+
 Deshader is controlled by commands sent using HTTP or WebSocket protocol. The commands are documented in [doc/Commands.md](doc/Commands.md).
 ## HTTP Command Server
 ```sh
@@ -247,3 +253,5 @@ Should reply with
 dev
 ```
 Command parameters are passed as a URI-like query string `?appended=to&the=command&name`
+
+If Deshader saved some of your time, you can leave a comment in the [discussions](https://github.com/OSDVF/deshader/discussions) or [star](https://github.com/OSDVF/deshader/star) the repo.

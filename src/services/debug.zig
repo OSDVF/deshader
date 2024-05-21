@@ -1,6 +1,9 @@
-//! Subset of Microsoft Debug Adapter Protocol rewritten in Zig
+//! ## Subset of Microsoft's Debug Adapter Protocol rewritten in Zig
+//!
 //! Event and Reponse structs are only the 'body' of the original DAP interfaces.
-//! Source interface is replaced by `path` String field
+//! The `Source` interface (commonly seen as `source` field) is replaced by `path` string field.
+//!
+//! `InvalidatedEvent` is enriched with `context` and `numContexts` fields.
 const std = @import("std");
 const common = @import("../common.zig");
 
@@ -22,9 +25,9 @@ pub const Message = struct {
 };
 
 pub const ErrorResponse = struct {
-    seq: u32,
+    seq: usize,
     type: MessageType,
-    request_seq: u32,
+    request_seq: usize,
     success: bool,
     command: String,
     message: ?String,
@@ -32,26 +35,26 @@ pub const ErrorResponse = struct {
 };
 
 pub const CancelRequest = struct {
-    seq: u32,
+    seq: usize,
     type: MessageType,
     command: String,
     arguments: CancelArguments,
 };
 
 pub const CancelArguments = struct {
-    requestId: ?u32,
+    requestId: ?usize,
     progressId: ?String,
 };
 
 pub const CancelResponse = struct {
-    seq: u32,
+    seq: usize,
     type: MessageType,
-    request_seq: u32,
+    request_seq: usize,
     success: bool,
 };
 
 pub const InitializedEvent = struct {
-    seq: u32,
+    seq: usize,
     type: MessageType,
     event: String,
     body: String,
@@ -77,7 +80,7 @@ pub const ExitedEvent = struct {
 };
 
 pub const TerminatedEvent = struct {
-    seq: u32,
+    seq: usize,
     type: MessageType,
     event: String,
     body: ?struct {
@@ -104,6 +107,7 @@ pub const OutputEvent = struct {
 };
 
 pub const Breakpoint = struct {
+    /// For Deshader specifically this is the stop point index
     id: ?usize,
     verified: bool = false,
     message: ?String = null,
@@ -234,12 +238,18 @@ pub const ProgressEndEvent = struct {
 };
 
 pub const InvalidatedEvent = struct {
-    pub const Areas = enum { all, stacks, threads, variables };
+    pub const Areas = enum { all, stacks, threads, variables, contexts };
     areas: ?[]const Areas,
+    /// If specified, the client only needs to refetch data related to this thread.
+    threadId: ?usize = null,
+    /// If specified, the client only needs to refetch data related to this stack frame (and the `threadId` is ignored).
+    stackFrameId: ?usize = null,
+    /// Deshader specific
+    numContexts: ?usize = null,
 };
 
 pub const RunInTerminalRequest = struct {
-    seq: u32,
+    seq: usize,
     type: MessageType,
     command: String,
     arguments: RunInTerminalRequestArguments,
@@ -256,18 +266,12 @@ pub const RunInTerminalRequestArguments = struct {
 };
 
 pub const RunInTerminalResponse = struct {
-    seq: u32,
-    type: MessageType,
-    request_seq: u32,
-    success: bool,
-    body: struct {
-        processId: ?usize,
-        shellProcessId: ?usize,
-    },
+    processId: ?usize,
+    shellProcessId: ?usize,
 };
 
 pub const StartDebuggingRequest = struct {
-    seq: u32,
+    seq: usize,
     type: MessageType,
     command: String,
     arguments: StartDebuggingRequestArguments,
@@ -280,14 +284,14 @@ pub const StartDebuggingRequestArguments = struct {
 };
 
 pub const StartDebuggingResponse = struct {
-    seq: u32,
+    seq: usize,
     type: MessageType,
-    request_seq: u32,
+    request_seq: usize,
     success: bool,
 };
 
 pub const InitializeRequest = struct {
-    seq: u32,
+    seq: usize,
     type: MessageType,
     command: String,
     arguments: InitializeRequestArguments,
@@ -317,129 +321,108 @@ pub const InitializeResponse = struct {
     capabilities: Capabilities,
 };
 
-pub const ConfigurationDoneRequest = struct {
-    seq: u32,
-    type: MessageType,
-    command: String,
-    arguments: ?struct {},
-};
-
 pub const ConfigurationDoneResponse = struct {
-    seq: u32,
+    seq: usize,
     type: MessageType,
-    request_seq: u32,
+    request_seq: usize,
     success: bool,
 };
 
 pub const LaunchRequest = struct {
-    seq: u32,
-    type: MessageType,
-    command: String,
-    arguments: LaunchRequestArguments,
-};
-
-pub const LaunchRequestArguments = struct {
+    args: ?[]const String,
+    console: ?ConsoleType,
+    cwd: ?String,
+    env: ?std.json.Value,
+    program: String,
     noDebug: ?bool,
+    showDebugOutput: ?bool,
+    stopOnEntry: ?bool,
 };
 
-pub const LaunchResponse = struct {
-    seq: u32,
-    type: MessageType,
-    request_seq: u32,
-    success: bool,
+pub const ConsoleType = enum { debugConsole, integratedTerminal, externalTerminal };
+
+pub const Protocol = enum { http, https, ws, wss };
+
+pub const Connection = struct {
+    host: String,
+    port: u16,
+    protocol: Protocol,
 };
 
 pub const AttachRequest = struct {
-    seq: u32,
-    type: MessageType,
-    command: String,
+    connection: ?Connection,
+    console: ?ConsoleType,
+    showDebugOutput: ?bool,
+    stopOnEntry: ?bool,
 };
 
 pub const AttachResponse = struct {
-    seq: u32,
+    seq: usize,
     type: MessageType,
-    request_seq: u32,
+    request_seq: usize,
     success: bool,
 };
 
-pub const RestartRequest = struct {
-    seq: u32,
-    type: MessageType,
-    command: String,
-    arguments: ?struct {
-        arguments: LaunchRequestArguments,
-    },
-};
-
 pub const RestartResponse = struct {
-    seq: u32,
+    seq: usize,
     type: MessageType,
-    request_seq: u32,
+    request_seq: usize,
     success: bool,
 };
 
 pub const DisconnectRequest = struct {
-    seq: u32,
-    type: MessageType,
-    command: String,
-    arguments: ?struct {
-        restart: ?bool,
-        terminateDebuggee: ?bool,
-        suspendDebuggee: ?bool,
-    },
+    restart: ?bool,
+    terminateDebuggee: ?bool,
+    suspendDebuggee: ?bool,
 };
 
 pub const DisconnectResponse = struct {
-    seq: u32,
+    seq: usize,
     type: MessageType,
-    request_seq: u32,
+    request_seq: usize,
     success: bool,
 };
 
 pub const TerminateRequest = struct {
-    seq: u32,
-    type: MessageType,
-    command: String,
-    arguments: ?struct {
-        restart: ?bool,
-    },
+    restart: ?bool,
 };
 
 pub const TerminateResponse = struct {
-    seq: u32,
+    seq: usize,
     type: MessageType,
-    request_seq: u32,
+    request_seq: usize,
     success: bool,
 };
 
 pub const BreakpointLocationArguments = struct {
     path: String,
-    line: u32,
-    column: ?u32,
-    endLine: ?u32,
-    endColumn: ?u32,
+    line: usize,
+    column: ?usize,
+    endLine: ?usize,
+    endColumn: ?usize,
 };
 
 pub const BreakpointLocationsRequest = struct {
-    seq: u32,
+    seq: usize,
     type: MessageType,
     command: String,
     arguments: ?BreakpointLocationArguments,
 };
 
 pub const BreakpointLocation = struct {
-    line: u32,
-    column: ?u32,
-    endLine: ?u32,
-    endColumn: ?u32,
+    line: usize,
+    column: ?usize = null,
+    endLine: ?usize = null,
+    endColumn: ?usize = null,
 };
 
+/// Data payload passed to `SetBreakpoint` request
 pub const SourceBreakpoint = struct {
-    line: u32,
-    column: ?u32,
-    condition: ?String,
-    hitCondition: ?String,
-    logMessage: ?String,
+    line: usize,
+    column: ?usize = null,
+    condition: ?String = null,
+    hitCondition: ?String = null,
+    logMessage: ?String = null,
 };
 
 pub const BreakpointLocationsResponse = struct {
@@ -447,7 +430,7 @@ pub const BreakpointLocationsResponse = struct {
 };
 
 pub const SetBreakpointsRequest = struct {
-    seq: u32,
+    seq: usize,
     type: MessageType,
     command: String,
     arguments: SetBreakpointsArguments,
@@ -456,7 +439,7 @@ pub const SetBreakpointsRequest = struct {
 pub const SetBreakpointsArguments = struct {
     path: String,
     breakpoints: ?[]const SourceBreakpoint,
-    lines: ?[]u32,
+    lines: ?[]usize,
     sourceModified: ?bool,
 };
 
@@ -469,7 +452,7 @@ pub const SetFunctionBreakpointsResponse = struct {
 };
 
 pub const SetExceptionBreakpointsRequest = struct {
-    seq: u32,
+    seq: usize,
     type: MessageType,
     command: String,
     arguments: SetExceptionBreakpointsArguments,
@@ -486,31 +469,25 @@ pub const SetExceptionBreakpointsResponse = struct {
 };
 
 pub const DataBreakpointInfoRequest = struct {
-    seq: u32,
+    seq: usize,
     type: MessageType,
     command: String,
     arguments: DataBreakpointInfoArguments,
 };
 
 pub const DataBreakpointInfoArguments = struct {
-    variablesReference: ?u32,
+    variablesReference: ?usize,
     name: String,
-    frameId: ?u32,
+    frameId: ?usize,
 };
 
 pub const DataBreakpointInfoResponse = struct {
-    seq: u32,
-    type: MessageType,
-    request_seq: u32,
-    success: bool,
-    body: struct {
-        dataId: ?String,
-        description: String,
-        /// 'read' | 'write' | 'readWrite'
-        accessTypes: ?[]const DataBreakpoint.AccessType,
-        /// Attribute indicates that a potential data breakpoint could be persisted across sessions.
-        canPersist: ?bool,
-    },
+    dataId: ?String,
+    description: String,
+    /// 'read' | 'write' | 'readWrite'
+    accessTypes: ?[]const DataBreakpoint.AccessType,
+    /// Attribute indicates that a potential data breakpoint could be persisted across sessions.
+    canPersist: ?bool,
 };
 
 pub const DataBreakpoint = struct {
@@ -524,7 +501,7 @@ pub const DataBreakpoint = struct {
 };
 
 pub const SetDataBreakpointsRequest = struct {
-    seq: u32,
+    seq: usize,
     type: MessageType,
     command: String,
     arguments: SetDataBreakpointsArguments,
@@ -535,27 +512,15 @@ pub const SetDataBreakpointsArguments = struct {
 };
 
 pub const SetDataBreakpointsResponse = struct {
-    seq: u32,
-    type: MessageType,
-    request_seq: u32,
-    success: bool,
-    body: struct {
-        breakpoints: []const Breakpoint,
-    },
+    breakpoints: []const Breakpoint,
 };
 
 pub const SetInstructionBreakpointsResponse = struct {
-    seq: u32,
-    type: MessageType,
-    request_seq: u32,
-    success: bool,
-    body: struct {
-        breakpoints: []const Breakpoint,
-    },
+    breakpoints: []const Breakpoint,
 };
 
 pub const ContinueRequest = struct {
-    seq: u32,
+    seq: usize,
     type: MessageType,
     command: String,
     // command: 'continue',
@@ -563,26 +528,17 @@ pub const ContinueRequest = struct {
 };
 
 pub const ContinueArguments = struct {
-    seq: u32,
-    type: MessageType,
-
     threadId: usize,
 
     singleThread: ?bool,
 };
 
 pub const ContinueResponse = struct {
-    seq: u32,
-    type: MessageType,
-    request_seq: u32,
-    success: bool,
-    body: struct {
-        allThreadsContinued: ?bool,
-    },
+    allThreadsContinued: ?bool,
 };
 
 pub const NextRequest = struct {
-    seq: u32,
+    seq: usize,
     type: MessageType,
     command: String,
     // command: 'next',
@@ -590,9 +546,6 @@ pub const NextRequest = struct {
 };
 
 pub const NextArguments = struct {
-    seq: u32,
-    type: MessageType,
-
     threadId: usize,
 
     singleThread: ?bool,
@@ -601,24 +554,20 @@ pub const NextArguments = struct {
 };
 
 pub const NextResponse = struct {
-    seq: u32,
+    seq: usize,
     type: MessageType,
-    request_seq: u32,
+    request_seq: usize,
     success: bool,
 };
 
 pub const StepInRequest = struct {
-    seq: u32,
+    seq: usize,
     type: MessageType,
-    command: String,
-    // command: 'stepIn',
+    command: "stepIn",
     arguments: StepInArguments,
 };
 
 pub const StepInArguments = struct {
-    seq: u32,
-    type: MessageType,
-
     threadId: usize,
 
     singleThread: ?bool,
@@ -629,14 +578,14 @@ pub const StepInArguments = struct {
 };
 
 pub const StepInResponse = struct {
-    seq: u32,
+    seq: usize,
     type: MessageType,
-    request_seq: u32,
+    request_seq: usize,
     success: bool,
 };
 
 pub const StepOutRequest = struct {
-    seq: u32,
+    seq: usize,
     type: MessageType,
     command: String,
     // command: 'stepOut',
@@ -644,9 +593,6 @@ pub const StepOutRequest = struct {
 };
 
 pub const StepOutArguments = struct {
-    seq: u32,
-    type: MessageType,
-
     threadId: usize,
 
     singleThread: ?bool,
@@ -655,14 +601,14 @@ pub const StepOutArguments = struct {
 };
 
 pub const StepOutResponse = struct {
-    seq: u32,
+    seq: usize,
     type: MessageType,
-    request_seq: u32,
+    request_seq: usize,
     success: bool,
 };
 
 pub const StepBackRequest = struct {
-    seq: u32,
+    seq: usize,
     type: MessageType,
     command: String,
     // command: 'stepBack',
@@ -670,9 +616,6 @@ pub const StepBackRequest = struct {
 };
 
 pub const StepBackArguments = struct {
-    seq: u32,
-    type: MessageType,
-
     threadId: usize,
 
     singleThread: ?bool,
@@ -681,14 +624,14 @@ pub const StepBackArguments = struct {
 };
 
 pub const StepBackResponse = struct {
-    seq: u32,
+    seq: usize,
     type: MessageType,
-    request_seq: u32,
+    request_seq: usize,
     success: bool,
 };
 
 pub const ReverseContinueRequest = struct {
-    seq: u32,
+    seq: usize,
     type: MessageType,
     command: String,
     // command: 'reverseContinue',
@@ -696,23 +639,20 @@ pub const ReverseContinueRequest = struct {
 };
 
 pub const ReverseContinueArguments = struct {
-    seq: u32,
-    type: MessageType,
-
     threadId: usize,
 
     singleThread: ?bool,
 };
 
 pub const ReverseContinueResponse = struct {
-    seq: u32,
+    seq: usize,
     type: MessageType,
-    request_seq: u32,
+    request_seq: usize,
     success: bool,
 };
 
 pub const RestartFrameRequest = struct {
-    seq: u32,
+    seq: usize,
     type: MessageType,
     command: String,
     // command: 'restartFrame',
@@ -720,21 +660,18 @@ pub const RestartFrameRequest = struct {
 };
 
 pub const RestartFrameArguments = struct {
-    seq: u32,
-    type: MessageType,
-
     frameId: usize,
 };
 
 pub const RestartFrameResponse = struct {
-    seq: u32,
+    seq: usize,
     type: MessageType,
-    request_seq: u32,
+    request_seq: usize,
     success: bool,
 };
 
 pub const GotoRequest = struct {
-    seq: u32,
+    seq: usize,
     type: MessageType,
     command: String,
     // command: 'goto',
@@ -742,23 +679,20 @@ pub const GotoRequest = struct {
 };
 
 pub const GotoArguments = struct {
-    seq: u32,
-    type: MessageType,
-
     threadId: usize,
 
     targetId: usize,
 };
 
 pub const GotoResponse = struct {
-    seq: u32,
+    seq: usize,
     type: MessageType,
-    request_seq: u32,
+    request_seq: usize,
     success: bool,
 };
 
 pub const PauseRequest = struct {
-    seq: u32,
+    seq: usize,
     type: MessageType,
     command: String,
     // command: 'pause',
@@ -766,31 +700,24 @@ pub const PauseRequest = struct {
 };
 
 pub const PauseArguments = struct {
-    seq: u32,
-    type: MessageType,
-
     threadId: usize,
 };
 
 pub const PauseResponse = struct {
-    seq: u32,
+    seq: usize,
     type: MessageType,
-    request_seq: u32,
+    request_seq: usize,
     success: bool,
 };
 
 pub const StackTraceRequest = struct {
-    seq: u32,
+    seq: usize,
     type: MessageType,
-    command: String,
-    // command: 'stackTrace',
+    command: "stackTrace",
     arguments: StackTraceArguments,
 };
 
 pub const StackTraceArguments = struct {
-    seq: u32,
-    type: MessageType,
-
     threadId: usize,
 
     startFrame: ?usize,
@@ -801,19 +728,13 @@ pub const StackTraceArguments = struct {
 };
 
 pub const StackTraceResponse = struct {
-    seq: u32,
-    type: MessageType,
-    request_seq: u32,
-    success: bool,
-    body: struct {
-        stackFrames: []const StackFrame,
+    stackFrames: []const StackFrame,
 
-        totalFrames: ?usize,
-    },
+    totalFrames: ?usize,
 };
 
 pub const ScopesRequest = struct {
-    seq: u32,
+    seq: usize,
     type: MessageType,
     command: String,
     // command: 'scopes',
@@ -821,24 +742,15 @@ pub const ScopesRequest = struct {
 };
 
 pub const ScopesArguments = struct {
-    seq: u32,
-    type: MessageType,
-
     frameId: usize,
 };
 
 pub const ScopesResponse = struct {
-    seq: u32,
-    type: MessageType,
-    request_seq: u32,
-    success: bool,
-    body: struct {
-        scopes: []const Scope,
-    },
+    scopes: []const Scope,
 };
 
 pub const VariablesRequest = struct {
-    seq: u32,
+    seq: usize,
     type: MessageType,
     command: String,
     // command: 'variables',
@@ -846,9 +758,6 @@ pub const VariablesRequest = struct {
 };
 
 pub const VariablesArguments = struct {
-    seq: u32,
-    type: MessageType,
-
     variablesReference: usize,
     //'indexed' | 'named'
     filter: ?String,
@@ -861,17 +770,11 @@ pub const VariablesArguments = struct {
 };
 
 pub const VariablesResponse = struct {
-    seq: u32,
-    type: MessageType,
-    request_seq: u32,
-    success: bool,
-    body: struct {
-        variables: []const Variable,
-    },
+    variables: []const Variable,
 };
 
 pub const SetVariableRequest = struct {
-    seq: u32,
+    seq: usize,
     type: MessageType,
     command: String,
     // command: 'setVariable',
@@ -879,9 +782,6 @@ pub const SetVariableRequest = struct {
 };
 
 pub const SetVariableArguments = struct {
-    seq: u32,
-    type: MessageType,
-
     variablesReference: usize,
 
     name: String,
@@ -892,28 +792,22 @@ pub const SetVariableArguments = struct {
 };
 
 pub const SetVariableResponse = struct {
-    seq: u32,
-    type: MessageType,
-    request_seq: u32,
-    success: bool,
-    body: struct {
-        value: String,
+    value: String,
 
-        type: ?String,
+    type: ?String,
 
-        variablesReference: ?usize,
+    variablesReference: ?usize,
 
-        namedVariables: ?usize,
+    namedVariables: ?usize,
 
-        indexedVariables: ?usize,
+    indexedVariables: ?usize,
 
-        memoryReference: ?String,
-    },
+    memoryReference: ?String,
 };
 
 /// The request retrieves the source code for a given source reference.
 pub const SourceRequest = struct {
-    seq: u32,
+    seq: usize,
     type: MessageType,
     command: String,
     // command: 'source',
@@ -921,45 +815,30 @@ pub const SourceRequest = struct {
 };
 
 pub const SourceArguments = struct {
-    seq: u32,
-    type: MessageType,
-
     path: String,
     /// 32 bit number: first 32 bits is the backend source ref, last 32 bits is the part index
     sourceReference: usize,
 };
 
 pub const SourceResponse = struct {
-    seq: u32,
-    type: MessageType,
-    request_seq: u32,
-    success: bool,
-    body: struct {
-        content: String,
+    content: String,
 
-        mimeType: ?String,
-    },
+    mimeType: ?String,
 };
 
 pub const ThreadsRequest = struct {
-    seq: u32,
+    seq: usize,
     type: MessageType,
     command: String,
     // command: 'threads',
 };
 
 pub const ThreadsResponse = struct {
-    seq: u32,
-    type: MessageType,
-    request_seq: u32,
-    success: bool,
-    body: struct {
-        threads: []const Thread,
-    },
+    threads: []const Thread,
 };
 
 pub const TerminateThreadsRequest = struct {
-    seq: u32,
+    seq: usize,
     type: MessageType,
     command: String,
     // command: 'terminateThreads',
@@ -967,21 +846,18 @@ pub const TerminateThreadsRequest = struct {
 };
 
 pub const TerminateThreadsArguments = struct {
-    seq: u32,
-    type: MessageType,
-
     threadIds: ?[]const usize,
 };
 
 pub const TerminateThreadsResponse = struct {
-    seq: u32,
+    seq: usize,
     type: MessageType,
-    request_seq: u32,
+    request_seq: usize,
     success: bool,
 };
 
 pub const ModulesRequest = struct {
-    seq: u32,
+    seq: usize,
     type: MessageType,
     command: String,
     // command: 'modules',
@@ -989,51 +865,33 @@ pub const ModulesRequest = struct {
 };
 
 pub const ModulesArguments = struct {
-    seq: u32,
-    type: MessageType,
-
     startModule: ?usize,
 
     moduleCount: ?usize,
 };
 
 pub const ModulesResponse = struct {
-    seq: u32,
-    type: MessageType,
-    request_seq: u32,
-    success: bool,
-    body: struct {
-        modules: []const Module,
+    modules: []const Module,
 
-        totalModules: ?usize,
-    },
+    totalModules: ?usize,
 };
 
 pub const LoadedSourcesRequest = struct {
-    seq: u32,
+    seq: usize,
     type: MessageType,
     command: String,
     // command: 'loadedSources',
     arguments: ?LoadedSourcesArguments,
 };
 
-pub const LoadedSourcesArguments = struct {
-    seq: u32,
-    type: MessageType,
-};
+pub const LoadedSourcesArguments = struct {};
 
 pub const LoadedSourcesResponse = struct {
-    seq: u32,
-    type: MessageType,
-    request_seq: u32,
-    success: bool,
-    body: struct {
-        paths: []const String,
-    },
+    paths: []const String,
 };
 
 pub const EvaluateRequest = struct {
-    seq: u32,
+    seq: usize,
     type: MessageType,
     command: String,
     // command: 'evaluate',
@@ -1041,9 +899,6 @@ pub const EvaluateRequest = struct {
 };
 
 pub const EvaluateArguments = struct {
-    seq: u32,
-    type: MessageType,
-
     expression: String,
 
     frameId: ?usize,
@@ -1054,29 +909,30 @@ pub const EvaluateArguments = struct {
 };
 
 pub const EvaluateResponse = struct {
-    seq: u32,
-    type: MessageType,
-    request_seq: u32,
-    success: bool,
-    body: struct {
-        result: String,
-
-        type: ?String,
-
-        presentationHint: ?VariablePresentationHint,
-
-        variablesReference: usize,
-
-        namedVariables: ?usize,
-
-        indexedVariables: ?usize,
-
-        memoryReference: ?String,
-    },
+    result: String,
+    /// The type of the evaluate result.
+    /// This attribute should only be returned by a debug adapter if the corresponding capability `supportsVariableType` is true.
+    type: ?String = null,
+    /// Properties of an evaluate result that can be used to determine how to render the result in the UI.
+    presentationHint: ?VariablePresentationHint = null,
+    ///  If `variablesReference` is > 0, the evaluate result is structured and its children can be retrieved by passing `variablesReference` to the `variables` request as long as execution remains suspended. See 'Lifetime of Object References' in the Overview section for details.
+    variablesReference: usize = 0,
+    /// The number of named child variables.
+    /// The client can use this information to present the variables in a paged UI and fetch them in chunks.
+    /// The value should be less than or equal to 2147483647 (2^31-1).
+    namedVariables: ?usize = null,
+    /// The number of indexed child variables.
+    /// The client can use this information to present the variables in a paged UI and fetch them in chunks.
+    /// The value should be less than or equal to 2147483647 (2^31-1).
+    indexedVariables: ?usize = null,
+    /// A memory reference to a location appropriate for this result.
+    /// For pointer type eval results, this is generally a reference to the memory address contained in the pointer.
+    /// This attribute may be returned by a debug adapter if corresponding capability `supportsMemoryReferences` is true.
+    memoryReference: ?String = null,
 };
 
 pub const SetExpressionRequest = struct {
-    seq: u32,
+    seq: usize,
     type: MessageType,
     command: String,
     // command: 'setExpression',
@@ -1084,9 +940,6 @@ pub const SetExpressionRequest = struct {
 };
 
 pub const SetExpressionArguments = struct {
-    seq: u32,
-    type: MessageType,
-
     expression: String,
 
     value: String,
@@ -1097,28 +950,22 @@ pub const SetExpressionArguments = struct {
 };
 
 pub const SetExpressionResponse = struct {
-    seq: u32,
-    type: MessageType,
-    request_seq: u32,
-    success: bool,
-    body: struct {
-        value: String,
+    value: String,
 
-        type: ?String,
+    type: ?String,
 
-        presentationHint: ?VariablePresentationHint,
+    presentationHint: ?VariablePresentationHint,
 
-        variablesReference: ?usize,
+    variablesReference: ?usize,
 
-        namedVariables: ?usize,
+    namedVariables: ?usize,
 
-        indexedVariables: ?usize,
+    indexedVariables: ?usize,
 
-        memoryReference: ?String,
-    },
+    memoryReference: ?String,
 };
 pub const StepInTargetsRequest = struct {
-    seq: u32,
+    seq: usize,
     type: MessageType,
     // command: 'stepInTargets',
     arguments: StepInTargetsArguments,
@@ -1132,18 +979,12 @@ pub const StepInTargetsArguments = struct {
 
 ///  Response to `stepInTargets` request.
 pub const StepInTargetsResponse = struct {
-    seq: u32,
-    type: MessageType,
-    request_seq: u32,
-    success: bool,
-    body: struct {
-        ///  The possible step-in targets of the specified source location.
-        targets: []const StepInTarget,
-    },
+    ///  The possible step-in targets of the specified source location.
+    targets: []const StepInTarget,
 };
 
 pub const GotoTargetsRequest = struct {
-    seq: u32,
+    seq: usize,
     type: MessageType,
     // command: 'gotoTargets',
     arguments: GotoTargetsArguments,
@@ -1161,18 +1002,12 @@ pub const GotoTargetsArguments = struct {
 
 ///  Response to `gotoTargets` request.
 pub const GotoTargetsResponse = struct {
-    seq: u32,
-    type: MessageType,
-    request_seq: u32,
-    success: bool,
-    body: struct {
-        ///  The possible goto targets of the specified location.
-        targets: []const GotoTarget,
-    },
+    ///  The possible goto targets of the specified location.
+    targets: []const GotoTarget,
 };
 
 pub const CompletionsRequest = struct {
-    seq: u32,
+    seq: usize,
     type: MessageType,
     // command: 'completions',
     arguments: CompletionsArguments,
@@ -1192,18 +1027,12 @@ pub const CompletionsArguments = struct {
 
 ///  Response to `completions` request.
 pub const CompletionsResponse = struct {
-    seq: u32,
-    type: MessageType,
-    request_seq: u32,
-    success: bool,
-    body: struct {
-        ///  The possible completions for .
-        targets: []const CompletionItem,
-    },
+    ///  The possible completions for .
+    targets: []const CompletionItem,
 };
 
 pub const ExceptionInfoRequest = struct {
-    seq: u32,
+    seq: usize,
     type: MessageType,
     // command: 'exceptionInfo',
     arguments: ExceptionInfoArguments,
@@ -1217,24 +1046,18 @@ pub const ExceptionInfoArguments = struct {
 
 ///  Response to `exceptionInfo` request.
 pub const ExceptionInfoResponse = struct {
-    seq: u32,
-    type: MessageType,
-    request_seq: u32,
-    success: bool,
-    body: struct {
-        ///  ID of the exception that was thrown.
-        exceptionId: String,
-        ///  Descriptive text for the exception.
-        description: ?String,
-        ///  Mode that caused the exception notification to be raised.
-        breakMode: ExceptionBreakMode,
-        ///  Detailed information about the exception.
-        details: ?ExceptionDetails,
-    },
+    ///  ID of the exception that was thrown.
+    exceptionId: String,
+    ///  Descriptive text for the exception.
+    description: ?String,
+    ///  Mode that caused the exception notification to be raised.
+    breakMode: ExceptionBreakMode,
+    ///  Detailed information about the exception.
+    details: ?ExceptionDetails,
 };
 
 pub const ReadMemoryRequest = struct {
-    seq: u32,
+    seq: usize,
     type: MessageType,
     // command: 'readMemory',
     arguments: ReadMemoryArguments,
@@ -1252,21 +1075,15 @@ pub const ReadMemoryArguments = struct {
 
 ///  Response to `readMemory` request.
 pub const ReadMemoryResponse = struct {
-    seq: u32,
-    type: MessageType,
-    request_seq: u32,
-    success: bool,
-    body: struct {
-        address: String,
+    address: String,
 
-        unreadableBytes: ?usize,
-        ///  The bytes read from memory, encoded using base64. If the decoded length of `data` is less than the requested `count` in the original `readMemory` request, and `unreadableBytes` is zero or omitted, then the client should assume it's reached the end of readable memory.
-        data: ?String,
-    },
+    unreadableBytes: ?usize,
+    ///  The bytes read from memory, encoded using base64. If the decoded length of `data` is less than the requested `count` in the original `readMemory` request, and `unreadableBytes` is zero or omitted, then the client should assume it's reached the end of readable memory.
+    data: ?String,
 };
 
 pub const WriteMemoryRequest = struct {
-    seq: u32,
+    seq: usize,
     type: MessageType,
     // command: 'writeMemory',
     arguments: WriteMemoryArguments,
@@ -1286,16 +1103,10 @@ pub const WriteMemoryArguments = struct {
 
 ///  Response to `writeMemory` request.
 pub const WriteMemoryResponse = struct {
-    seq: u32,
-    type: MessageType,
-    request_seq: u32,
-    success: bool,
-    body: struct {
-        ///  Property that should be returned when `allowPartial` is true to indicate the offset of the first byte of data successfully written. Can be negative.
-        offset: ?usize,
-        ///  Property that should be returned when `allowPartial` is true to indicate the usize of bytes starting from address that were successfully written.
-        bytesWritten: ?usize,
-    },
+    ///  Property that should be returned when `allowPartial` is true to indicate the offset of the first byte of data successfully written. Can be negative.
+    offset: ?usize,
+    ///  Property that should be returned when `allowPartial` is true to indicate the usize of bytes starting from address that were successfully written.
+    bytesWritten: ?usize,
 };
 
 pub const ExceptionBreakpointsFilter = struct {
@@ -1329,18 +1140,18 @@ pub const StackFrame = struct {
     ///  Start position of the range covered by the stack frame. It is measured in UTF-16 code units and the client capability `columnsStartAt1` determines whether it is 0- or 1-based. If attribute `source` is missing or doesn't exist, `column` is 0 and should be ignored by the client.
     column: usize,
     ///  The end line of the range covered by the stack frame.
-    endLine: ?usize,
+    endLine: ?usize = null,
     ///  End position of the range covered by the stack frame. It is measured in UTF-16 code units and the client capability `columnsStartAt1` determines whether it is 0- or 1-based.
-    endColumn: ?usize,
+    endColumn: ?usize = null,
     ///  Indicates whether this frame can be restarted with the `restart` request. Clients should only use this if the debug adapter supports the `restart` request and the corresponding capability `supportsRestartRequest` is true. If a debug adapter has this capability, then `canRestart` defaults to `true` if the property is absent.
-    canRestart: ?bool,
+    canRestart: ?bool = null,
     ///  A memory reference for the current instruction pointer in this frame.
-    instructionPointerReference: ?String,
+    instructionPointerReference: ?String = null,
     ///  The module associated with this frame, if any.
     /// usize | String
-    moduleId: ?String,
+    moduleId: ?String = null,
     /// 'normal' | 'label' | 'subtle'
-    presentationHint: ?String,
+    presentationHint: ?String = null,
 };
 
 ///  A `Scope` is a named container for variables. Optionally a scope can map to a source or a range within a source.
@@ -1515,7 +1326,7 @@ pub const StackFrameFormat = struct {
     parameterNames: ?bool,
     ///  Displays the values of parameters for the stack frame.
     parameterValues: ?bool,
-    ///  Displays the line usize of the stack frame.
+    ///  Displays the line number of the stack frame.
     line: ?bool,
     ///  Displays the module of the stack frame.
     module: ?bool,

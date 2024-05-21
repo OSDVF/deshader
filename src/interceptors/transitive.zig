@@ -13,6 +13,7 @@ const String = []const u8;
 //
 // Graphics API interception with trampoline generators
 //
+// TODO: can use ELF filters https://github.com/aritger/libgl-elf-tricks-demo on Linux or https://github.com/magnusstubman/dll-exports  #pragma comment(linker, "/export:func=target_module.func,@100") on Windows to avoid trampolines
 pub const TransitiveSymbols = struct {
     const transitive_procs = @import("transitive_exports");
 
@@ -141,7 +142,7 @@ pub const TransitiveSymbols = struct {
             };
             const with_null = try common.allocator.dupeZ(u8, symbol_name);
             defer common.allocator.free(with_null);
-            if(lib != null) {
+            if (lib != null) {
                 const symbol_target = lib.?.lookup(gl.FunctionPointer, with_null);
                 if (symbol_target != null) {
                     @field(transitive_procs, symbol_name) = symbol_target.?;
