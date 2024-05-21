@@ -67,20 +67,20 @@ pub const DependenciesStep = struct {
         var sub_steps = std.ArrayList(SubStep).init(step.owner.allocator);
         defer sub_steps.deinit();
 
-        const env_map: *std.process.EnvMap = try self.step.owner.allocator.create(std.process.EnvMap);
-        env_map.* = try std.process.getEnvMap(step.owner.allocator);
+        var env_map = try std.process.getEnvMap(step.owner.allocator);
+        defer env_map.deinit();
         try env_map.put("NOTEST", "y");
 
         progressNode.setEstimatedTotalItems(6);
         progressNode.activate();
 
         // Init
-        try sub_steps.append(.{ .name = "Building OpenGL definitions", .args = &.{ "make", "all" }, .env_map = env_map, .cwd = "./libs/zig-opengl" });
+        try sub_steps.append(.{ .name = "Building OpenGL definitions", .args = &.{ "make", "all" }, .env_map = &env_map, .cwd = "./libs/zig-opengl" });
         const bunInstallCmd = if (builtin.os.tag == .windows) [_]String{ "wsl", "--exec", "bash", "-c", "~/.bun/bin/bun install --frozen-lockfile" } else [_]String{ "bun", "install", "--frozen-lockfile" };
         const deshaderVsCodeExt = "editor/deshader-vscode";
-        try sub_steps.append(.{ .name = "Installing node.js dependencies by Bun for deshader-vscode", .args = &bunInstallCmd, .env_map = env_map, .cwd = deshaderVsCodeExt });
-        try sub_steps.append(.{ .name = "Installing node.js dependencies by Bun for editor", .args = &bunInstallCmd ++ &[_]String{"--production"}, .env_map = env_map, .cwd = "editor" });
-        try sub_steps.append(.{ .name = "Compiling deshader-vscode extension", .args = if (builtin.os.tag == .windows) &.{ "wsl", "--exec", "bash", "-c", "~/.bun/bin/bun compile web" } else &.{ "bun", "compile-web" }, .env_map = env_map, .cwd = deshaderVsCodeExt });
+        try sub_steps.append(.{ .name = "Installing node.js dependencies by Bun for deshader-vscode", .args = &bunInstallCmd, .env_map = &env_map, .cwd = deshaderVsCodeExt });
+        try sub_steps.append(.{ .name = "Installing node.js dependencies by Bun for editor", .args = &bunInstallCmd ++ &[_]String{"--production"}, .env_map = &env_map, .cwd = "editor" });
+        try sub_steps.append(.{ .name = "Compiling deshader-vscode extension", .args = if (builtin.os.tag == .windows) &.{ "wsl", "--exec", "bash", "-c", "~/.bun/bin/bun compile web" } else &.{ "bun", "compile-web" }, .env_map = &env_map, .cwd = deshaderVsCodeExt });
 
         if (self.vcpgk) {
             const triplet = try std.mem.concat(step.owner.allocator, u8, &.{ (if (self.target.cpu.arch == .x86) "x86" else "x64") ++ "-", switch (self.target.os.tag) {

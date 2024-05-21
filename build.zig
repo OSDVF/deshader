@@ -432,6 +432,12 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
         .target = target,
     });
+    runner_exe.root_module.addAnonymousImport("common", .{
+        .root_source_file = b.path("src/common.zig"),
+        .imports = &.{
+            .{ .name = "options", .module = options.createModule() },
+        },
+    });
     const runner_install = b.addInstallArtifact(runner_exe, .{});
     _ = b.step("runner", "Utility to run any application with Deshader").dependOn(&runner_install.step);
 

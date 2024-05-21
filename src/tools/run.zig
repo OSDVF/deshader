@@ -9,7 +9,7 @@ const c = @cImport({
         @cInclude("libloaderapi.h");
     } else @cInclude("dlfcn.h");
 });
-const common = @import("../common.zig");
+const common = @import("common");
 
 const RunLogger = std.log.scoped(.DeshaderRun);
 var specified_libs_dir: ?String = null;
@@ -247,7 +247,7 @@ fn run(target_argv: []const String, working_dir: ?String, env: ?std.StringHashMa
     if (builtin.os.tag == .windows) {
         deshader_or_dir_name = try std.unicode.utf16leToUtf8Alloc(common.allocator, try std.os.windows.GetModuleFileNameW(deshader_lib.dll, @ptrCast(deshader_path_buffer), std.fs.MAX_PATH_BYTES - 1));
     } else {
-        if (c.dlinfo(deshader_lib.handle, c.RTLD_DI_ORIGIN, @ptrCast(deshader_path_buffer)) != 0) {
+        if (c.dlinfo(deshader_lib.inner.handle, c.RTLD_DI_ORIGIN, @ptrCast(deshader_path_buffer)) != 0) {
             const err = c.dlerror();
             RunLogger.err("Failed to get deshader library path: {s}", .{err});
             return error.DeshaderPathResolutionFailed;
