@@ -108,6 +108,7 @@ pub const DependenciesStep = struct {
     }
 
     pub fn vcpkg(self: *DependenciesStep) !void {
+        // TODO overlay to empty port when system library is available
         const step = self.step;
         const triplet = try std.mem.concat(step.owner.allocator, u8, &.{ (if (self.target.cpu.arch == .x86) "x86" else "x64") ++ "-", switch (self.target.os.tag) {
             .windows => "windows",

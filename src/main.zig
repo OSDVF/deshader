@@ -5,6 +5,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const options = @import("options");
+const c = @cImport(@cInclude("wolfssl/ssl.h"));
 const positron = @import("positron");
 const gl = @import("gl");
 const vulkan = @import("vulkan");
@@ -349,6 +350,8 @@ fn runOnLoad() !void {
 }
 
 fn finalize() callconv(.C) void {
+    DeshaderLog.info("Unloading Deshader library", .{});
+    c.wolfSSL_CTX_free(null);
     defer common.deinit();
     if (common.command_listener != null) {
         common.command_listener.?.stop();

@@ -77,9 +77,11 @@ pub fn build(b: *std.Build) !void {
     const option_linkage = b.option(Linkage, "linkage", "Select linkage type for deshader library. Cannot be combined with -Dofmt.") orelse Linkage.Dynamic;
     const option_log_intercept = b.option(bool, "logIntercept", "Log intercepted GL and VK procedure list to stdout") orelse false;
     const option_memory_frames = b.option(u32, "memoryFrames", "Number of frames in memory leak backtrace") orelse 7;
+    const options_traces = b.option(bool, "traces", "Enable traces for debugging (even in release mode)") orelse false;
 
     const deshader_lib: *std.Build.Step.Compile = if (option_linkage == .Static) b.addStaticLibrary(deshaderCompileOptions) else b.addSharedLibrary(deshaderCompileOptions);
     deshader_lib.defineCMacro("_GNU_SOURCE", null); // To access dl_iterate_phdr
+    deshader_lib.root_module.error_tracing = options_traces;
     const deshader_lib_name = try std.mem.concat(b.allocator, u8, &.{ if (targetTarget == .windows) "" else "lib", deshader_lib.name, targetTarget.dynamicLibSuffix() });
     const deshader_lib_cmd = b.step("deshader", "Install deshader library");
     switch (optionOfmt) {
@@ -119,7 +121,7 @@ pub fn build(b: *std.Build) !void {
     deshader_lib.root_module.addImport("args", args_mod);
 
     var deshader_dependent_dlls = std.ArrayList(String).init(b.allocator);
-    try addVcpkgInstalledPaths(deshader_lib);
+
     // WolfSSL
     const system_wolf = try systemHasLib(deshader_lib, native_libs_location, "wolfssl");
     if (try linkWolfSSL(deshader_lib, deshader_lib_install, !system_wolf)) |lib_name| {
@@ -264,8 +266,9 @@ pub fn build(b: *std.Build) !void {
 
     // Positron
     const positron = PositronSdk.getPackage(b, "positron");
+    const serve = b.modules.get("serve").?;
     deshader_lib.root_module.addImport("positron", positron);
-    deshader_lib.root_module.addImport("serve", b.modules.get("serve").?);
+    deshader_lib.root_module.addImport("serve", serve);
     if (option_editor) {
         PositronSdk.linkPositron(deshader_lib, null, option_linkage == .Static);
         if (targetTarget == .windows) {
@@ -343,6 +346,8 @@ pub fn build(b: *std.Build) !void {
 
         const system_libs_available = system_glslang and system_wolf and system_nfd;
         if (!system_libs_available) {
+            try addVcpkgInstalledPaths(b, deshader_lib);
+            try addVcpkgInstalledPaths(b, serve); // add WolfSSL from VCPKG to serve
             deshader_lib.step.dependOn(&vcpkg_step.step);
         } else {
             log.info("All required libraries are available on system, skipping installing vcpkg dependencies", .{});
@@ -531,7 +536,7 @@ pub fn build(b: *std.Build) !void {
 
             // GLFW
             const example_glfw = try SubExampleStep.create(example_bootstraper, sub_examples.glfw, "examples/" ++ sub_examples.glfw ++ ".zig", exampleModules ++ .{.{ .name = "mach-glfw", .module = mach_glfw_dep.module("mach-glfw") }});
-            try addVcpkgInstalledPaths(example_glfw.compile);
+            try addVcpkgInstalledPaths(b, example_glfw.compile);
 
             // Editor
             const example_editor = try SubExampleStep.create(example_bootstraper, sub_examples.editor, "examples/" ++ sub_examples.editor ++ ".zig", exampleModules);
@@ -717,12 +722,13 @@ fn vcpkgTriplet(t: std.Target.Os.Tag) String {
 }
 
 /// assuming vcpkg is called as by Visual Studio or `vcpkg install --triplet x64-windows-cross --x-install-root=build/vcpkg_installed` or inside DependenciesStep
-fn addVcpkgInstalledPaths(c: *std.Build.Step.Compile) !void {
-    const debug = if (c.root_module.optimize == .Debug) "debug" else "";
-    const b = c.step.owner;
-    c.addIncludePath(b.path(b.pathJoin(&.{ "build", "vcpkg_installed", vcpkgTriplet(c.rootModuleTarget().os.tag), "include" })));
-    c.addLibraryPath(b.path(b.pathJoin(&.{ "build", "vcpkg_installed", vcpkgTriplet(c.rootModuleTarget().os.tag), debug, "bin" })));
-    c.addLibraryPath(b.path(b.pathJoin(&.{ "build", "vcpkg_installed", vcpkgTriplet(c.rootModuleTarget().os.tag), debug, "lib" })));
+fn addVcpkgInstalledPaths(b: *std.Build, c: anytype) !void {
+    const module = if (@hasField(@TypeOf(c.*), "root_module")) c.root_module else c;
+    const debug = if (module.optimize == .Debug) "debug" else "";
+    const target = if (module.resolved_target) |t| t.result else builtin.target;
+    c.addIncludePath(b.path(b.pathJoin(&.{ "build", "vcpkg_installed", vcpkgTriplet(target.os.tag), "include" })));
+    c.addLibraryPath(b.path(b.pathJoin(&.{ "build", "vcpkg_installed", vcpkgTriplet(target.os.tag), debug, "bin" })));
+    c.addLibraryPath(b.path(b.pathJoin(&.{ "build", "vcpkg_installed", vcpkgTriplet(target.os.tag), debug, "lib" })));
 }
 
 fn installVcpkgLibrary(i: *std.Build.Step.InstallArtifact, name: String) !void {
@@ -757,7 +763,7 @@ fn installVcpkgLibrary(i: *std.Build.Step.InstallArtifact, name: String) !void {
 
 fn linkGlew(i: *std.Build.Step.InstallArtifact, target: std.Target.Os.Tag) !void {
     if (target == .windows) {
-        try addVcpkgInstalledPaths(i.artifact);
+        try addVcpkgInstalledPaths(i.step.owner, i.artifact);
         const glew = if (builtin.os.tag == .windows) "glew32" else "libglew32";
         i.artifact.linkSystemLibrary(glew); // VCPKG on x64-wndows-cross generates bin/glew32.dll but lib/libglew32.dll.a
         try installVcpkgLibrary(i, "glew32");
