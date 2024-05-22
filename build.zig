@@ -121,19 +121,26 @@ pub fn build(b: *std.Build) !void {
     var deshader_dependent_dlls = std.ArrayList(String).init(b.allocator);
     try addVcpkgInstalledPaths(deshader_lib);
     // WolfSSL
-    const system_wolf = try systemHasLib(b, target.result, native_libs_location, "wolfssl");
+    const system_wolf = try systemHasLib(deshader_lib, native_libs_location, "wolfssl");
     if (try linkWolfSSL(deshader_lib, deshader_lib_install, !system_wolf)) |lib_name| {
         const with_ext = try std.mem.concat(b.allocator, u8, &.{ lib_name, targetTarget.dynamicLibSuffix() });
         try deshader_dependent_dlls.append(with_ext);
     }
     // Native file dialogs library
-    const system_nfd = try systemHasLib(b, target.result, native_libs_location, "nfd");
+    if (targetTarget == .linux) {
+        // sometimes located here on Linux
+        deshader_lib.addLibraryPath(.{ .path = "/usr/lib/nfd/" });
+        deshader_lib.addIncludePath(.{ .path = "/usr/include/nfd/" });
+        deshader_lib.addLibraryPath(.{ .path = "/usr/local/lib/nfd/" });
+        deshader_lib.addIncludePath(.{ .path = "/usr/local/include/nfd/" });
+    }
+    const system_nfd = try systemHasLib(deshader_lib, native_libs_location, "nfd");
     deshader_lib.linkSystemLibrary(if (optimize == .Debug and !system_nfd) "nfd_d" else "nfd"); //Native file dialog library from VCPKG
 
     // GLSLang
     var system_glslang = true;
     inline for (.{ "glslang", "glslang-default-resource-limits", "MachineIndependent", "GenericCodeGen" }) |glslang| {
-        system_glslang = system_glslang and try systemHasLib(b, target.result, native_libs_location, glslang);
+        system_glslang = system_glslang and try systemHasLib(deshader_lib, native_libs_location, glslang);
 
         deshader_lib.linkSystemLibrary(glslang);
         if (!system_glslang) {
@@ -320,7 +327,12 @@ pub fn build(b: *std.Build) !void {
 
         editor_cmd.dependOn(&editor_step.step);
         if (option_editor) {
-            deshader_lib.step.dependOn(&editor_step.step);
+            if (optimize == .Debug) {
+                // permit parallel building of editor and deshader, because editor is then not embedded
+                deshader_lib_cmd.dependOn(&editor_step.step);
+            } else {
+                deshader_lib.step.dependOn(&editor_step.step);
+            }
         }
 
         const vcpkg_cmd = b.step("vcpkg", "Download and build dependencies managed by vcpkg");
@@ -332,6 +344,8 @@ pub fn build(b: *std.Build) !void {
         const system_libs_available = system_glslang and system_wolf and system_nfd;
         if (!system_libs_available) {
             deshader_lib.step.dependOn(&vcpkg_step.step);
+        } else {
+            log.info("All required libraries are available on system, skipping installing vcpkg dependencies", .{});
         }
 
         //
@@ -779,16 +793,17 @@ fn linkWolfSSL(compile: *std.Build.Step.Compile, install: *std.Build.Step.Instal
     return wolfssl_lib_name;
 }
 
-fn systemHasLib(b: *std.Build, target: std.Target, native_libs_location: String, lib: String) !bool {
+/// Search for all lib directories
+fn systemHasLib(c: *std.Build.Step.Compile, native_libs_location: String, lib: String) !bool {
+    const b: *std.Build = c.step.owner;
+    const target: std.Target = c.rootModuleTarget();
+
     const libname = try std.mem.concat(b.allocator, u8, &.{ target.libPrefix(), lib });
     defer b.allocator.free(libname);
     if (builtin.os.tag == target.os.tag and builtin.cpu.arch == target.cpu.arch) { // native
-        var arena = std.heap.ArenaAllocator.init(b.allocator);
-        defer arena.deinit();
-        const n_paths = try std.zig.system.NativePaths.detect(arena.allocator(), target);
-        for (n_paths.lib_dirs.items) |lib_dir| {
-            if (try fileWithPrefixExists(b.allocator, lib_dir, libname)) |full_name| {
-                log.info("Found system library {s}", .{full_name});
+        for (c.root_module.lib_paths.items) |lib_dir| {
+            if (try fileWithPrefixExists(b.allocator, lib_dir.getPath(b), libname)) |full_name| {
+                log.info("Found library {s}", .{full_name});
                 b.allocator.free(full_name);
                 return true;
             }

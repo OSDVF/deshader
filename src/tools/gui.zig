@@ -103,7 +103,7 @@ pub fn createEditorProvider(command_listener: ?*const commands.CommandListener) 
         const mime_type = resolveMime(file);
 
         if (builtin.mode != .Debug and try ctregex.search("map|ts", .{}, fileExt) != null) {
-            continue; // Do not include sourcemaps in release builds
+            comptime continue; // Do not include sourcemaps in release builds
         }
 
         const f_address = file[options.editorDir.len..];
@@ -122,9 +122,9 @@ pub fn createEditorProvider(command_listener: ?*const commands.CommandListener) 
                         defer handle.close();
                         decompressed_data = try handle.readToEndAlloc(provider.allocator, 10 * 1024 * 1024);
                     } else {
-                        const reader = std.io.fixedBufferStream(compressed_or_content).reader();
-                        var decompressor = try std.compress.zlib.decompressor(reader).init(@TypeOf(reader));
-                        defer decompressor.deinit();
+                        var stream = std.io.fixedBufferStream(compressed_or_content);
+                        const reader = stream.reader();
+                        var decompressor = std.compress.zlib.decompressor(reader);
                         var decompressed = decompressor.reader();
                         decompressed_data = try decompressed.readAllAlloc(provider.allocator, 10 * 1024 * 1024);
                     }

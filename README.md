@@ -187,7 +187,7 @@ Name           | Values                        | Description
 - Add `--release` to `zig build` commands
     - `--release=small` will disable debug and info meassages
     - `--release=safe` will will enable info meassages
-    - `--release=off` (default) will include debug, info, warning and error meassages
+    - `--release=off` (default) will include debug, info, warning and error meassages. **Editor GUI will not be embedded into Deshader but loaded from the source tree at runtime**
 
 ## Frequently Seen Errors
 - Cannot compile
