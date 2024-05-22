@@ -90,7 +90,7 @@ pub fn createEditorProvider(command_listener: ?*const commands.CommandListener) 
     }
     const dll_path = if (builtin.mode == .Debug) try common.selfDllPathAlloc(provider.allocator, "");
     defer if (builtin.mode == .Debug) provider.allocator.free(dll_path);
-    var dll_dir = if (builtin.mode == .Debug) if (std.fs.path.dirname(dll_path)) |d| try std.fs.cwd().openDir(d, .{}) else null else null;
+    var dll_dir: ?std.fs.Dir = if (builtin.mode == .Debug) if (std.fs.path.dirname(dll_path)) |d| try std.fs.cwd().openDir(d, .{}) else null else null;
     defer if (dll_dir) |*d| d.close();
     if (builtin.mode == .Debug) {
         // Let the provider read the files at runtime in debug mode

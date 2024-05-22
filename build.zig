@@ -21,7 +21,13 @@ fn openIterableDir(path: String) std.fs.File.OpenError!if (@hasDecl(std.fs, "ope
 
 pub fn build(b: *std.Build) !void {
     var target = b.standardTargetOptions(.{});
-    const optimize = b.standardOptimizeOption(.{});
+    const optimize: std.builtin.OptimizeMode = switch (b.release_mode) {
+        .any => .ReleaseSafe,
+        .fast => .ReleaseFast,
+        .safe => .ReleaseSafe,
+        .small => .ReleaseSmall,
+        .off => .Debug,
+    };
     const targetTarget = target.result.os.tag;
     const GlLibNames: []const String = switch (targetTarget) {
         .windows => &[_]String{"opengl32.dll"},
@@ -69,7 +75,7 @@ pub fn build(b: *std.Build) !void {
     const option_linkage = b.option(Linkage, "linkage", "Select linkage type for deshader library. Cannot be combined with -Dofmt.") orelse Linkage.Dynamic;
     const option_log_intercept = b.option(bool, "logIntercept", "Log intercepted GL and VK procedure list to stdout") orelse false;
     const option_memory_frames = b.option(u32, "memoryFrames", "Number of frames in memory leak backtrace") orelse 7;
-    const option_wolf = b.option(bool, "wolfSSL", "Link dynamically WolfSSL available on this system or vcpkg_installed (produces smaller binaries)") orelse false;
+    const option_wolf_system = b.option(bool, "wolfSSL", "Link dynamically WolfSSL available on this system instead of from vcpkg") orelse false;
 
     const deshader_lib: *std.Build.Step.Compile = if (option_linkage == .Static) b.addStaticLibrary(deshaderCompileOptions) else b.addSharedLibrary(deshaderCompileOptions);
     deshader_lib.defineCMacro("_GNU_SOURCE", null); // To access dl_iterate_phdr
@@ -114,7 +120,7 @@ pub fn build(b: *std.Build) !void {
     var deshader_dependent_dlls = std.ArrayList(String).init(b.allocator);
     try addVcpkgInstalledPaths(deshader_lib);
     // WolfSSL
-    if (try linkWolfSSL(deshader_lib, deshader_lib_install, option_wolf)) |lib_name| {
+    if (try linkWolfSSL(deshader_lib, deshader_lib_install, !option_wolf_system)) |lib_name| {
         const with_ext = try std.mem.concat(b.allocator, u8, &.{ lib_name, targetTarget.dynamicLibSuffix() });
         try deshader_dependent_dlls.append(with_ext);
     }
@@ -298,9 +304,11 @@ pub fn build(b: *std.Build) !void {
         }
 
         // Build dependencies
-        const dependencies_cmd = b.step("dependencies", "Bootstrap building nested deshader components and dependencies");
+        b.top_level_steps.get("install").?.description = "Download dependencies managed by Zig";
+
+        const dependencies_cmd = b.step("dependencies", "Bootstrap building internal Deshader components and dependencies");
         var dependencies_step: *DependenciesStep = try b.allocator.create(DependenciesStep);
-        dependencies_step.* = DependenciesStep.init(b, target.result, option_wolf or targetTarget == .windows or noSystemGLSLang); // If wolfSSL is meant to be linked dynamically, it must be built first
+        dependencies_step.* = DependenciesStep.init(b, target.result, !option_wolf_system or targetTarget == .windows or noSystemGLSLang); // If wolfSSL is meant to be linked dynamically, it must be built first
         dependencies_cmd.dependOn(&dependencies_step.step);
         if (option_dependencies) {
             deshader_lib.step.dependOn(&dependencies_step.step);
@@ -439,7 +447,7 @@ pub fn build(b: *std.Build) !void {
         },
     });
     const runner_install = b.addInstallArtifact(runner_exe, .{});
-    _ = b.step("runner", "Utility to run any application with Deshader").dependOn(&runner_install.step);
+    _ = b.step("runner", "Build Deshader Runner - a utility to run any application with Deshader").dependOn(&runner_install.step);
 
     const runner_options = b.addOptions();
     runner_options.addOption(String, "deshaderLibName", deshader_lib_name);
@@ -750,20 +758,14 @@ fn winepath(alloc: std.mem.Allocator, path: String, toWindows: bool) !String {
 }
 
 fn linkWolfSSL(compile: *std.Build.Step.Compile, install: *std.Build.Step.InstallArtifact, from_vcpkg: bool) !?String {
-    var wolfssl: *std.Build.Step.Compile = undefined;
     const os = compile.rootModuleTarget().os.tag;
+    const wolfssl_lib_name = if (os == .windows and builtin.os.tag != .windows) "libwolfssl" else "wolfssl";
+    compile.linkSystemLibrary(wolfssl_lib_name);
     if (from_vcpkg) {
-        const wolfssl_lib_name = if (os == .windows and builtin.os.tag != .windows) "libwolfssl" else "wolfssl";
-        compile.linkSystemLibrary(wolfssl_lib_name);
         try installVcpkgLibrary(install, wolfssl_lib_name); // This really depends on host build system
-        if (os == .windows) {
-            compile.defineCMacro("SINGLE_THREADED", null); // To workaround missing pthread.h
-        }
-        return wolfssl_lib_name;
-    } else {
-        wolfssl = ZigServe.createWolfSSL(compile.step.owner, std.Target.Query.fromTarget(compile.rootModuleTarget()), compile.root_module.optimize orelse .ReleaseSafe);
-        compile.linkLibrary(wolfssl);
-        compile.addIncludePath(compile.step.owner.path(ZigServe.sdkPath(compile.step.owner, "/vendor/wolfssl/")));
     }
-    return null;
+    if (os == .windows) {
+        compile.defineCMacro("SINGLE_THREADED", null); // To workaround missing pthread.h
+    }
+    return wolfssl_lib_name;
 }

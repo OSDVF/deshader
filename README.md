@@ -172,10 +172,10 @@ Name           | Values                        | Description
 `glAddLoader`  | any string                    | Specify a single additional function name that will be exported and intercepted
  
 ### Production build
-- Add `-Doptimize` to `zig build` commands
-    - `-Doptimize=ReleaseSmall` will disable debug and info meassages
-    - `-Doptimize=ReleaseSafe` will will enable info meassages
-    - `-Doptimize=Debug` (default) will include debug, info, warning and error meassages
+- Add `--release` to `zig build` commands
+    - `--release=small` will disable debug and info meassages
+    - `--release=safe` will will enable info meassages
+    - `--release=off` (default) will include debug, info, warning and error meassages
 
 ## Frequently Seen Errors
 - Cannot compile
