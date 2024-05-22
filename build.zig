@@ -79,7 +79,7 @@ pub fn build(b: *std.Build) !void {
     const option_memory_frames = b.option(u32, "memoryFrames", "Number of frames in memory leak backtrace") orelse 7;
     const options_traces = b.option(bool, "traces", "Enable traces for debugging (even in release mode)")
     // important! keep tracing support synced for Deshader Library and Runner, because there are casts from error aware functions to anyopaque
-    orelse if (optimize == .Debug) true else false;
+    orelse if (optimize == .Debug or optimize == .ReleaseSafe) true else false;
 
     const deshader_lib: *std.Build.Step.Compile = if (option_linkage == .Static) b.addStaticLibrary(deshaderCompileOptions) else b.addSharedLibrary(deshaderCompileOptions);
     deshader_lib.defineCMacro("_GNU_SOURCE", null); // To access dl_iterate_phdr
@@ -125,12 +125,6 @@ pub fn build(b: *std.Build) !void {
 
     var deshader_dependent_dlls = std.ArrayList(String).init(b.allocator);
 
-    // WolfSSL
-    const system_wolf = try systemHasLib(deshader_lib, native_libs_location, "wolfssl");
-    if (try linkWolfSSL(deshader_lib, deshader_lib_install, !system_wolf)) |lib_name| {
-        const with_ext = try std.mem.concat(b.allocator, u8, &.{ lib_name, targetTarget.dynamicLibSuffix() });
-        try deshader_dependent_dlls.append(with_ext);
-    }
     // Native file dialogs library
     if (targetTarget == .linux) {
         // sometimes located here on Linux
@@ -140,14 +134,14 @@ pub fn build(b: *std.Build) !void {
         deshader_lib.addIncludePath(.{ .path = "/usr/local/include/nfd/" });
     }
     const system_nfd = try systemHasLib(deshader_lib, native_libs_location, "nfd");
-    deshader_lib.linkSystemLibrary(if (optimize == .Debug and !system_nfd) "nfd_d" else "nfd"); //Native file dialog library from VCPKG
+    deshader_lib.linkSystemLibrary2(if (optimize == .Debug and !system_nfd) "nfd_d" else "nfd", .{ .needed = true }); //Native file dialog library from VCPKG
 
     // GLSLang
     var system_glslang = true;
     inline for (.{ "glslang", "glslang-default-resource-limits", "MachineIndependent", "GenericCodeGen" }) |glslang| {
         system_glslang = system_glslang and try systemHasLib(deshader_lib, native_libs_location, glslang);
 
-        deshader_lib.linkSystemLibrary(glslang);
+        deshader_lib.linkSystemLibrary2(glslang, .{ .needed = true });
         if (!system_glslang) {
             try installVcpkgLibrary(deshader_lib_install, glslang);
         }
@@ -278,6 +272,14 @@ pub fn build(b: *std.Build) !void {
             try deshader_dependent_dlls.append("WebView2Loader.dll");
         }
     }
+
+    // WolfSSL - a serve's dependency
+    const system_wolf = try systemHasLib(deshader_lib, native_libs_location, "wolfssl");
+    if (try linkWolfSSL(deshader_lib, deshader_lib_install, !system_wolf)) |lib_name| {
+        const with_ext = try std.mem.concat(b.allocator, u8, &.{ lib_name, targetTarget.dynamicLibSuffix() });
+        try deshader_dependent_dlls.append(with_ext);
+    }
+
     //
     // Steps for building generated and embedded files
     //
@@ -769,11 +771,11 @@ fn linkGlew(i: *std.Build.Step.InstallArtifact, target: std.Target.Os.Tag) !void
     if (target == .windows) {
         try addVcpkgInstalledPaths(i.step.owner, i.artifact);
         const glew = if (builtin.os.tag == .windows) "glew32" else "libglew32";
-        i.artifact.linkSystemLibrary(glew); // VCPKG on x64-wndows-cross generates bin/glew32.dll but lib/libglew32.dll.a
+        i.artifact.linkSystemLibrary2(glew, .{ .needed = true }); // VCPKG on x64-wndows-cross generates bin/glew32.dll but lib/libglew32.dll.a
         try installVcpkgLibrary(i, "glew32");
-        i.artifact.linkSystemLibrary("opengl32");
+        i.artifact.linkSystemLibrary2("opengl32", .{ .needed = true });
     } else {
-        i.artifact.linkSystemLibrary("glew");
+        i.artifact.linkSystemLibrary2("glew", .{ .needed = true });
     }
 }
 
@@ -793,7 +795,7 @@ fn winepath(alloc: std.mem.Allocator, path: String, toWindows: bool) !String {
 fn linkWolfSSL(compile: *std.Build.Step.Compile, install: *std.Build.Step.InstallArtifact, from_vcpkg: bool) !?String {
     const os = compile.rootModuleTarget().os.tag;
     const wolfssl_lib_name = if (os == .windows and builtin.os.tag != .windows) "libwolfssl" else "wolfssl";
-    compile.linkSystemLibrary(wolfssl_lib_name);
+    compile.linkSystemLibrary2(wolfssl_lib_name, .{ .needed = true });
     if (from_vcpkg) {
         try installVcpkgLibrary(install, wolfssl_lib_name); // This really depends on host build system
     }
