@@ -205,7 +205,7 @@ pub const DESHADER_GUI_URL = common.env_prefix ++ "GUI_URL";
 /// Spawns a new thread that runs the editor
 /// This function will block until the editor is ready to be used
 pub fn editorShow(command_listener: ?*const commands.CommandListener) !void {
-    if (!options.embedGUI) {
+    if (!options.editor) {
         DeshaderLog.err("GUI not embedded in this Deshader distribution. Cannot show it.", .{});
         return error.GuiNotEmbedded;
     }

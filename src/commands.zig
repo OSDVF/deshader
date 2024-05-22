@@ -7,7 +7,7 @@ const common = @import("common.zig");
 const logging = @import("log.zig");
 const DeshaderLog = logging.DeshaderLog;
 const options = @import("options");
-const gui = if (options.embedGUI) @import("tools/gui.zig") else null;
+const gui = if (options.editor) @import("tools/gui.zig") else null;
 const storage = @import("services/storage.zig");
 const dap = @import("services/debug.zig");
 const shaders = @import("services/shaders.zig");
@@ -1005,25 +1005,25 @@ pub const CommandListener = struct {
         // Services control commands
         //
         pub fn editorWindowShow() !void {
-            if (options.embedGUI) {
+            if (options.editor) {
                 return gui.editorShow(common.command_listener);
             }
         }
 
         pub fn editorWindowTerminate() !void {
-            if (options.embedGUI) {
+            if (options.editor) {
                 return gui.editorTerminate();
             }
         }
 
         pub fn editorServerStart() !void {
-            if (options.embedGUI) {
+            if (options.editor) {
                 return gui.serverStart(common.command_listener);
             }
         }
 
         pub fn editorServerStop() !void {
-            if (options.embedGUI) {
+            if (options.editor) {
                 return gui.serverStop();
             }
         }

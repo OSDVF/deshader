@@ -6,42 +6,49 @@ const String = []const u8;
 pub const DependenciesStep = struct {
     step: std.Build.Step,
     target: std.Target,
-    vcpgk: bool,
+    sub_steps: std.ArrayList(SubStep),
+    no_fail: bool = false,
 
     const SubStep = struct {
         name: String,
         args: ?[]const String = null,
         cwd: ?String = null,
-        env_map: ?*std.process.EnvMap = null,
         process: ?std.process.Child = null,
         progress_node: std.Progress.Node = undefined,
         create: ?*const fn (step: *std.Build.Step, progressNode: *std.Progress.Node, arg: ?*const anyopaque) anyerror!void = null,
         arg: ?*const anyopaque = null,
         after: ?[]SubStep = null,
+
+        fn deinit(self: *SubStep, allocator: std.mem.Allocator) void {
+            if (self.args) |a|
+                allocator.free(a);
+            if (self.after) |a|
+                allocator.free(a);
+        }
     };
 
-    pub fn init(b: *std.Build, target: std.Target, vcpkg: bool) DependenciesStep {
+    pub fn init(b: *std.Build, name: String, target: std.Target) DependenciesStep {
         return DependenciesStep{
             .target = target,
-            .vcpgk = vcpkg,
             .step = std.Build.Step.init(
                 .{
-                    .name = "dependencies",
+                    .name = name,
                     .makeFn = DependenciesStep.doStep,
                     .owner = b,
                     .id = .custom,
                 },
             ),
+            .sub_steps = std.ArrayList(SubStep).init(b.allocator),
         };
     }
 
-    pub fn initSubprocess(self: *DependenciesStep, argv: []const String, cwd: ?String, env_map: ?*std.process.EnvMap) std.process.Child {
+    pub fn initSubprocess(self: *DependenciesStep, argv: []const String, cwd: ?String) std.process.Child {
         return .{
             .id = undefined,
             .allocator = self.step.owner.allocator,
-            .cwd = cwd,
-            .env_map = env_map,
             .argv = argv,
+            .cwd = cwd,
+            .env_map = null,
             .thread_handle = undefined,
             .err_pipe = null,
             .term = null,
@@ -57,114 +64,100 @@ pub const DependenciesStep = struct {
         };
     }
 
-    fn noFail(step: String, err: anytype) void {
-        std.log.err("Dependecy build step \"{s}\" failed: {}", .{ step, err });
-    }
-
-    fn Slice(t: type) type {
-        const info = @typeInfo(t).Pointer;
-        const chlild = @typeInfo(info.child).Array;
-        return []chlild.child;
-    }
-
-    fn toSlice(content: anytype) Slice(@TypeOf(content)) {
-        return @constCast(content[0..content.len]);
+    fn noFail(self: *DependenciesStep, step: String, err: anytype, trace: ?*std.builtin.StackTrace) !void {
+        if (!self.no_fail) {
+            return self.step.fail("Dependecy build step \"{s}\" failed: {} trace: {?}", .{ step, err, trace });
+        } else {
+            std.log.err("Dependecy build step \"{s}\" failed: {}", .{ step, err });
+        }
     }
 
     pub fn doStep(step: *std.Build.Step, progressNode: *std.Progress.Node) anyerror!void {
         const self: *DependenciesStep = @fieldParentPtr("step", step);
 
-        var sub_steps = std.ArrayList(SubStep).init(step.owner.allocator);
-        defer sub_steps.deinit();
+        defer self.sub_steps.deinit();
 
-        var env_map = try std.process.getEnvMap(step.owner.allocator);
-        defer env_map.deinit();
-        try env_map.put("NOTEST", "y");
-
-        progressNode.setEstimatedTotalItems(6);
+        progressNode.setEstimatedTotalItems(self.sub_steps.items.len);
         progressNode.activate();
 
-        // Init
-        const bunInstallCmd = if (builtin.os.tag == .windows) [_]String{ "wsl", "--exec", "bash", "-c", "~/.bun/bin/bun install --frozen-lockfile" } else [_]String{ "bun", "install", "--frozen-lockfile" };
-        const deshaderVsCodeExt = "editor/deshader-vscode";
-        try sub_steps.append(.{
-            .name = "Installing node.js dependencies by Bun for deshader-vscode",
-            .args = &bunInstallCmd,
-            .env_map = &env_map,
-            .cwd = deshaderVsCodeExt,
-            .after = toSlice(&[_]SubStep{
-                .{
-                    .name = "Download proposed (experimental) API definition",
-                    .args = if (builtin.os.tag == .windows) &.{ "wsl", "--exec", "bash", "-c", "~/.bun/bin/bun proposed" } else &.{ "bun", "proposed" },
-                    .env_map = &env_map,
-                    .cwd = deshaderVsCodeExt,
-                    .after = toSlice(&[_]SubStep{
-                        .{ .name = "Compiling deshader-vscode extension", .args = if (builtin.os.tag == .windows) &.{ "wsl", "--exec", "bash", "-c", "~/.bun/bin/bun compile web" } else &.{ "bun", "compile-web" }, .env_map = &env_map, .cwd = deshaderVsCodeExt },
-                    }),
-                },
-            }),
-        });
-        try sub_steps.append(.{ .name = "Installing node.js dependencies by Bun for editor", .args = &bunInstallCmd ++ &[_]String{"--production"}, .env_map = &env_map, .cwd = "editor" });
-
-        if (self.vcpgk) {
-            const triplet = try std.mem.concat(step.owner.allocator, u8, &.{ (if (self.target.cpu.arch == .x86) "x86" else "x64") ++ "-", switch (self.target.os.tag) {
-                .windows => "windows",
-                .linux => "linux",
-                .macos => "osx",
-                else => @panic("Unsupported OS"),
-            }, if (self.target.os.tag != builtin.os.tag) "-cross" else "" });
-
-            var sub_sub = [_]SubStep{SubStep{
-                .name = "Rename VCPKG artifact",
-                .create = struct {
-                    // After building VCPKG libraries rename the output files
-                    fn create(step2: *std.Build.Step, _: *std.Progress.Node, arg: ?*const anyopaque) anyerror!void {
-                        std.log.info("Renaming VCPKG artifacts", .{});
-                        const tripl = @as(*const String, @alignCast(@ptrCast(arg)));
-                        const bin_path = try std.fs.path.join(step2.owner.allocator, &.{ "build", "vcpkg_installed", tripl.*, "bin" });
-                        defer step2.owner.allocator.free(bin_path);
-                        //try doOnEachFileIf(step2, bin_path, hasLibPrefix, removeLibPrefix);
-                        try doOnEachFileIf(step2, bin_path, hasWrongSuffix, renameSuffix);
-                        const lib_path = try std.fs.path.join(step2.owner.allocator, &.{ "build", "vcpkg_installed", tripl.*, "lib" });
-                        defer step2.owner.allocator.free(lib_path);
-                        //try doOnEachFileIf(step2, lib_path, hasLibPrefix, removeLibPrefix);
-                        try doOnEachFileIf(step2, lib_path, hasWrongSuffix, renameSuffix);
-                        step2.owner.allocator.free(tripl.*);
-                    }
-                }.create,
-                .arg = @ptrCast(&triplet),
-            }};
-
-            try sub_steps.append(.{
-                .name = "Building VCPKG dependencies",
-                .args = &.{ "vcpkg", "install", "--triplet", triplet, "--x-install-root=build/vcpkg_installed" },
-                .after = if (self.target.os.tag == .windows and builtin.os.tag != .windows) &sub_sub else null,
-            });
-        }
-
-        progressNode.setEstimatedTotalItems(sub_steps.items.len);
-
-        self.doSubSteps(sub_steps.items, progressNode);
+        try self.doSubSteps(self.sub_steps.items, progressNode);
 
         progressNode.end();
     }
 
-    fn doSubSteps(self: *DependenciesStep, sub_steps: []SubStep, progressNode: *std.Progress.Node) void {
+    pub fn editor(self: *DependenciesStep) !void {
+        // Init
+        const bunInstallCmd = if (builtin.os.tag == .windows) [_]String{ "wsl", "--exec", "bash", "-c", "~/.bun/bin/bun install --frozen-lockfile" } else [_]String{ "bun", "install", "--frozen-lockfile" };
+        const deshaderVsCodeExt = "editor/deshader-vscode";
+        try self.sub_steps.append(.{
+            .name = "Installing node.js dependencies by Bun for deshader-vscode",
+            .args = &bunInstallCmd,
+            .cwd = deshaderVsCodeExt,
+            .after = try self.step.owner.allocator.dupe(SubStep, &[_]SubStep{
+                .{
+                    .name = "Download proposed (experimental) API definition",
+                    .args = if (builtin.os.tag == .windows) &.{ "wsl", "--exec", "bash", "-c", "~/.bun/bin/bun proposed" } else &.{ "bun", "proposed" },
+                    .cwd = deshaderVsCodeExt,
+                    .after = try self.step.owner.allocator.dupe(SubStep, &[_]SubStep{
+                        .{ .name = "Compiling deshader-vscode extension", .args = if (builtin.os.tag == .windows) &.{ "wsl", "--exec", "bash", "-c", "~/.bun/bin/bun compile web" } else &.{ "bun", "compile-web" }, .cwd = deshaderVsCodeExt },
+                    }),
+                },
+            }),
+        });
+        try self.sub_steps.append(.{ .name = "Installing node.js dependencies by Bun for editor", .args = &bunInstallCmd ++ &[_]String{"--production"}, .cwd = "editor" });
+    }
+
+    pub fn vcpkg(self: *DependenciesStep) !void {
+        const step = self.step;
+        const triplet = try std.mem.concat(step.owner.allocator, u8, &.{ (if (self.target.cpu.arch == .x86) "x86" else "x64") ++ "-", switch (self.target.os.tag) {
+            .windows => "windows",
+            .linux => "linux",
+            .macos => "osx",
+            else => @panic("Unsupported OS"),
+        }, if (self.target.os.tag != builtin.os.tag) "-cross" else "" });
+
+        const sub_sub = try self.step.owner.allocator.dupe(SubStep, &[_]SubStep{SubStep{
+            .name = "Rename VCPKG artifacts",
+            .create = struct {
+                // After building VCPKG libraries rename the output files
+                fn create(step2: *std.Build.Step, _: *std.Progress.Node, arg: ?*const anyopaque) anyerror!void {
+                    std.log.info("Renaming VCPKG artifacts", .{});
+                    const tripl = @as(*const String, @alignCast(@ptrCast(arg)));
+                    const bin_path = try std.fs.path.join(step2.owner.allocator, &.{ "build", "vcpkg_installed", tripl.*, "bin" });
+                    defer step2.owner.allocator.free(bin_path);
+                    //try doOnEachFileIf(step2, bin_path, hasLibPrefix, removeLibPrefix);
+                    try doOnEachFileIf(step2, bin_path, hasWrongSuffix, renameSuffix);
+                    const lib_path = try std.fs.path.join(step2.owner.allocator, &.{ "build", "vcpkg_installed", tripl.*, "lib" });
+                    defer step2.owner.allocator.free(lib_path);
+                    //try doOnEachFileIf(step2, lib_path, hasLibPrefix, removeLibPrefix);
+                    try doOnEachFileIf(step2, lib_path, hasWrongSuffix, renameSuffix);
+                    step2.owner.allocator.free(tripl.*);
+                }
+            }.create,
+            .arg = @ptrCast(&triplet),
+        }});
+
+        try self.sub_steps.append(.{
+            .name = "Building VCPKG dependencies",
+            .args = step.owner.dupeStrings(&.{ "vcpkg", "install", "--triplet", triplet, "--x-install-root=build/vcpkg_installed" }),
+            .after = if (self.target.os.tag == .windows and builtin.os.tag != .windows) sub_sub else null,
+        });
+    }
+
+    fn doSubSteps(self: *DependenciesStep, sub_steps: []SubStep, progressNode: *std.Progress.Node) !void {
         // Spawn
         for (sub_steps) |*sub_step| {
             if (sub_step.create) |c| {
-                c(&self.step, progressNode, sub_step.arg) catch |err| {
-                    std.log.err("Could not create sub-step {s}: {}", .{ sub_step.name, err });
-                };
+                try c(&self.step, progressNode, sub_step.arg);
             }
             if (sub_step.args) |args| {
-                var sub_process = self.initSubprocess(args, sub_step.cwd, sub_step.env_map);
+                var sub_process = self.initSubprocess(args, sub_step.cwd);
                 if (sub_process.spawn()) {
                     var sub_progress_node = progressNode.start(sub_step.name, 1);
                     sub_progress_node.activate();
                     sub_step.process = sub_process;
                     sub_step.progress_node = sub_progress_node;
-                } else |err| noFail(sub_step.name, err);
+                } else |err| try self.noFail(sub_step.name, err, @errorReturnTrace());
             }
         }
 
@@ -176,15 +169,14 @@ pub const DependenciesStep = struct {
                         std.log.err("Dependency build step \"{s}\" failed with exit code {d}", .{ sub_step.name, result.Exited });
                     }
                     if (sub_step.after) |after| {
-                        self.doSubSteps(after, progressNode);
+                        try self.doSubSteps(after, progressNode);
                     }
-                } else |err| {
-                    std.log.err("Dependency build step \"{s}\" failed: {}", .{ sub_step.name, err });
-                }
+                } else |err| try self.noFail(sub_step.name, err, @errorReturnTrace());
 
                 progressNode.setCompletedItems(i + 1);
                 sub_step.progress_node.end();
             }
+            sub_step.deinit(self.step.owner.allocator);
         }
     }
 

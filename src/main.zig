@@ -17,7 +17,7 @@ const shader_decls = @import("declarations/shaders.zig");
 
 const loaders = @import("interceptors/loaders.zig");
 const transitive = @import("interceptors/transitive.zig");
-const gui = if (options.embedGUI) @import("tools/gui.zig") else null;
+const gui = if (options.editor) @import("tools/gui.zig") else null;
 
 const String = []const u8;
 
@@ -34,7 +34,7 @@ const ProgramPayload = shader_decls.ProgramPayload;
 const ExistsBehavior = shader_decls.ExistsBehavior;
 
 pub export fn deshaderEditorServerStart() usize {
-    if (options.embedGUI) {
+    if (options.editor) {
         gui.serverStart(common.command_listener) catch |err| {
             DeshaderLog.err(err_format, .{ @src().fn_name, err });
             if (@errorReturnTrace()) |trace|
@@ -46,7 +46,7 @@ pub export fn deshaderEditorServerStart() usize {
 }
 
 pub export fn deshaderEditorServerStop() usize {
-    if (options.embedGUI) {
+    if (options.editor) {
         gui.serverStop() catch |err| {
             DeshaderLog.err(err_format, .{ @src().fn_name, err });
             if (@errorReturnTrace()) |trace|
@@ -58,7 +58,7 @@ pub export fn deshaderEditorServerStop() usize {
 }
 
 pub export fn deshaderEditorWindowShow() usize {
-    if (options.embedGUI) {
+    if (options.editor) {
         gui.editorShow(common.command_listener) catch |err| {
             DeshaderLog.err(err_format, .{ @src().fn_name, err });
             if (@errorReturnTrace()) |trace|
@@ -71,7 +71,7 @@ pub export fn deshaderEditorWindowShow() usize {
 }
 
 pub export fn deshaderEditorWindowWait() usize {
-    if (options.embedGUI) {
+    if (options.editor) {
         gui.editorWait() catch |err| {
             DeshaderLog.err(err_format, .{ @src().fn_name, err });
             if (@errorReturnTrace()) |trace|
@@ -84,7 +84,7 @@ pub export fn deshaderEditorWindowWait() usize {
 }
 
 pub export fn deshaderEditorWindowTerminate() usize {
-    if (options.embedGUI) {
+    if (options.editor) {
         gui.editorTerminate() catch |err| {
             DeshaderLog.err(err_format, .{ @src().fn_name, err });
             if (@errorReturnTrace()) |trace|
@@ -354,7 +354,7 @@ fn finalize() callconv(.C) void {
         common.command_listener.?.stop();
         common.allocator.destroy(common.command_listener.?);
     }
-    if (options.embedGUI) {
+    if (options.editor) {
         if (gui.gui_process != null) {
             gui.editorTerminate() catch |err| {
                 DeshaderLog.err("{any}", .{err});

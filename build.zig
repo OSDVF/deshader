@@ -13,6 +13,8 @@ const Linkage = enum {
 };
 const String = []const u8;
 
+const log = std.log.scoped(.DeshaderBuild);
+
 // Shims for compatibility between Zig versions
 const exec = if (@hasDecl(std.ChildProcess, "exec")) std.ChildProcess.exec else std.ChildProcess.run;
 fn openIterableDir(path: String) std.fs.File.OpenError!if (@hasDecl(std.fs, "openIterableDirAbsolute")) std.fs.IterableDir else std.fs.Dir {
@@ -39,6 +41,7 @@ pub fn build(b: *std.Build) !void {
         else => "/usr/lib/",
     };
     const native_libs_location = if (targetTarget == .windows) system32 else host_libs_location;
+
     const GlSymbolPrefixes: []const String = switch (targetTarget) {
         .windows => &[_]String{ "wgl", "gl" },
         .linux => &[_]String{ "glX", "egl", "gl" },
@@ -66,9 +69,8 @@ pub fn build(b: *std.Build) !void {
 
     // Compile options
     const option_custom_library = b.option([]const String, "customLibrary", "Names of additional libraries to intercept");
-    const option_dependencies = b.option(bool, "deps", "Build dependencies first: VCPKG managed libs, GL definitions, VSCode, extension") orelse false;
+    const option_editor = b.option(bool, "editor", "Build editor (VSCode and extension) along Deshader") orelse true;
     const option_docs = b.option(bool, "docs", "Generate API documentation") orelse false;
-    const option_embed_gui = b.option(bool, "embedGUI", "Embed Runner GUI and VSCode editor into the library (default yes)") orelse true;
     const option_ignore_missing = b.option(bool, "ignoreMissing", "Ignore missing VK and GL libraries. GLX, EGL and VK will be required by default") orelse false;
     const option_include = b.option(String, "include", "Path to directory with additional headers to include");
     const option_lib_dir = b.option(String, "lib", "Path to directory with additional libraries to link");
@@ -125,25 +127,18 @@ pub fn build(b: *std.Build) !void {
         try deshader_dependent_dlls.append(with_ext);
     }
     // Native file dialogs library
-    deshader_lib.linkSystemLibrary(if (optimize == .Debug) "nfd_d" else "nfd"); //Native file dialog library from VCPKG
-
-    const noSystemGLSLang = blk: {
-        const libname = try std.mem.concat(b.allocator, u8, &.{ target.result.libPrefix(), "glslang" });
-        defer b.allocator.free(libname);
-        if (try fileWithPrefixExists(b.allocator, host_libs_location, libname)) |_| {
-            break :blk true;
-        } else break :blk false;
-    };
+    const system_nfd = try systemHasLib(b, target.result, native_libs_location, "nfd");
+    deshader_lib.linkSystemLibrary(if (optimize == .Debug and !system_nfd) "nfd_d" else "nfd"); //Native file dialog library from VCPKG
 
     // GLSLang
-    inline for (.{ "glslang", "glslang-default-resource-limits" }) |glslang| {
-        try installVcpkgLibrary(deshader_lib_install, glslang);
+    var system_glslang = true;
+    inline for (.{ "glslang", "glslang-default-resource-limits", "MachineIndependent", "GenericCodeGen" }) |glslang| {
+        system_glslang = system_glslang and try systemHasLib(b, target.result, native_libs_location, glslang);
+
         deshader_lib.linkSystemLibrary(glslang);
-    }
-    if (noSystemGLSLang) {
-        // vcpkg will link these statically
-        deshader_lib.linkSystemLibrary("MachineIndependent");
-        deshader_lib.linkSystemLibrary("GenericCodeGen");
+        if (!system_glslang) {
+            try installVcpkgLibrary(deshader_lib_install, glslang);
+        }
     }
 
     // Websocket
@@ -153,7 +148,6 @@ pub fn build(b: *std.Build) !void {
     deshader_lib.root_module.addImport("websocket", websocket);
 
     // OpenGL
-    // Choose the OpenGL API, version, profile and extensions you want to generate bindings for.
     const zigglgen = @import("zigglgen");
     const string_exts = b.option([]const []const u8, "glExtensions", "OpenGL extensions included in the bindings") orelse &.{};
     const exts = try b.allocator.alloc(zigglgen.GeneratorOptions.Extension, string_exts.len);
@@ -228,7 +222,7 @@ pub fn build(b: *std.Build) !void {
             run_symbol_enum.addArg(std.fmt.allocPrint(b.allocator, "{s}{s}", .{ native_libs_location, real_name }) catch unreachable);
         } else {
             if (option_ignore_missing) {
-                std.log.warn("Missing library {s}", .{libName});
+                log.warn("Missing library {s}", .{libName});
             } else {
                 return deshader_lib.step.fail("Missing library {s}", .{libName});
             }
@@ -238,7 +232,7 @@ pub fn build(b: *std.Build) !void {
         run_symbol_enum.addArg(std.fmt.allocPrint(b.allocator, "{s}{s}", .{ native_libs_location, real_name }) catch unreachable);
     } else {
         if (option_ignore_missing) {
-            std.log.warn("Missing library {s}", .{VulkanLibName});
+            log.warn("Missing library {s}", .{VulkanLibName});
         } else {
             return deshader_lib.step.fail("Missing library {s}", .{VulkanLibName});
         }
@@ -265,7 +259,7 @@ pub fn build(b: *std.Build) !void {
     const positron = PositronSdk.getPackage(b, "positron");
     deshader_lib.root_module.addImport("positron", positron);
     deshader_lib.root_module.addImport("serve", b.modules.get("serve").?);
-    if (option_embed_gui) {
+    if (option_editor) {
         PositronSdk.linkPositron(deshader_lib, null, option_linkage == .Static);
         if (targetTarget == .windows) {
             try deshader_dependent_dlls.append("WebView2Loader.dll");
@@ -309,22 +303,35 @@ pub fn build(b: *std.Build) !void {
             if (result == 0) {
                 result = std.os.linux.chmod(full_path, stat.mode | 0o111);
                 if (result != 0) { //add execute permission
-                    std.log.err("could not chmod {s}: {}", .{ ar_name, std.posix.errno(result) });
+                    log.err("could not chmod {s}: {}", .{ ar_name, std.posix.errno(result) });
                 }
             } else {
-                std.log.err("could not stat {s}: {}", .{ ar_name, std.posix.errno(result) });
+                log.err("could not stat {s}: {}", .{ ar_name, std.posix.errno(result) });
             }
         }
 
         // Build dependencies
         b.top_level_steps.get("install").?.description = "Download dependencies managed by Zig";
 
-        const dependencies_cmd = b.step("dependencies", "Bootstrap building internal Deshader components and dependencies");
-        var dependencies_step: *DependenciesStep = try b.allocator.create(DependenciesStep);
-        dependencies_step.* = DependenciesStep.init(b, target.result, !option_wolf_system or targetTarget == .windows or noSystemGLSLang); // If wolfSSL is meant to be linked dynamically, it must be built first
-        dependencies_cmd.dependOn(&dependencies_step.step);
-        if (option_dependencies) {
-            deshader_lib.step.dependOn(&dependencies_step.step);
+        const editor_cmd = b.step("editor", "Bootstrap building internal Deshader components and dependencies");
+        var editor_step = try b.allocator.create(DependenciesStep);
+        editor_step.* = DependenciesStep.init(b, "editor", target.result);
+        try editor_step.editor();
+
+        editor_cmd.dependOn(&editor_step.step);
+        if (option_editor) {
+            deshader_lib.step.dependOn(&editor_step.step);
+        }
+
+        const vcpkg_cmd = b.step("vcpkg", "Download and build dependencies managed by vcpkg");
+        var vcpkg_step = try b.allocator.create(DependenciesStep);
+        vcpkg_step.* = DependenciesStep.init(b, "vcpkg", target.result);
+        try vcpkg_step.vcpkg();
+        vcpkg_cmd.dependOn(&vcpkg_step.step);
+
+        const system_libs_available = system_glslang and try systemHasLib(b, target.result, native_libs_location, "wolfssl") and system_nfd;
+        if (!system_libs_available) {
+            deshader_lib.step.dependOn(&vcpkg_step.step);
         }
 
         //
@@ -335,7 +342,7 @@ pub fn build(b: *std.Build) !void {
 
         // Add all file names in the editor dist folder to `files`
         const editor_directory = "editor";
-        if (option_embed_gui) {
+        if (option_editor) {
             const editor_files = try b.build_root.handle.readFileAlloc(b.allocator, editor_directory ++ "/required.txt", 1024 * 1024);
             var editor_files_lines = std.mem.splitScalar(u8, editor_files, '\n');
             editor_files_lines.reset();
@@ -343,7 +350,7 @@ pub fn build(b: *std.Build) !void {
                 const path = try std.fmt.allocPrint(b.allocator, "{s}/{s}", .{ editor_directory, line });
                 try files.append(path);
                 if (optimize != .Debug) { // In debug mode files are served from physical filesystem so one does not need to recompile Deshader each time
-                    try embedCompressedFile(deshader_lib, if (option_dependencies) &dependencies_step.step else null, path);
+                    try embedCompressedFile(deshader_lib, if (option_editor) &editor_step.step else null, path);
                 }
             }
         }
@@ -353,7 +360,7 @@ pub fn build(b: *std.Build) !void {
         options.addOption([]const String, "files", files.items);
         options.addOption(String, "editorDir", editor_directory);
         options.addOption(String, "editorDirRelative", try std.fs.path.relative(b.allocator, b.lib_dir, b.pathFromRoot(editor_directory)));
-        options.addOption(bool, "embedGUI", option_embed_gui);
+        options.addOption(bool, "editor", option_editor);
         deshader_lib.root_module.addOptions("options", options);
 
         //
@@ -551,7 +558,7 @@ pub fn build(b: *std.Build) !void {
                     if (result.term.Exited == 0) {
                         example_glfw_cpp.compile.addObjectFile(.{ .path = output });
                     } else {
-                        std.log.err("Failed to compile shader {s}: {s}", .{ shader, result.stderr });
+                        log.err("Failed to compile shader {s}: {s}", .{ shader, result.stderr });
                     }
                 }
             }
@@ -673,7 +680,7 @@ const SubExampleStep = struct {
 };
 
 fn fileWithPrefixExists(allocator: std.mem.Allocator, dirname: String, basename: String) !?String {
-    var dir = try openIterableDir(dirname);
+    var dir = openIterableDir(dirname) catch return null;
     defer dir.close();
     var it = dir.iterate();
     while (try it.next()) |current| {
@@ -728,9 +735,9 @@ fn installVcpkgLibrary(i: *std.Build.Step.InstallArtifact, name: String) !void {
         else
             b.addInstallBinFile(b.path(lib_path), dest_path)).step);
 
-        std.log.info("Installed dynamic {s} from VCPKG", .{dest_path});
+        log.info("Installed dynamic {s} from VCPKG", .{dest_path});
     } else |err| {
-        std.log.warn("Could not find dynamic {s} from VCPKG but maybe system library will work too. {}", .{ name, err });
+        log.warn("Could not find dynamic {s} from VCPKG but maybe system library will work too. {}", .{ name, err });
     }
 }
 
@@ -751,10 +758,10 @@ fn winepath(alloc: std.mem.Allocator, path: String, toWindows: bool) !String {
     if (result.term.Exited == 0) {
         return std.mem.trim(u8, result.stdout, " \n\t");
     } else if (result.term == .Exited) {
-        std.log.err("Failed to run winepath with code {d}: {s}", .{ result.term.Exited, result.stderr });
+        log.err("Failed to run winepath with code {d}: {s}", .{ result.term.Exited, result.stderr });
         return error.Winepath;
     } else {
-        std.log.err("Failed to run winepath: {}", .{result.term});
+        log.err("Failed to run winepath: {}", .{result.term});
         return error.Winepath;
     }
 }
@@ -770,4 +777,27 @@ fn linkWolfSSL(compile: *std.Build.Step.Compile, install: *std.Build.Step.Instal
         compile.defineCMacro("SINGLE_THREADED", null); // To workaround missing pthread.h
     }
     return wolfssl_lib_name;
+}
+
+fn systemHasLib(b: *std.Build, target: std.Target, native_libs_location: String, lib: String) !bool {
+    const libname = try std.mem.concat(b.allocator, u8, &.{ target.libPrefix(), lib });
+    defer b.allocator.free(libname);
+    if (builtin.os.tag == target.os.tag and builtin.cpu.arch == target.cpu.arch) { // native
+        var arena = std.heap.ArenaAllocator.init(b.allocator);
+        defer arena.deinit();
+        const n_paths = try std.zig.system.NativePaths.detect(arena.allocator(), target);
+        for (n_paths.lib_dirs.items) |lib_dir| {
+            if (try fileWithPrefixExists(b.allocator, lib_dir, libname)) |full_name| {
+                log.info("Found system library {s}", .{full_name});
+                b.allocator.free(full_name);
+                return true;
+            }
+        }
+    }
+
+    if (try fileWithPrefixExists(b.allocator, native_libs_location, libname)) |full_name| {
+        log.info("Found system library {s}", .{full_name});
+        b.allocator.free(full_name);
+        return true;
+    } else return false;
 }
