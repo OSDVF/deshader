@@ -17,5 +17,9 @@
             .url = "https://github.com/Snektron/vulkan-zig/archive/571cecdda64d548e2df59226ab72112ac0fcdec4.tar.gz",
             .hash = "1220b7727a5bccd0a6009b3b2b2320d49e49a702a26e3a9450ac63dbc3dbe35527e4",
         },
+        .zigglgen = .{
+            .url = "https://github.com/castholm/zigglgen/releases/download/v0.2.3/zigglgen.tar.gz",
+            .hash = "1220f4188a5e1bdbb15fd50e9ea322c0721384eeba9bc077e4179b0b0eeaa7fe4ad9",
+        },
     },
 }

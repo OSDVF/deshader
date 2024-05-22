@@ -143,7 +143,7 @@ pub const TransitiveSymbols = struct {
             const with_null = try common.allocator.dupeZ(u8, symbol_name);
             defer common.allocator.free(with_null);
             if (lib != null) {
-                const symbol_target = lib.?.lookup(gl.FunctionPointer, with_null);
+                const symbol_target = lib.?.lookup(gl.PROC, with_null);
                 if (symbol_target != null) {
                     @field(transitive_procs, symbol_name) = symbol_target.?;
                 } else {

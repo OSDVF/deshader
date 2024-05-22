@@ -85,7 +85,6 @@ pub const DependenciesStep = struct {
         progressNode.activate();
 
         // Init
-        try sub_steps.append(.{ .name = "Building OpenGL definitions", .args = &.{ "make", "all" }, .env_map = &env_map, .cwd = "./libs/zig-opengl" });
         const bunInstallCmd = if (builtin.os.tag == .windows) [_]String{ "wsl", "--exec", "bash", "-c", "~/.bun/bin/bun install --frozen-lockfile" } else [_]String{ "bun", "install", "--frozen-lockfile" };
         const deshaderVsCodeExt = "editor/deshader-vscode";
         try sub_steps.append(.{

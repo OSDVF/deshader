@@ -18,7 +18,7 @@ const gl_shaders = @import("../interceptors/gl_shaders.zig");
 const String = []const u8;
 const ZString = [:0]const u8;
 const CString = [*:0]const u8;
-const GetProcAddressSignature = fn (name: CString) gl.FunctionPointer;
+const GetProcAddressSignature = fn (name: CString) gl.PROC;
 
 // TODO multi-context
 // TODO wasm
@@ -40,6 +40,8 @@ pub const APIs = struct {
                 *const fn (hdc: *const anyopaque) ?*const anyopaque,
                 *const fn (hdc: *const anyopaque, attribs: *const c_int) ?*const anyopaque,
             } = .{ undefined, undefined };
+            const destroy_name = "wglDeleteContext";
+            pub var destroy: ?*const fn (hdc: *const anyopaque) void = null;
             pub var late_loaded = false;
         };
         pub const custom = struct {
@@ -51,6 +53,8 @@ pub const APIs = struct {
             pub var make_current: struct { *const fn (hdc: *const anyopaque, hglrc: *const anyopaque) c_int } = .{undefined};
             pub var create_names = []const ZString{""};
             pub var create: struct { *const fn (hdc: *const anyopaque) ?*const anyopaque } = .{undefined};
+            var destroy_name = "";
+            pub var destroy: ?*const fn (hdc: *const anyopaque) void = null;
             pub var late_loaded = false;
         };
     } else struct {
@@ -71,6 +75,8 @@ pub const APIs = struct {
                 *const fn (display: *const anyopaque, render_type: c_int, share: *const anyopaque, direct: c_int) ?*const anyopaque,
                 *const fn (display: *const anyopaque, vis: *const anyopaque, share: *const anyopaque, direct: c_int, attribs: ?[*]const c_int) ?*const anyopaque,
             } = .{ undefined, undefined, undefined };
+            const destroy_name = "glXDestroyContext";
+            pub var destroy: ?*const fn (display: *const anyopaque, context: *const anyopaque) void = null;
             pub var late_loaded = false;
         };
         pub const egl = struct {
@@ -85,6 +91,8 @@ pub const APIs = struct {
             pub var create: struct {
                 *const fn (display: *const anyopaque, config: *const anyopaque, share: *const anyopaque, attribs: ?[*]const c_int) ?*const anyopaque,
             } = .{undefined};
+            const destroy_name = "eglDestroyContext";
+            pub var destroy: ?*const fn (display: *const anyopaque, context: *const anyopaque) void = null;
             pub var late_loaded = false;
         };
         pub const custom = struct {
@@ -96,6 +104,8 @@ pub const APIs = struct {
             var possible_loaders: []const String = &.{};
             var create_names: []const ZString = &.{""};
             var create: struct { *const fn (display: *const anyopaque, vis: *const anyopaque, share: *const anyopaque, direct: c_int) ?*const anyopaque } = .{undefined};
+            var destroy_name = "";
+            pub var destroy: ?*const fn (display: *const anyopaque, context: *const anyopaque) void = null;
             pub var late_loaded = false;
         };
     };
@@ -203,7 +213,11 @@ comptime {
 }
 
 const _known_gl_loaders =
-    (if (builtin.os.tag == .windows) APIs.gl.wgl.default_loaders ++ APIs.gl.wgl.make_current_names ++ APIs.gl.wgl.create_names else APIs.gl.glX.default_loaders ++ APIs.gl.glX.make_current_names ++ APIs.gl.glX.create_names ++ APIs.gl.egl.default_loaders ++ APIs.gl.egl.make_current_names ++ APIs.gl.egl.create_names) ++ [_]?String{options.glAddLoader};
+    (if (builtin.os.tag == .windows)
+    APIs.gl.wgl.default_loaders ++ APIs.gl.wgl.make_current_names ++ APIs.gl.wgl.create_names ++ .{APIs.gl.wgl.destroy_name}
+else
+    APIs.gl.glX.default_loaders ++ APIs.gl.glX.make_current_names ++ APIs.gl.glX.create_names ++ APIs.gl.egl.default_loaders ++ APIs.gl.egl.make_current_names ++ APIs.gl.egl.create_names ++ .{ APIs.gl.egl.destroy_name, APIs.gl.glX.destroy_name }) ++ [_]?String{options.glAddLoader};
+
 const _platform_gl_libs = if (builtin.os.tag == .windows) .{APIs.gl.wgl} else .{ APIs.gl.glX, APIs.gl.egl };
 const _gl_libs = _platform_gl_libs ++ .{APIs.gl.custom};
 
@@ -218,7 +232,7 @@ pub const intercepted = blk: {
         }
     }
     var i = 0;
-    var procs: [count]struct { String, gl.FunctionPointer } = undefined;
+    var procs: [count]struct { String, gl.PROC } = undefined;
     var names2: [count]?String = undefined;
     for (decls) |proc| {
         if (std.mem.startsWith(u8, proc.name, "gl") or std.mem.startsWith(u8, proc.name, "egl")) {
@@ -233,7 +247,7 @@ pub const intercepted = blk: {
     }
     break :blk struct {
         const names = names2;
-        const map = std.ComptimeStringMap(gl.FunctionPointer, procs);
+        const map = std.ComptimeStringMap(gl.PROC, procs);
     };
 };
 pub const all_exported_names = _known_gl_loaders ++ intercepted.names;
@@ -247,10 +261,6 @@ const GlFunctions = struct {
         }
     }
 };
-
-pub fn useLoader(loader: *const GetProcAddressSignature, proc: ZString) gl.FunctionPointer {
-    return loader(proc);
-}
 
 fn withoutTrailingSlash(path: String) String {
     return if (path[path.len - 1] == '/') path[0 .. path.len - 1] else path;
@@ -312,14 +322,6 @@ pub fn loadGlLib() !void {
                     defer common.allocator.free(loaderZ);
                     if (gl_lib.lib.?.lookup(*const GetProcAddressSignature, loaderZ)) |proc| {
                         gl_lib.loader = proc;
-                        DeshaderLog.debug("Found procedure loader {s}", .{loader});
-                        // Early load all GL functions (late loading happens in gl_shaders.makeCurrent())
-                        if (@as(?*const anyopaque, gl.function_pointers.glShaderSource) == null) {
-                            gl.load(proc, useLoader) catch |err|
-                                DeshaderLog.err("Failed to early load some GL functions: {}", .{err});
-                        }
-
-                        break;
                     }
                 }
                 inline for (gl_lib.make_current, 0..) |func, i| {
@@ -331,6 +333,9 @@ pub fn loadGlLib() !void {
                     if (gl_lib.lib.?.lookup(@TypeOf(func), gl_lib.create_names[i])) |target| {
                         gl_lib.create[i] = @ptrCast(target);
                     }
+                }
+                if (gl_lib.lib.?.lookup(@TypeOf(gl_lib.destroy), gl_lib.destroy_name)) |target| {
+                    gl_lib.destroy = @ptrCast(target);
                 }
             } else |err| {
                 if (builtin.os.tag == .linux and builtin.link_libc) {
@@ -384,7 +389,7 @@ pub fn deinit() void {
 pub fn LoaderInterceptor(comptime interface: type, comptime loader: String) type {
     return struct {
         /// Generic loader interception function
-        pub fn loaderReplacement(procedure: CString) callconv(.C) ?gl.FunctionPointer {
+        pub fn loaderReplacement(procedure: CString) callconv(.C) ?gl.PROC {
             if (interface.loader == null) {
                 DeshaderLog.err("Loader " ++ loader ++ " is not available", .{});
                 return null;

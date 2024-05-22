@@ -153,8 +153,21 @@ pub fn build(b: *std.Build) !void {
     deshader_lib.root_module.addImport("websocket", websocket);
 
     // OpenGL
-    const glModule = try openGlModule(b);
-    deshader_lib.root_module.addImport("gl", glModule);
+    // Choose the OpenGL API, version, profile and extensions you want to generate bindings for.
+    const zigglgen = @import("zigglgen");
+    const string_exts = b.option([]const []const u8, "glExtensions", "OpenGL extensions included in the bindings") orelse &.{};
+    const exts = try b.allocator.alloc(zigglgen.GeneratorOptions.Extension, string_exts.len);
+    for (string_exts, exts) |s, *e| {
+        e.* = std.meta.stringToEnum(zigglgen.GeneratorOptions.Extension, s) orelse @panic("Invalid extension");
+    }
+    defer b.allocator.free(exts);
+    const gl_bindings = zigglgen.generateBindingsModule(b, .{
+        .api = .gl,
+        .version = b.option(zigglgen.GeneratorOptions.Version, "glVersion", "OpenGL version to generate bindings for") orelse .@"4.6",
+        .profile = b.option(zigglgen.GeneratorOptions.Profile, "glProfile", "OpenGL profile to generate bindings for") orelse .core,
+        .extensions = exts,
+    });
+    deshader_lib.root_module.addImport("gl", gl_bindings);
 
     // Vulkan
     const vulkanXmlInput = try b.build_root.join(b.allocator, &[_]String{"libs/Vulkan-Docs/xml/vk.xml"});
@@ -485,7 +498,7 @@ pub fn build(b: *std.Build) !void {
         // Various example applications
         {
             const exampleModules = .{
-                .{ .name = "gl", .module = glModule },
+                .{ .name = "gl", .module = gl_bindings },
                 .{ .name = "deshader", .module = deshader_stubs },
             };
 
@@ -597,17 +610,6 @@ pub fn build(b: *std.Build) !void {
     } ++ &[_]String{ "zig-out", "zig-cache" });
     clean_run.step.dependOn(b.getUninstallStep());
     clean_step.dependOn(&clean_run.step);
-}
-
-// This scans the environment for the `DESHADER_GL_VERSION` variable and
-// returns a module that exports the OpenGL bindings for that version.
-fn openGlModule(b: *std.Build) !*std.Build.Module {
-    const glVersion = b.option(String, "glSuffix", "Suffix to libs/zig-opengl/exports/gl_X.zig that will be imported") orelse "4v6";
-    const glFormat = "libs/zig-opengl/exports/gl_{s}.zig";
-
-    return b.addModule("gl", .{
-        .root_source_file = b.path(try std.fmt.allocPrint(b.allocator, glFormat, .{glVersion})),
-    });
 }
 
 fn embedCompressedFile(compile: *std.Build.Step.Compile, dependOn: ?*std.Build.Step, path: String) !void {

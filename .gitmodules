@@ -4,9 +4,6 @@
 [submodule "backend/libs/positron"]
 	path = libs/positron
 	url = git@github.com:OSDVF/positron.git
-[submodule "libs/zig-opengl"]
-	path = libs/zig-opengl
-	url = https://github.com/OSDVF/zig-opengl.git
 [submodule "libs/ctregex"]
 	path = libs/ctregex
 	url = git@github.com:alexnask/ctregex.zig.git
