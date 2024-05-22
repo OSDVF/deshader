@@ -1,0 +1,2 @@
+# Shader tagging
+Deshader creates a virtual file system for better management of you shaders. Use these functions to assign filesystem locations to your shaders and specify dependencies between them. Call them just before you call `glShaderSource` or similar functions.

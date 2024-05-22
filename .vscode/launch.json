@@ -14,6 +14,18 @@
             },
         },
         {
+            "name": "GDB - Runner GUI",
+            "type": "gdb",
+            "request": "launch",
+            "cwd": "${workspaceRoot}",
+            "target": "./zig-out/bin/deshader-run",
+            "preLaunchTask": "Build Runner",
+            "env": {
+                "DESHADER_LIB": "zig-out/lib",
+                "DESHADER_IGNORE_PROCESS": "gdb,zsh,llvm-symbolizer,code",
+            },
+        },
+        {
             "name": "CPPDBG - Runner",
             "request": "launch",
             "type": "cppvsdbg",
@@ -150,10 +162,6 @@
             "type": "lldb", // Execute add-dsym zig-out/bin/deshader-glfw.pdb afterwards to get smybols
             "request": "attach",
             "pid": "${command:pickMyProcess}",
-            "initCommands": [
-                "platform select remote-linux",
-                "platform connect connect://localhost:1234",
-            ]
         },
         {
             "type": "gdb",

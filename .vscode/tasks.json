@@ -45,7 +45,6 @@
             "args": [
                 "build",
                 "deshader",
-                "-DwolfSSL",
                 "-DlogIntercept",
                 "-DmemoryFrames=15",
                 "-freference-trace",
@@ -69,7 +68,6 @@
             "args": [
                 "build",
                 "runner",
-                "-DwolfSSL",
                 "-freference-trace"
             ],
             "problemMatcher": "$zig",
@@ -89,7 +87,6 @@
             "args": [
                 "build",
                 "examples-run",
-                "-DwolfSSL",
                 "-freference-trace"
             ],
             "problemMatcher": "$zig",
@@ -108,7 +105,6 @@
             "args": [
                 "build",
                 "examples",
-                "-DwolfSSL",
                 "-freference-trace",
                 "-DlogIntercept",
                 "-DmemoryFrames=15",
@@ -134,7 +130,6 @@
                 "examples",
                 "-fwine",
                 "-Dtarget=x86_64-windows-gnu",
-                "-DwolfSSL",
                 "-DlogIntercept",
                 "-freference-trace"
             ],
@@ -156,7 +151,6 @@
                 "build",
                 "deshader",
                 "-fwine",
-                "-DwolfSSL",
                 "-Ddeps",
                 "-Dtarget=x86_64-windows-gnu",
                 "-DlogIntercept",
@@ -180,7 +174,6 @@
                 "build",
                 "runner",
                 "-fwine",
-                "-DwolfSSL",
                 "-Dtarget=x86_64-windows-gnu",
                 "-freference-trace"
             ],

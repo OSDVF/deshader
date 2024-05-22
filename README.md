@@ -65,19 +65,16 @@ Deshader consists of several (mostly third party; mostly forked) components that
 - Bun 1.0.6 [Install](https://github.com/oven-sh/bun#install)
 - GNU Make and .NET Core for generating OpenGL bindings
 - Webpack
+- [VCPKG](https://vcpkg.io)
 - C libraries
-    - GLEW (can be installed by VCPKG)
-    - GLSLang (can be installed by VCPKG)
     - Linux
         - gtk-3 and webkit2gtk
     - Windows
-        - [VCPKG](https://vcpkg.io)
         - [Edge Dev Channel](https://www.microsoftedgeinsider.com/download)
         - WebView2 runtime
         - Bun under WSL
     - *Cross-compilation* under Linux
         - for Windows
-            - [VCPKG](https://vcpkg.io)
             - add VCPKG path to `~/.local/share/vcpkg/vcpkg.path.txt` (e.g. `echo $(which vcpkg) > ~/.local/share/vcpkg/vcpkg.path.txt`)
             - [Edge Dev Channel](https://www.microsoftedgeinsider.com/download) installed by offline installer
             - WebView2 runtime must be installed by [standalone installer](https://developer.microsoft.com/en-us/microsoft-edge/webview2#download) (not bootstraper) under Wine
@@ -86,7 +83,6 @@ Deshader consists of several (mostly third party; mostly forked) components that
                 - DLL interception does not work for OpenGL under Wine. Intercept on host side instead (however this does not really work for now)
 - For using CMake to compile C++ examples
     - `pkg-config`
-    - glfw 3.3 when not using VCPKG
     - `ld` from `binutils` package
 
 ## How to
@@ -94,16 +90,19 @@ After you install all the required frameworks, clone this repository with submod
 ```sh
 git clone --recurse-submmodules https://github.com/OSDVF/deshader
 cd deshader
-zig build deshader -Ddeps
+zig build deshader
 ```
 If that does not output any errors, it will autmatically
-- Generate OpenGL bindings
-    - `make` inside `/libs/zig-opengl/`
 - Install Node.js dependencies
     - `bun install` inside `/editor/` and `/editor/deshader-vscode/`
 - Compile Deshader VSCode Extension
     - `bun compile-web` inside `/editor/deshader-vscode/`
-- Install VCPKG managed libraries (when target is Windows) and correct ther names (`.dll.a` -> `.lib`)
+- <details>
+    <summary>Install VCPKG managed libraries (when target is Windows, or they are not present or system) and correct ther names (`.dll.a` -> `.lib`)</summary>
+
+    GLEW, GLSLang, GLFW, WolfSSL, nativefiledialog
+  </details>
+
 - Build Deshader library
 
 for you. If there weren't any errors, then you can then
@@ -111,15 +110,21 @@ for you. If there weren't any errors, then you can then
 # Build
 zig build runner
 
-# Use Runner wrapper
-DESHADER_LIB=zig-out/lib/libdeshader.so ./zig-out/bin/deshader-run your_application
+# Use Runner tool
+./zig-out/bin/deshader-run your_application
 
-# Or run & build the provided examples sequentially
+# Or display Runner GUI
+./zig-out/bin/deshader-run
+
+# Or run & build all the provided examples one-by-one
 zig build examples-run
 ```
-`DESHADER_LIB` is optional if Deshader is installed system-wide or is in the same directory as `deshader-run`
+If the Runner is not able to find Deshader library, you can specify it
+```sh
+DESHADER_LIB=zig-out/lib/libdeshader.so
+```
 
-btw. `zig build` only downloads dependencies specified in `build.zig.zon`.
+`zig build` will only download Zig-managed dependencies (specified in `build.zig.zon`).
 
 Output files will be placed at `./zig-out/`:
 - `bin/`
@@ -127,21 +132,28 @@ Output files will be placed at `./zig-out/`:
     - (internal tools)
         - `generate_headers`
         - `generate_stubs`
-        - `symbol_enumerator`
-    - `example/`
+    - `deshader-examples-all`
+    - `deshader-examples/`
         - `glfw`
         - `editor`
     - `examples`
 - `lib/`
     - (lib)deshader.[a|so|dll|lib|dylib]
+    - (dependencies)
+    - `wolfssl.dll`
+    - `glslang.dll`
+
 - `include/`
+    - `deshader`
+        - `commands.h`
+        - `macros.h`
     - `deshader.h`
     - `deshader.hpp`
     - `deshader.zig`
 
-The files inside `include/` are bindings for your application.
+The files inside `include/` are API definitions for use in your application.
 
-### Without runner
+### Without Runner
 #### Linux
 ```sh
 DESHADER_LIB=your/lib/dir/libdeshader.so /your/app/dir/app # Loads Deshader into your application
@@ -149,6 +161,7 @@ DESHADER_LIB=your/lib/dir/libdeshader.so /your/app/dir/app # Loads Deshader into
 #### Windows
 ```bat
 cp path\to\deshader.dll your\app\dir\opengl32.dll
+cp dependencies(see above) your\app\dir
 your\app\dir\app.exe
 ```
 
@@ -167,11 +180,10 @@ Name           | Values                        | Description
 `linkage`      | `Static`, `Dynamic` (default) | Select type of for Deshader library
 `wolfSSL`      | `true`, `false` (default)     | Link with system or VCPKG provided WolfSSL instead of compiling it from source
 `logIntercept` | `true`, `false` (default)     | Enable logging of intercepted GL (not on Mac) procedure requests
-`deps`         | `true`, `false` (default)     | Also build dependencies before the final Deshader library
-`embedEditor`  | `true` (default), `false`     | Embed VSCode into Deshader. Otherwise external editor must be used. Can save 4MB in ReleaseSmall.
+`editor`       | `true` (default), `false`     | Embed VSCode into Deshader. Otherwise external editor must be used. Can save 4MB in release=small.
 `glAddLoader`  | any string                    | Specify a single additional function name that will be exported and intercepted
  
-### Production build
+### Production Build
 - Add `--release` to `zig build` commands
     - `--release=small` will disable debug and info meassages
     - `--release=safe` will will enable info meassages
@@ -180,7 +192,6 @@ Name           | Values                        | Description
 ## Frequently Seen Errors
 - Cannot compile
     - Something with `struct_XSTAT` inside WolfSSL
-    - no field named `hex` in enum `zig.c_translation.CIntLiteralBase`
         - fix by `./fix_c_import.sh` or `./fix_c_import.ps1`
         **CAUTION**: The script searches the whole `zls` global cache in `~/.cache/zls` and deletes lines with `struct_XSTAT` so be careful.
 - Editor window is blank
@@ -223,35 +234,5 @@ PROCESS           | none                                    | Comma separated li
 
 [^1]: Should be a comma separated list. The first found function will be used.
 [^2]: In this case `DESHADER_GL_PROC_LOADERS` must be a single function. Does not work on Mac OS.
-
-# Usage
-Deshader exposes several interfaces for controlling its behavior.
-- Remote commands server
-- `#pragma` clauses in shaders
-- C API
-- GUI (VSCode based editor)
-
-Generally more than one interface can be used at the same time and they can control the same features.
-
-Deshader is controlled by commands sent using HTTP or WebSocket protocol. The commands are documented in [doc/Commands.md](doc/Commands.md).
-## HTTP Command Server
-```sh
-curl http://127.0.0.1:8081/version
-```
-Should reply with `dev`
-
-Command parameters are passed as a `?query=strig&after=the&url=path`;
-
-## Websocket Command Server
-```sh
-websocat --no-fixups ws://127.0.0.1:8082
-version
-```
-Should reply with
-```
-202: Accepted
-dev
-```
-Command parameters are passed as a URI-like query string `?appended=to&the=command&name`
 
 If Deshader saved some of your time, you can leave a comment in the [discussions](https://github.com/OSDVF/deshader/discussions) or [star](https://github.com/OSDVF/deshader/star) the repo.

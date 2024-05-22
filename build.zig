@@ -69,7 +69,7 @@ pub fn build(b: *std.Build) !void {
 
     // Compile options
     const option_custom_library = b.option([]const String, "customLibrary", "Names of additional libraries to intercept");
-    const option_editor = b.option(bool, "editor", "Build editor (VSCode and extension) along Deshader") orelse true;
+    const option_editor = b.option(bool, "editor", "Build editor (VSCode and extension) along Deshader (default true)") orelse true;
     const option_docs = b.option(bool, "docs", "Generate API documentation") orelse false;
     const option_ignore_missing = b.option(bool, "ignoreMissing", "Ignore missing VK and GL libraries. GLX, EGL and VK will be required by default") orelse false;
     const option_include = b.option(String, "include", "Path to directory with additional headers to include");
@@ -77,7 +77,6 @@ pub fn build(b: *std.Build) !void {
     const option_linkage = b.option(Linkage, "linkage", "Select linkage type for deshader library. Cannot be combined with -Dofmt.") orelse Linkage.Dynamic;
     const option_log_intercept = b.option(bool, "logIntercept", "Log intercepted GL and VK procedure list to stdout") orelse false;
     const option_memory_frames = b.option(u32, "memoryFrames", "Number of frames in memory leak backtrace") orelse 7;
-    const option_wolf_system = b.option(bool, "wolfSSL", "Link dynamically WolfSSL available on this system instead of from vcpkg") orelse false;
 
     const deshader_lib: *std.Build.Step.Compile = if (option_linkage == .Static) b.addStaticLibrary(deshaderCompileOptions) else b.addSharedLibrary(deshaderCompileOptions);
     deshader_lib.defineCMacro("_GNU_SOURCE", null); // To access dl_iterate_phdr
@@ -122,7 +121,8 @@ pub fn build(b: *std.Build) !void {
     var deshader_dependent_dlls = std.ArrayList(String).init(b.allocator);
     try addVcpkgInstalledPaths(deshader_lib);
     // WolfSSL
-    if (try linkWolfSSL(deshader_lib, deshader_lib_install, !option_wolf_system)) |lib_name| {
+    const system_wolf = try systemHasLib(b, target.result, native_libs_location, "wolfssl");
+    if (try linkWolfSSL(deshader_lib, deshader_lib_install, !system_wolf)) |lib_name| {
         const with_ext = try std.mem.concat(b.allocator, u8, &.{ lib_name, targetTarget.dynamicLibSuffix() });
         try deshader_dependent_dlls.append(with_ext);
     }
@@ -329,7 +329,7 @@ pub fn build(b: *std.Build) !void {
         try vcpkg_step.vcpkg();
         vcpkg_cmd.dependOn(&vcpkg_step.step);
 
-        const system_libs_available = system_glslang and try systemHasLib(b, target.result, native_libs_location, "wolfssl") and system_nfd;
+        const system_libs_available = system_glslang and system_wolf and system_nfd;
         if (!system_libs_available) {
             deshader_lib.step.dependOn(&vcpkg_step.step);
         }
