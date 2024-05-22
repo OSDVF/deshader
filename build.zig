@@ -802,8 +802,9 @@ fn systemHasLib(c: *std.Build.Step.Compile, native_libs_location: String, lib: S
     defer b.allocator.free(libname);
     if (builtin.os.tag == target.os.tag and builtin.cpu.arch == target.cpu.arch) { // native
         for (c.root_module.lib_paths.items) |lib_dir| {
-            if (try fileWithPrefixExists(b.allocator, lib_dir.getPath(b), libname)) |full_name| {
-                log.info("Found library {s}", .{full_name});
+            const path = lib_dir.getPath(b);
+            if (try fileWithPrefixExists(b.allocator, path, libname)) |full_name| {
+                log.info("Found library {s} in {s}", .{ full_name, path });
                 b.allocator.free(full_name);
                 return true;
             }
@@ -811,7 +812,7 @@ fn systemHasLib(c: *std.Build.Step.Compile, native_libs_location: String, lib: S
     }
 
     if (try fileWithPrefixExists(b.allocator, native_libs_location, libname)) |full_name| {
-        log.info("Found system library {s}", .{full_name});
+        log.info("Found system library {s} in {s}", .{ full_name, native_libs_location });
         b.allocator.free(full_name);
         return true;
     } else return false;
