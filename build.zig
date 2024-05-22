@@ -77,11 +77,14 @@ pub fn build(b: *std.Build) !void {
     const option_linkage = b.option(Linkage, "linkage", "Select linkage type for deshader library. Cannot be combined with -Dofmt.") orelse Linkage.Dynamic;
     const option_log_intercept = b.option(bool, "logIntercept", "Log intercepted GL and VK procedure list to stdout") orelse false;
     const option_memory_frames = b.option(u32, "memoryFrames", "Number of frames in memory leak backtrace") orelse 7;
-    const options_traces = b.option(bool, "traces", "Enable traces for debugging (even in release mode)") orelse false;
+    const options_traces = b.option(bool, "traces", "Enable traces for debugging (even in release mode)")
+    // important! keep tracing support synced for Deshader Library and Runner, because there are casts from error aware functions to anyopaque
+    orelse if (optimize == .Debug) true else false;
 
     const deshader_lib: *std.Build.Step.Compile = if (option_linkage == .Static) b.addStaticLibrary(deshaderCompileOptions) else b.addSharedLibrary(deshaderCompileOptions);
     deshader_lib.defineCMacro("_GNU_SOURCE", null); // To access dl_iterate_phdr
     deshader_lib.root_module.error_tracing = options_traces;
+
     const deshader_lib_name = try std.mem.concat(b.allocator, u8, &.{ if (targetTarget == .windows) "" else "lib", deshader_lib.name, targetTarget.dynamicLibSuffix() });
     const deshader_lib_cmd = b.step("deshader", "Install deshader library");
     switch (optionOfmt) {
@@ -479,6 +482,7 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
         .target = target,
     });
+    runner_exe.root_module.error_tracing = options_traces;
     runner_exe.root_module.addAnonymousImport("common", .{
         .root_source_file = b.path("src/common.zig"),
         .imports = &.{

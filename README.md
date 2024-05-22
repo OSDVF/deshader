@@ -192,8 +192,10 @@ Name           | Values                        | Description
 ## Frequently Seen Errors
 - Cannot compile
     - Something with `struct_XSTAT` inside WolfSSL
-        - fix by `./fix_c_import.sh` or `./fix_c_import.ps1`
+        - fix by `./fix_c_import.sh` or `./fix_c_import.ps1` and build again
         **CAUTION**: The script searches the whole `zls` global cache in `~/.cache/zls` and deletes lines with `struct_XSTAT` so be careful.
+- Segmentation fault at when starting application from Runner GUI
+    - Check if Runner is build with the same tracing and release options as Deshader
 - Editor window is blank
     - This is a known issue between WebKit and vendor GL drivers
     - Disable GPU acceleration
