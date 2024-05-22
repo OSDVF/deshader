@@ -1,7 +1,7 @@
-[submodule "backend/libs/glsl_analyzer"]
+[submodule "libs/glsl_analyzer"]
 	path = libs/glsl_analyzer
 	url = git@github.com:OSDVF/glsl_analyzer.git
-[submodule "backend/libs/positron"]
+[submodule "libs/positron"]
 	path = libs/positron
 	url = git@github.com:OSDVF/positron.git
 [submodule "libs/ctregex"]
