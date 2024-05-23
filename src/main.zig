@@ -58,6 +58,7 @@ pub export fn deshaderEditorServerStop() usize {
 }
 
 pub export fn deshaderEditorWindowShow() usize {
+    DeshaderLog.debug("Show editor window", .{});
     if (options.editor) {
         gui.editorShow(common.command_listener) catch |err| {
             DeshaderLog.err(err_format, .{ @src().fn_name, err });
@@ -242,7 +243,11 @@ pub fn DllMain(instance: std.os.windows.HINSTANCE, reason: std.os.windows.DWORD,
     return std.os.windows.TRUE;
 }
 comptime {
-    if (builtin.os.tag != .windows) {
+    if (builtin.os.tag == .windows) {
+        @export(DllMain, .{
+            .name = "DllMain",
+        });
+    } else {
         const i = &wrapErrorRunOnLoad;
         const f = &finalize;
         @export(i, .{ .name = "init_array", .section = ".init_array" });

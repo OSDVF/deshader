@@ -33,10 +33,10 @@ fn browseFile(_: *State, current: CString) ?String {
 }
 
 fn browseDirectory(_: *State, current: CString) ?String {
-    var out_path: [*:0]C.nfdchar_t = undefined;
+    var out_path: ?[*:0]C.nfdchar_t = null;
     const result: C.nfdresult_t = C.NFD_PickFolder(current.ptr, @ptrCast(&out_path));
     switch (result) {
-        C.NFD_OKAY => return std.mem.span(out_path),
+        C.NFD_OKAY => return std.mem.span(out_path.?),
         C.NFD_CANCEL => return null,
         else => return std.mem.span(C.NFD_GetError()),
     }
