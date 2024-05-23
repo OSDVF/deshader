@@ -214,7 +214,10 @@ pub fn selfDllPathAlloc(a: std.mem.Allocator, concat_with: String) !String {
             if (length == 0) {
                 return std.os.windows.unexpectedError(std.os.windows.kernel32.GetLastError());
             } else {
-                return try std.mem.concat(a, u8, &.{ path[0..length], concat_with });
+                return try std.mem.concat(a, u8, &.{
+                    if (std.fs.readLinkAbsolute(path[0..length], &path)) |full| full else |_| path[0..length],
+                    concat_with,
+                });
             }
         } else {
             return std.os.windows.unexpectedError(std.os.windows.kernel32.GetLastError());

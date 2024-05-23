@@ -4,10 +4,6 @@
 #include <cstring>
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
-#ifdef __GNUC__
-#include <execinfo.h>
-#include <unistd.h>
-#endif
 #ifdef WIN32
 #include <windows.h>
 #include "resources.h"
@@ -22,6 +18,9 @@ void LoadFileInResource(int name, int type, DWORD& size, const char*& data)
     size = ::SizeofResource(handle, rc);
     data = static_cast<const char*>(::LockResource(rcData));
 }
+#elif defined(__GNUC__)
+#include <execinfo.h>
+#include <unistd.h>
 #endif
 
 void GLAPIENTRY
@@ -71,9 +70,11 @@ MessageCallback(GLenum source,
 
     std::cerr << "): " << message << std::endl;
 
+    #ifdef _POSIX_VERSION
     void *array[10];
     size_t size = backtrace(array, 10);
     backtrace_symbols_fd(array, size, STDERR_FILENO);
+    #endif
 }
 
 int main(int argc, char** argv) {

@@ -18,7 +18,7 @@ const gl_shaders = @import("../interceptors/gl_shaders.zig");
 const String = []const u8;
 const ZString = [:0]const u8;
 const CString = [*:0]const u8;
-const GetProcAddressSignature = fn (name: CString) gl.PROC;
+const GetProcAddressSignature = fn (name: CString) ?gl.PROC;
 
 // TODO multi-context
 // TODO wasm
@@ -30,15 +30,16 @@ pub const APIs = struct {
             pub var loader: ?*const GetProcAddressSignature = null;
             const default_loaders = [_]String{"wglGetProcAddress"};
             var possible_loaders: []const String = &@This().default_loaders;
-            const make_current_names: []const String = &.{ "wglMakeCurrent", "wglMakeContextCurrentARB" };
+            const make_current_names: []const ZString = &.{ "wglMakeCurrent", "wglMakeContextCurrentARB", "wglMakeContextCurrentEXT" };
             pub var make_current: struct {
-                *const fn (hdc: *const anyopaque, hglrc: *const anyopaque) c_int,
-                *const fn (draw: *const anyopaque, read: *const anyopaque, context: ?*const anyopaque) c_int,
-            } = .{ undefined, undefined };
-            const create_names: []const String = &.{ "wglCreateContext", "wglCreateContextAttribsARB" };
+                *const fn (hdc: *const anyopaque, hglrc: ?*const anyopaque) c_int,
+                *const fn (hDrawDC: *const anyopaque, hReadDC: *const anyopaque, hglrc: ?*const anyopaque) c_int,
+                *const fn (hDrawDC: *const anyopaque, hReadDC: *const anyopaque, hglrc: ?*const anyopaque) c_int,
+            } = .{ undefined, undefined, undefined };
+            const create_names: []const ZString = &.{ "wglCreateContext", "wglCreateContextAttribsARB" };
             pub var create: struct {
                 *const fn (hdc: *const anyopaque) ?*const anyopaque,
-                *const fn (hdc: *const anyopaque, attribs: *const c_int) ?*const anyopaque,
+                *const fn (hdc: *const anyopaque, share: *const anyopaque, attribs: ?[*]c_int) ?*const anyopaque,
             } = .{ undefined, undefined };
             const destroy_name = "wglDeleteContext";
             pub var destroy: ?*const fn (hdc: *const anyopaque) void = null;
@@ -51,7 +52,7 @@ pub const APIs = struct {
             var possible_loaders: []const String = &.{};
             var make_current_names: []const ZString = &.{""};
             pub var make_current: struct { *const fn (hdc: *const anyopaque, hglrc: *const anyopaque) c_int } = .{undefined};
-            pub var create_names = []const ZString{""};
+            pub var create_names = [_]ZString{""};
             pub var create: struct { *const fn (hdc: *const anyopaque) ?*const anyopaque } = .{undefined};
             var destroy_name = "";
             pub var destroy: ?*const fn (hdc: *const anyopaque) void = null;
@@ -276,8 +277,7 @@ pub fn loadGlLib() !void {
         var names = std.ArrayList(String).init(common.allocator);
         var split = std.mem.splitScalar(u8, customLib.?, ',');
         while (split.next()) |name| {
-            names.append(name) catch |err|
-                DeshaderLog.err("Failed to allocate memory for custom GL library name: {any}", .{err});
+            try names.append(name);
         }
         APIs.gl.custom.names = names.items;
     }
@@ -322,20 +322,26 @@ pub fn loadGlLib() !void {
                     defer common.allocator.free(loaderZ);
                     if (gl_lib.lib.?.lookup(*const GetProcAddressSignature, loaderZ)) |proc| {
                         gl_lib.loader = proc;
+                        DeshaderLog.debug("Found loader {s}", .{loader});
                     }
                 }
                 inline for (gl_lib.make_current, 0..) |func, i| {
                     if (gl_lib.lib.?.lookup(@TypeOf(func), gl_lib.make_current_names[i])) |target| {
                         gl_lib.make_current[i] = @ptrCast(target);
+                        DeshaderLog.debug("Found make current {s}", .{gl_lib.make_current_names[i]});
                     }
                 }
                 inline for (gl_lib.create, 0..) |func, i| {
                     if (gl_lib.lib.?.lookup(@TypeOf(func), gl_lib.create_names[i])) |target| {
                         gl_lib.create[i] = @ptrCast(target);
+
+                        DeshaderLog.debug("Found create {s}", .{gl_lib.create_names[i]});
                     }
                 }
                 if (gl_lib.lib.?.lookup(@TypeOf(gl_lib.destroy), gl_lib.destroy_name)) |target| {
                     gl_lib.destroy = @ptrCast(target);
+
+                    DeshaderLog.debug("Found destroy {s}", .{gl_lib.destroy_name});
                 }
             } else |err| {
                 if (builtin.os.tag == .linux and builtin.link_libc) {
@@ -394,13 +400,21 @@ pub fn LoaderInterceptor(comptime interface: type, comptime loader: String) type
                 DeshaderLog.err("Loader " ++ loader ++ " is not available", .{});
                 return null;
             }
-            const original = interface.loader.?(procedure);
-            const target = intercepted.map.get(std.mem.span(procedure));
+            const span = std.mem.span(procedure);
+            const target = intercepted.map.get(span);
             if (target != null) {
                 if (options.logIntercept) {
                     DeshaderLog.debug("Intercepting " ++ loader ++ " procedure {s}", .{procedure});
                 }
                 return target.?;
+            }
+            const original = interface.loader.?(procedure) orelse interface.lib.?.lookup(gl.PROC, span);
+            if (options.logIntercept) {
+                if (original) |_| {
+                    DeshaderLog.debug("Found original {s}", .{procedure});
+                } else {
+                    DeshaderLog.warn("Failed to find original {s}", .{procedure});
+                }
             }
             return original;
         }

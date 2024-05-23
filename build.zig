@@ -22,7 +22,8 @@ fn openIterableDir(path: String) std.fs.File.OpenError!if (@hasDecl(std.fs, "ope
 }
 
 pub fn build(b: *std.Build) !void {
-    var target = b.standardTargetOptions(.{});
+    var target = b.standardTargetOptions(.{ //.default_target = .{ .abi = if (builtin.os.tag == .windows) .msvc else null }
+    });
     const optimize: std.builtin.OptimizeMode = switch (b.release_mode) {
         .any => .ReleaseSafe,
         .fast => .ReleaseFast,
@@ -138,12 +139,13 @@ pub fn build(b: *std.Build) !void {
 
     // GLSLang
     var system_glslang = true;
-    inline for (.{ "glslang", "glslang-default-resource-limits", "MachineIndependent", "GenericCodeGen" }) |glslang| {
-        system_glslang = system_glslang and try systemHasLib(deshader_lib, native_libs_location, glslang);
+    inline for (.{ "glslang", "glslang-default-resource-limits", "MachineIndependent", "GenericCodeGen" }) |l| {
+        const lib_name = if (targetTarget == .windows) if (b.release_mode == .off) l ++ "d" else l else l;
+        system_glslang = system_glslang and try systemHasLib(deshader_lib, native_libs_location, lib_name);
 
-        deshader_lib.linkSystemLibrary2(glslang, .{ .needed = true });
+        deshader_lib.linkSystemLibrary2(lib_name, .{ .needed = true });
         if (!system_glslang) {
-            try installVcpkgLibrary(deshader_lib_install, glslang);
+            _ = try installVcpkgLibrary(deshader_lib_install, lib_name);
         }
     }
 
@@ -276,8 +278,7 @@ pub fn build(b: *std.Build) !void {
     // WolfSSL - a serve's dependency
     const system_wolf = try systemHasLib(deshader_lib, native_libs_location, "wolfssl");
     if (try linkWolfSSL(deshader_lib, deshader_lib_install, !system_wolf)) |lib_name| {
-        const with_ext = try std.mem.concat(b.allocator, u8, &.{ lib_name, targetTarget.dynamicLibSuffix() });
-        try deshader_dependent_dlls.append(with_ext);
+        try deshader_dependent_dlls.append(lib_name);
     }
 
     //
@@ -371,7 +372,7 @@ pub fn build(b: *std.Build) !void {
             var editor_files_lines = std.mem.splitScalar(u8, editor_files, '\n');
             editor_files_lines.reset();
             while (editor_files_lines.next()) |line| {
-                const path = try std.fmt.allocPrint(b.allocator, "{s}/{s}", .{ editor_directory, line });
+                const path = try std.fmt.allocPrint(b.allocator, "{s}/{s}", .{ editor_directory, std.mem.trim(u8, line, "\n\r\t ") });
                 try files.append(path);
                 if (optimize != .Debug) { // In debug mode files are served from physical filesystem so one does not need to recompile Deshader each time
                     try embedCompressedFile(deshader_lib, if (option_editor) &editor_step.step else null, path);
@@ -562,14 +563,10 @@ pub fn build(b: *std.Build) !void {
             //example_glfw_cpp.linkLibrary(deshader_lib);
             try linkGlew(example_glfw_cpp.install, targetTarget);
 
+            // Embed shaders into the executable
             if (targetTarget == .windows) {
-                example_glfw_cpp.compile.addWin32ResourceFile(.{ .file = b.path(try std.fs.path.join(b.allocator, &.{
-                    b.build_root.path.?,
-                    "examples",
-                    "shaders.rc",
-                })) });
+                example_glfw_cpp.compile.addWin32ResourceFile(.{ .file = b.path(b.pathJoin(&.{ "examples", "shaders.rc" })) });
             } else {
-                // Embed shaders into the executable
                 inline for (.{ "fragment.frag", "vertex.vert" }) |shader| {
                     const output = try std.fs.path.join(b.allocator, &.{ b.cache_root.path.?, "shaders", shader ++ ".o" });
                     b.cache_root.handle.access("shaders", .{}) catch try std.fs.makeDirAbsolute(std.fs.path.dirname(output).?);
@@ -718,11 +715,11 @@ fn fileWithPrefixExists(allocator: std.mem.Allocator, dirname: String, basename:
     return null;
 }
 
-fn vcpkgTriplet(t: std.Target.Os.Tag) String {
-    return if (builtin.os.tag == .windows) "x64-windows" else switch (t) {
+fn vcpkgTriplet(b: *const std.Build, t: std.Target.Os.Tag) String {
+    return switch (t) {
         .linux => "x64-linux",
         .macos => "x64-osx",
-        .windows => "x64-windows-cross",
+        .windows => if (b.release_mode == .off) "x64-windows-cross-dbg" else "x64-windows-cross-rel",
         else => @panic("Unsupported target"),
     };
 }
@@ -730,49 +727,54 @@ fn vcpkgTriplet(t: std.Target.Os.Tag) String {
 /// assuming vcpkg is called as by Visual Studio or `vcpkg install --triplet x64-windows-cross --x-install-root=build/vcpkg_installed` or inside DependenciesStep
 fn addVcpkgInstalledPaths(b: *std.Build, c: anytype) !void {
     const module = if (@hasField(@TypeOf(c.*), "root_module")) c.root_module else c;
-    const debug = if (module.optimize == .Debug) "debug" else "";
+    const debug = if (b.release_mode == .off) "debug" else "";
     const target = if (module.resolved_target) |t| t.result else builtin.target;
-    c.addIncludePath(b.path(b.pathJoin(&.{ "build", "vcpkg_installed", vcpkgTriplet(target.os.tag), "include" })));
-    c.addLibraryPath(b.path(b.pathJoin(&.{ "build", "vcpkg_installed", vcpkgTriplet(target.os.tag), debug, "bin" })));
-    c.addLibraryPath(b.path(b.pathJoin(&.{ "build", "vcpkg_installed", vcpkgTriplet(target.os.tag), debug, "lib" })));
+    c.addIncludePath(b.path(b.pathJoin(&.{ "build", "vcpkg_installed", vcpkgTriplet(b, target.os.tag), debug, "include" })));
+    c.addLibraryPath(b.path(b.pathJoin(&.{ "build", "vcpkg_installed", vcpkgTriplet(b, target.os.tag), debug, "bin" })));
+    c.addLibraryPath(b.path(b.pathJoin(&.{ "build", "vcpkg_installed", vcpkgTriplet(b, target.os.tag), debug, "lib" })));
 }
 
-fn installVcpkgLibrary(i: *std.Build.Step.InstallArtifact, name: String) !void {
+fn installVcpkgLibrary(i: *std.Build.Step.InstallArtifact, name: String) !String {
     const b = i.step.owner;
     const os = i.artifact.rootModuleTarget().os.tag;
-    var name_parts = std.mem.splitScalar(u8, name, '.');
-    const name_with_ext = try std.mem.concat(b.allocator, u8, &.{ name_parts.first(), os.dynamicLibSuffix() });
-    const lib_path = try b.build_root.join(b.allocator, &.{
-        "build",
-        "vcpkg_installed",
-        vcpkgTriplet(os),
-        "bin",
-        name_with_ext,
-    });
-    if (std.fs.accessAbsolute(lib_path, .{})) {
-        const dest_path = if (std.fs.path.dirname(i.dest_sub_path)) |sub_dir|
-            try std.fs.path.join(b.allocator, &.{ sub_dir, name_with_ext })
-        else
-            name_with_ext;
+    inline for (.{ "", "lib" }) |p| {
+        var name_parts = std.mem.splitScalar(u8, name, '.');
+        const name_with_ext = try std.mem.concat(b.allocator, u8, &.{ p, name_parts.first(), os.dynamicLibSuffix() });
+        const lib_path = b.pathJoin(&.{
+            "build",
+            "vcpkg_installed",
+            vcpkgTriplet(i.step.owner, os),
+            if (b.release_mode == .off) "debug" else "",
+            "bin",
+            name_with_ext,
+        });
+        if (b.build_root.handle.access(lib_path, .{})) {
+            const dest_path = if (std.fs.path.dirname(i.dest_sub_path)) |sub_dir|
+                try std.fs.path.join(b.allocator, &.{ sub_dir, name_with_ext })
+            else
+                name_with_ext;
 
-        // Copy the library to the install directory
-        i.step.dependOn(&(if (i.artifact.kind == .lib)
-            b.addInstallLibFile(b.path(lib_path), dest_path)
-        else
-            b.addInstallBinFile(b.path(lib_path), dest_path)).step);
+            // Copy the library to the install directory
+            i.step.dependOn(&(if (i.artifact.kind == .lib)
+                b.addInstallLibFile(b.path(lib_path), dest_path)
+            else
+                b.addInstallBinFile(b.path(lib_path), dest_path)).step);
 
-        log.info("Installed dynamic {s} from VCPKG", .{dest_path});
-    } else |err| {
-        log.warn("Could not find dynamic {s} from VCPKG but maybe system library will work too. {}", .{ name, err });
+            log.info("Installed dynamic {s} from VCPKG", .{dest_path});
+            return name_with_ext;
+        } else |_| {}
+    } else {
+        log.warn("Could not find dynamic {s} from VCPKG but maybe it is static or in system.", .{name});
     }
+    return name;
 }
 
 fn linkGlew(i: *std.Build.Step.InstallArtifact, target: std.Target.Os.Tag) !void {
     if (target == .windows) {
         try addVcpkgInstalledPaths(i.step.owner, i.artifact);
-        const glew = if (builtin.os.tag == .windows) "glew32" else "libglew32";
+        const glew = if (builtin.os.tag == .windows) if (i.artifact.root_module.optimize orelse .Debug == .Debug) "glew32d" else "glew32" else "libglew32";
         i.artifact.linkSystemLibrary2(glew, .{ .needed = true }); // VCPKG on x64-wndows-cross generates bin/glew32.dll but lib/libglew32.dll.a
-        try installVcpkgLibrary(i, "glew32");
+        _ = try installVcpkgLibrary(i, "glew32");
         i.artifact.linkSystemLibrary2("opengl32", .{ .needed = true });
     } else {
         i.artifact.linkSystemLibrary2("glew", .{ .needed = true });
@@ -794,15 +796,16 @@ fn winepath(alloc: std.mem.Allocator, path: String, toWindows: bool) !String {
 
 fn linkWolfSSL(compile: *std.Build.Step.Compile, install: *std.Build.Step.InstallArtifact, from_vcpkg: bool) !?String {
     const os = compile.rootModuleTarget().os.tag;
-    const wolfssl_lib_name = if (os == .windows and builtin.os.tag != .windows) "libwolfssl" else "wolfssl";
+    const wolfssl_lib_name = "wolfssl";
     compile.linkSystemLibrary2(wolfssl_lib_name, .{ .needed = true });
     if (from_vcpkg) {
-        try installVcpkgLibrary(install, wolfssl_lib_name); // This really depends on host build system
+        return try installVcpkgLibrary(install, wolfssl_lib_name);
     }
     if (os == .windows) {
         compile.defineCMacro("SINGLE_THREADED", null); // To workaround missing pthread.h
     }
-    return wolfssl_lib_name;
+    const with_ext = try std.mem.concat(compile.step.owner.allocator, u8, &.{ wolfssl_lib_name, compile.rootModuleTarget().dynamicLibSuffix() });
+    return with_ext;
 }
 
 /// Search for all lib directories

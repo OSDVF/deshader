@@ -38,6 +38,15 @@
             "cwd": "${workspaceRoot}"
         },
         {
+            "name": "CPPDBG - Runner GUI",
+            "request": "launch",
+            "type": "cppvsdbg",
+            "program": "${workspaceRoot}/zig-out/bin/deshader-run",
+    
+            "preLaunchTask": "Build Runner",
+            "cwd": "${workspaceRoot}"
+        },
+        {
             "name": "GDB - Generate Stubs",
             "type": "gdb",
             "request": "launch",
@@ -95,20 +104,38 @@
             }
         },
         {
-            "type": "cppvsdbg",
+            "type": "gdb",
             "request": "launch",
-            "program": "glfw.exe",
-            "name": "CPPDBG - GLFW",
-            "cwd": "${workspaceRoot}/zig-out/bin/deshader-examples/",
-            "preLaunchTask": "Build Examples",
+            "name": "Windows - GLFW",
+            "target": "${workspaceRoot}\\zig-out\\bin\\deshader-examples\\glfw.exe",
+            "cwd": "${workspaceRoot}",
+            "valuesFormatting": "parseText",
+            "autorun": [
+                "set environment LD_PRELOAD ${workspaceRoot}/zig-out/lib/libdeshader.so"
+            ],
+            "env": {
+                "DESHADER_PROCESS": "glfw",
+                "DESHADER_COMMANDS_WS": "8082",
+                "DESHADER_START_SERVER": "1",
+                "DESHADER_LSP": "8083",
+                "POWER_SAVE": "100",
+                "__NV_PRIME_RENDER_OFFLOAD": "0",
+                "__GLX_VENDOR_LIBRARY_NAME": "mesa"
+            }
         },
         {
             "type": "cppvsdbg",
             "request": "launch",
-            "program": "editor_linked_cpp.exe",
-            "name": "CPPDBG - Editor Linked",
+            "program": "${workspaceRoot}/zig-out/bin/deshader-examples/glfw.exe",
+            "name": "CPPDBG - GLFW",
             "cwd": "${workspaceRoot}/zig-out/bin/deshader-examples/",
-            "preLaunchTask": "Build Examples",
+        },
+        {
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${workspaceRoot}/zig-out/bin/deshader-examples/editor_linked_cpp.exe",
+            "name": "CPPDBG - Editor Linked",
+            "cwd": "${workspaceRoot}/zig-out/lib/",
             "environment": [
                 {
                     "name": "DESHADER_COMMANDS_WS",

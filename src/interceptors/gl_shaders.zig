@@ -35,7 +35,7 @@ pub threadlocal var current: *shaders = undefined;
 
 // Managed per-context state
 const State = struct {
-    proc_table: gl.ProcTable = undefined,
+    proc_table: ?gl.ProcTable = null,
     readback_step_buffers: std.AutoHashMapUnmanaged(usize, Buffer) = .{},
     unifoms_for_shaders: std.AutoArrayHashMapUnmanaged(usize, std.EnumMap(UniformTarget, gl.int)) = .{},
     primitives_written_queries: std.ArrayListUnmanaged(gl.uint) = .{},
@@ -62,7 +62,7 @@ const State = struct {
         }
         s.readback_step_buffers.deinit(common.allocator);
         const prev_proc_table = gl.getCurrentProcTable();
-        gl.makeProcTableCurrent(&s.proc_table);
+        gl.makeProcTableCurrent(@ptrCast(&s.proc_table));
         gl.DeleteQueries(@intCast(s.primitives_written_queries.items.len), s.primitives_written_queries.items.ptr);
         s.primitives_written_queries.deinit(common.allocator);
 
@@ -1435,35 +1435,35 @@ pub const context_procs = if (builtin.os.tag == .windows)
     struct {
         pub export fn wglMakeCurrent(hdc: *const anyopaque, context: ?*const anyopaque) c_int {
             const result = loaders.APIs.gl.wgl.make_current[0](hdc, context);
-            makeCurrent(loaders.APIs.gl.wgl, result);
+            makeCurrent(loaders.APIs.gl.wgl, context);
             return result;
         }
 
-        pub export fn wglMakeContextCurrentARB(hdc: *const anyopaque, read: *const anyopaque, write: *const anyopaque, context: *const anyopaque) c_int {
-            const result = loaders.APIs.gl.wgl.make_current[1](hdc, read, write, context);
-            makeCurrent(loaders.APIs.gl.wgl, result);
+        pub export fn wglMakeContextCurrentARB(hReadDC: *const anyopaque, hDrawDC: *const anyopaque, hglrc: ?*const anyopaque) c_int {
+            const result = loaders.APIs.gl.wgl.make_current[1](hReadDC, hDrawDC, hglrc);
+            makeCurrent(loaders.APIs.gl.wgl, hglrc);
             return result;
         }
 
-        pub export fn wglCreateContextAttribsARB(hdc: *const anyopaque, share: *const anyopaque, attribs: ?[*]c_int) *const anyopaque {
+        comptime {
+            @export(wglMakeContextCurrentARB, .{ .name = "wglMakeContextCurrentEXT" });
+        }
+
+        pub export fn wglCreateContextAttribsARB(hdc: *const anyopaque, share: *const anyopaque, attribs: ?[*]c_int) ?*const anyopaque {
             const result = loaders.APIs.gl.wgl.create[1](hdc, share, attribs);
 
-            makeCurrent(loaders.APIs.gl.wgl, result);
-
             return result;
         }
 
-        pub export fn wglCreateContext(hdc: *const anyopaque) *const anyopaque {
+        pub export fn wglCreateContext(hdc: *const anyopaque) ?*const anyopaque {
             const result = loaders.APIs.gl.wgl.create[0](hdc);
-
-            makeCurrent(loaders.APIs.gl.wgl, result);
 
             return result;
         }
 
         pub export fn wglDeleteContext(context: *const anyopaque) void {
             deleteContext(context);
-            loaders.APIs.gl.wgl.destroy[0](context);
+            loaders.APIs.gl.wgl.destroy.?(context);
         }
     }
 else
@@ -1550,21 +1550,40 @@ pub fn makeCurrent(comptime api: anytype, c: ?*const anyopaque) void {
             const result = shaders.services.getOrPut(common.allocator, context) catch |err| break :_try err;
             const c_state = (state.getOrPut(common.allocator, result.value_ptr) catch |err| break :_try err).value_ptr;
             if (result.found_existing) {
-                gl.makeProcTableCurrent(&c_state.proc_table);
+                gl.makeProcTableCurrent(@ptrCast(&c_state.proc_table));
             } else {
                 // Initialize per-context variables
                 c_state.* = .{};
 
                 if (!api.late_loaded) {
-                    loaders.loadGlLib() catch |err| break :_try err;
-                    // Late load all GL funcitions
-                    if (!c_state.proc_table.init(api.loader.?)) {
-                        log.err("Failed to load some GL functions", .{});
-                    }
-
-                    api.late_loaded = true;
+                    if (loaders.loadGlLib()) {
+                        api.late_loaded = true;
+                    } else |err| break :_try err;
                 }
-                gl.makeProcTableCurrent(&c_state.proc_table);
+                if (c_state.proc_table == null) {
+                    c_state.proc_table = undefined;
+                    // Late load all GL funcitions
+                    if (!c_state.proc_table.?.init(if (builtin.os.tag == .windows) struct {
+                        pub fn loader(name: CString) ?*const anyopaque {
+                            return api.loader.?(name) orelse api.lib.?.lookup(*const anyopaque, std.mem.span(name));
+                        }
+                    }.loader else api.loader.?)) {
+                        var f = std.ArrayListUnmanaged(u8){};
+                        defer if (builtin.mode == .Debug) f.deinit(common.allocator);
+                        if (builtin.mode == .Debug) {
+                            f.append(common.allocator, '\n') catch {};
+                            inline for (@typeInfo(gl.ProcTable).Struct.fields) |decl| {
+                                const p = @field(c_state.proc_table.?, decl.name);
+                                if (@intFromPtr(p) == 0) {
+                                    f.appendSlice(common.allocator, decl.name ++ "\n") catch {};
+                                }
+                            }
+                        }
+                        log.err("Failed to load some GL functions{s}", .{if (builtin.mode == .Debug) f.items else ""});
+                    }
+                }
+
+                gl.makeProcTableCurrent(&c_state.proc_table.?);
 
                 log.debug("Initializing service {x} for context {x}", .{ @intFromPtr(result.value_ptr), @intFromPtr(context) });
                 const buffers_supported = blk: {

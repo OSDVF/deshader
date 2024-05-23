@@ -135,5 +135,8 @@
     "files.exclude": {
         "**/node_modules": true,
         "**/.git": true,
-    }
+    },
+    "lldb.displayFormat": "auto",
+    "lldb.dereferencePointers": true,
+    "lldb.consoleMode": "commands"
 }

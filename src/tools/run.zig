@@ -197,7 +197,7 @@ fn symlinkLibToLib(cwd: std.fs.Dir, target_path: String, symlink_dir: String, dl
                 break :blk true; //repeat
             }) {}
         }
-        try std.os.unlink(symlink_path);
+        try std.posix.unlink(symlink_path);
     } else |err| {
         err catch {};
     }
@@ -232,7 +232,7 @@ fn dlerror() if (builtin.os.tag == .windows) String else [*:0]const u8 {
 fn dlopenAbsolute(p: String) !std.DynLib {
     if (builtin.os.tag == .windows) {
         const handle = try common.LoadLibraryEx(p, false);
-        return std.DynLib{ .dll = @ptrCast(handle) };
+        return std.DynLib{ .inner = .{ .dll = @ptrCast(handle) } };
     } else {
         return std.DynLib.open(p);
     }
@@ -245,7 +245,7 @@ fn run(target_argv: []const String, working_dir: ?String, env: ?std.StringHashMa
     defer common.allocator.free(deshader_path_buffer);
 
     if (builtin.os.tag == .windows) {
-        deshader_or_dir_name = try std.unicode.utf16leToUtf8Alloc(common.allocator, try std.os.windows.GetModuleFileNameW(deshader_lib.dll, @ptrCast(deshader_path_buffer), std.fs.MAX_PATH_BYTES - 1));
+        deshader_or_dir_name = try std.unicode.utf16leToUtf8Alloc(common.allocator, try std.os.windows.GetModuleFileNameW(deshader_lib.inner.dll, @ptrCast(deshader_path_buffer), std.fs.MAX_PATH_BYTES - 1));
     } else {
         if (c.dlinfo(deshader_lib.inner.handle, c.RTLD_DI_ORIGIN, @ptrCast(deshader_path_buffer)) != 0) {
             const err = c.dlerror();

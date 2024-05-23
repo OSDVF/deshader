@@ -18,8 +18,17 @@ pub const CompressStep = struct {
 
     fn make(step: *std.Build.Step, progressNode: *std.Progress.Node) anyerror!void {
         const self: *@This() = @fieldParentPtr("step", step);
+
+        self.wrapped() catch |err| {
+            try step.addError("compressing failed: {s} at {?}", .{ @errorName(err), @errorReturnTrace() });
+        };
+
         progressNode.activate();
         defer progressNode.end();
+    }
+
+    fn wrapped(self: *@This()) !void {
+        var step = &self.step;
         const source = self.source.getPath(step.owner);
         const reader = try std.fs.openFileAbsolute(source, .{});
         var buffer: [10 * 1024 * 1024]u8 = undefined;
