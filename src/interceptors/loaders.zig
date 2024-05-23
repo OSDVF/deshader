@@ -43,7 +43,10 @@ pub const APIs = struct {
             } = .{ undefined, undefined };
             const destroy_name = "wglDeleteContext";
             pub var destroy: ?*const fn (hdc: *const anyopaque) void = null;
+            const get_current_name = "wglGetCurrentContext";
+            pub var get_current: ?*const fn () ?*const anyopaque = null;
             pub var late_loaded = false;
+            pub var last_params: struct { *const anyopaque } = undefined;
         };
         pub const custom = struct {
             var names: []const String = &[_]String{};
@@ -56,6 +59,9 @@ pub const APIs = struct {
             pub var create: struct { *const fn (hdc: *const anyopaque) ?*const anyopaque } = .{undefined};
             var destroy_name = "";
             pub var destroy: ?*const fn (hdc: *const anyopaque) void = null;
+            var get_current_name: ZString = "";
+            pub var get_current: ?*const fn () ?*const anyopaque = null;
+            pub var last_params: struct { *const anyopaque } = undefined;
             pub var late_loaded = false;
         };
     } else struct {
@@ -78,6 +84,9 @@ pub const APIs = struct {
             } = .{ undefined, undefined, undefined };
             const destroy_name = "glXDestroyContext";
             pub var destroy: ?*const fn (display: *const anyopaque, context: *const anyopaque) void = null;
+            const get_current_name = "glXGetCurrentContext";
+            pub var get_current: ?*const fn () ?*const anyopaque = null;
+            pub var last_params: struct { *const anyopaque, c_ulong } = undefined;
             pub var late_loaded = false;
         };
         pub const egl = struct {
@@ -94,7 +103,10 @@ pub const APIs = struct {
             } = .{undefined};
             const destroy_name = "eglDestroyContext";
             pub var destroy: ?*const fn (display: *const anyopaque, context: *const anyopaque) void = null;
+            const get_current_name = "eglGetCurrentContext";
+            pub var get_current: ?*const fn () ?*const anyopaque = null;
             pub var late_loaded = false;
+            pub var last_params: struct { *const anyopaque, *const anyopaque, *const anyopaque } = undefined;
         };
         pub const custom = struct {
             var names: []const String = &[_]String{};
@@ -107,7 +119,10 @@ pub const APIs = struct {
             var create: struct { *const fn (display: *const anyopaque, vis: *const anyopaque, share: *const anyopaque, direct: c_int) ?*const anyopaque } = .{undefined};
             var destroy_name = "";
             pub var destroy: ?*const fn (display: *const anyopaque, context: *const anyopaque) void = null;
+            var get_current_name: ZString = "";
+            pub var get_current: ?*const fn () ?*const anyopaque = null;
             pub var late_loaded = false;
+            pub var last_params: struct { *const anyopaque, c_ulong } = undefined;
         };
     };
     pub var originalDlopen: ?*const fn (name: ?CString, mode: c_int) callconv(.C) ?*const anyopaque = null;
@@ -215,9 +230,14 @@ comptime {
 
 const _known_gl_loaders =
     (if (builtin.os.tag == .windows)
-    APIs.gl.wgl.default_loaders ++ APIs.gl.wgl.make_current_names ++ APIs.gl.wgl.create_names ++ .{APIs.gl.wgl.destroy_name}
+    APIs.gl.wgl.default_loaders ++ APIs.gl.wgl.make_current_names ++ APIs.gl.wgl.create_names ++ .{ APIs.gl.wgl.destroy_name, APIs.gl.wgl.get_current_name }
 else
-    APIs.gl.glX.default_loaders ++ APIs.gl.glX.make_current_names ++ APIs.gl.glX.create_names ++ APIs.gl.egl.default_loaders ++ APIs.gl.egl.make_current_names ++ APIs.gl.egl.create_names ++ .{ APIs.gl.egl.destroy_name, APIs.gl.glX.destroy_name }) ++ [_]?String{options.glAddLoader};
+    APIs.gl.glX.default_loaders ++ APIs.gl.glX.make_current_names ++ APIs.gl.glX.create_names ++ APIs.gl.egl.default_loaders ++ APIs.gl.egl.make_current_names ++ APIs.gl.egl.create_names ++ .{
+        APIs.gl.egl.destroy_name,
+        APIs.gl.glX.destroy_name,
+        APIs.gl.egl.get_current_name,
+        APIs.gl.glX.get_current_name,
+    }) ++ [_]?String{options.glAddLoader};
 
 const _platform_gl_libs = if (builtin.os.tag == .windows) .{APIs.gl.wgl} else .{ APIs.gl.glX, APIs.gl.egl };
 const _gl_libs = _platform_gl_libs ++ .{APIs.gl.custom};
@@ -342,6 +362,11 @@ pub fn loadGlLib() !void {
                     gl_lib.destroy = @ptrCast(target);
 
                     DeshaderLog.debug("Found destroy {s}", .{gl_lib.destroy_name});
+                }
+                if (gl_lib.lib.?.lookup(@TypeOf(gl_lib.get_current), gl_lib.get_current_name)) |target| {
+                    gl_lib.get_current = @ptrCast(target);
+
+                    DeshaderLog.debug("Found get current {s}", .{gl_lib.get_current_name});
                 }
             } else |err| {
                 if (builtin.os.tag == .linux and builtin.link_libc) {

@@ -107,7 +107,7 @@ pub const OutputEvent = struct {
 };
 
 pub const Breakpoint = struct {
-    /// For Deshader specifically this is the stop point index
+    /// For Deshader specifically, this is the stop point index.
     id: ?usize,
     verified: bool = false,
     message: ?String = null,

@@ -71,7 +71,6 @@ pub fn build(b: *std.Build) !void {
     // Compile options
     const option_custom_library = b.option([]const String, "customLibrary", "Names of additional libraries to intercept");
     const option_editor = b.option(bool, "editor", "Build editor (VSCode and extension) along Deshader (default true)") orelse true;
-    const option_docs = b.option(bool, "docs", "Generate API documentation") orelse false;
     const option_ignore_missing = b.option(bool, "ignoreMissing", "Ignore missing VK and GL libraries. GLX, EGL and VK will be required by default") orelse false;
     const option_include = b.option(String, "include", "Path to directory with additional headers to include");
     const option_lib_dir = b.option(String, "lib", "Path to directory with additional libraries to link");
@@ -469,11 +468,13 @@ pub fn build(b: *std.Build) !void {
     //
     // Docs
     //
-    if (option_docs) b.installDirectory(.{
+    var docs = b.addInstallDirectory(.{
         .source_dir = deshader_lib.getEmittedDocs(),
         .install_dir = .prefix,
         .install_subdir = "docs",
     });
+    const deshader_docs = b.step("docs", "Generate API documentation");
+    deshader_docs.dependOn(&docs.step);
 
     //
     // Runner utility

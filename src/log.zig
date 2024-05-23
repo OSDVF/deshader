@@ -14,4 +14,6 @@ pub fn logFn(comptime level: std.log.Level, comptime scope: @TypeOf(.EnumLiteral
     }
     std.log.defaultLog(level, scope, format, args);
 }
-pub const std_options: std.Options = .{ .logFn = logFn };
+pub const std_options = std.Options{
+    .logFn = logFn,
+};

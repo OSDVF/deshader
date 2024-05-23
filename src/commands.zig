@@ -47,6 +47,8 @@ pub const CommandListener = struct {
     secure: bool = false, //TODO use SSL
     break_mutex: std.Thread.Mutex = .{},
     resume_condition: std.Thread.Condition = .{},
+    do_resume: bool = false,
+    paused: bool = false,
 
     pub fn start(allocator: std.mem.Allocator, http_port: ?u16, ws_port: ?u16, lsp_port: ?u16) !*@This() {
         const self = try allocator.create(@This());
@@ -251,7 +253,7 @@ pub const CommandListener = struct {
                         writer = try context.response.writer();
                     }
 
-                    const result = try std.fmt.allocPrint(provider.allocator, "Error while executing command {s}: {}\n{?}", .{ name, err, if (setting_vars.stackTraces) @errorReturnTrace() else &common.null_trace });
+                    const result = try std.fmt.allocPrint(provider.allocator, "Error while executing command {s}: {} at\n{?}", .{ name, err, if (setting_vars.stackTraces) @errorReturnTrace() else &common.null_trace });
                     defer provider.allocator.free(result);
                     DeshaderLog.err("{s}", .{result});
                     try writer.writeAll(result);
@@ -358,7 +360,7 @@ pub const CommandListener = struct {
                     else => unreachable,
                 }
             } else |err| {
-                const text = try std.fmt.allocPrint(common.allocator, "500: Internal Server Error\n{s}\n{}\n{?}", .{ command_echo, err, if (setting_vars.stackTraces) @errorReturnTrace() else &common.null_trace });
+                const text = try std.fmt.allocPrint(common.allocator, "500: Internal Server Error\n{s}\n{} at\n{?}", .{ command_echo, err, if (setting_vars.stackTraces) @errorReturnTrace() else &common.null_trace });
                 defer common.allocator.free(text);
                 try self.conn.writeText(text);
             }
@@ -469,29 +471,51 @@ pub const CommandListener = struct {
         end,
     };
 
-    pub fn sendEvent(self: *const @This(), comptime event: Event, body: anytype) !void {
+    pub fn sendEvent(self: *@This(), comptime event: Event, body: anytype) !void {
         const string = try std.json.stringifyAlloc(common.allocator, body, json_options);
         defer common.allocator.free(string);
-        for (self.ws.items) |ws| {
-            try ws.writeAllFrame(.text, &.{
+        for (self.ws.items, 0..) |ws, i| {
+            ws.writeAllFrame(.text, &.{
                 "600: Event\n",
                 @tagName(event) ++ "\n",
                 string,
-            });
+            }) catch |err| {
+                if (err == error.NotOpenForWriting) {
+                    _ = self.ws.swapRemove(i);
+                } else {
+                    return err;
+                }
+            };
         }
         // TODO some HTTP way of sending events (probably persistent connection)
     }
 
     /// Suspends the thread that calls this function, but processes commands in the meantime
     pub fn eventBreak(self: *@This(), comptime event: Event, body: anytype) !void {
-        try self.sendEvent(event, body);
+        self.paused = true;
+        self.do_resume = false;
+        var result = self.sendEvent(event, body);
         while (true) {
             self.break_mutex.lock();
             defer self.break_mutex.unlock();
-            self.resume_condition.timedWait(&self.break_mutex, 700 * 1000 * 1000) catch continue;
-
+            result catch { // retry sending the event
+                result = self.sendEvent(event, body);
+            };
+            self.resume_condition.timedWait(&self.break_mutex, 700 * 1000 * 1000) catch if (self.do_resume) {
+                self.do_resume = false;
+                break;
+            } else continue;
             break;
         }
+        DeshaderLog.debug("Resuming after event {s}", .{@tagName(event)});
+        self.paused = false;
+    }
+
+    fn unPause(self: *@This()) void {
+        self.break_mutex.lock();
+        self.do_resume = true;
+        self.resume_condition.broadcast();
+        self.break_mutex.unlock();
     }
 
     pub fn hasClient(self: @This()) bool {
@@ -567,11 +591,14 @@ pub const CommandListener = struct {
     }
 
     pub const commands = struct {
-        pub fn @"continue"() !void {
+        /// Continues to the next breakpoint
+        pub fn @"continue"(args: ?ArgumentsMap) !void {
             shaders.user_action = true;
-            common.command_listener.?.break_mutex.lock();
-            common.command_listener.?.break_mutex.unlock();
-            common.command_listener.?.resume_condition.broadcast();
+            const in_params = try parseArgs(dap.ContinueArguments, args);
+            const locator: *shaders.ShaderLocator = @ptrFromInt(in_params.threadId);
+            try locator.service.@"continue"(locator.shader);
+
+            common.command_listener.?.unPause();
         }
 
         pub fn terminate(args: ?ArgumentsMap) !void {
@@ -599,8 +626,8 @@ pub const CommandListener = struct {
                     if (context.service) |s| {
                         if (context.resource) |r| {
                             switch (r) {
-                                .programs => |locator| if (try s.Programs.getNestedByLocator(locator.sub orelse return error.TargetNotFound, locator.nested)) |shader| shader.clearBreakpoints(),
-                                .sources => |locator| if (try s.Shaders.getStoredByLocator(locator orelse return error.TargetNotFound)) |shader| shader.*.clearBreakpoints(),
+                                .programs => |locator| if (try s.Programs.getNestedByLocator(locator.sub orelse return error.TargetNotFound, locator.nested)) |shader| return shader.clearBreakpoints(),
+                                .sources => |locator| if (try s.Shaders.getStoredByLocator(locator orelse return error.TargetNotFound)) |shader| return shader.*.clearBreakpoints(),
                             }
                         }
                     }
@@ -636,6 +663,7 @@ pub const CommandListener = struct {
                             .id = bp[2],
                             .line = local_stop.line,
                             .column = local_stop.character,
+                            .verified = true,
                             .path = try s.fullPath(common.allocator, part, null, bp[1]),
                         };
                         try breakpoints_to_send.append(common.allocator, dap_bp);
@@ -646,7 +674,7 @@ pub const CommandListener = struct {
 
         pub fn debug(args: ?ArgumentsMap) !String {
             shaders.user_action = true;
-            const in_args = try parseArgs(dap.AttachRequest, args);
+            const in_args = try parseArgs(?dap.AttachRequest, args);
 
             var breakpoints_to_send = std.ArrayListUnmanaged(dap.Breakpoint){};
             shaders.debugging = true;
@@ -660,10 +688,12 @@ pub const CommandListener = struct {
                 breakpoints_to_send.deinit(common.allocator);
             }
 
-            if (in_args.console) |console_type| {
-                switch (console_type) {
-                    .integratedTerminal => {},
-                    else => {},
+            if (in_args) |a| {
+                if (a.console) |console_type| {
+                    switch (console_type) {
+                        .integratedTerminal => {},
+                        else => {},
+                    }
                 }
             }
 
@@ -672,10 +702,11 @@ pub const CommandListener = struct {
 
         pub fn noDebug() !void {
             shaders.user_action = true;
-            try @"continue"();
+            shaders.debugging = false;
             for (shaders.services.values()) |*s| {
                 s.revert_requested = true;
             }
+            common.command_listener.?.unPause();
         }
 
         pub fn evaluate(args: ?ArgumentsMap) !String {
@@ -768,12 +799,13 @@ pub const CommandListener = struct {
             //TODO
         }
 
+        /// Go to next program step. Enables program stepping when needed.
         pub fn next(args: ?ArgumentsMap) !void {
             shaders.user_action = true;
             const in_params = try parseArgs(dap.NextArguments, args);
             const locator: *shaders.ShaderLocator = @ptrFromInt(in_params.threadId);
             try locator.service.advanceStepping(locator.shader, null);
-            try @"continue"(); // TODO odpalovat draw cally
+            common.command_listener.?.unPause();
         }
 
         pub fn readMemory(_: ?ArgumentsMap) !void {
@@ -808,6 +840,63 @@ pub const CommandListener = struct {
             shaders.user_action = true;
             const in_params = try parseArgs(struct { shader: usize, thread: []usize, group: ?[]usize }, args);
             try shaders.selectThread(in_params.shader, in_params.thread, in_params.group);
+        }
+
+        pub fn setBreakpoints(args: ?ArgumentsMap) !String {
+            shaders.user_action = true;
+            const in_params = try parseArgs(dap.SetBreakpointsArguments, args);
+            const context = try shaders.ContextLocator.parse(in_params.path);
+            const s = context.service orelse return error.InvalidPath;
+            const r = context.resource orelse return error.InvalidPath;
+
+            var result = std.ArrayListUnmanaged(dap.Breakpoint){};
+            defer {
+                for (result.items) |bp| {
+                    common.allocator.free(bp.path);
+                }
+                result.deinit(common.allocator);
+            }
+            const target = try s.getResourcesByLocator(r);
+            const shader = (target.shader orelse return error.TargetNotFound).source;
+            const i_state = s.state.getPtr(shader.ref);
+
+            var remaining = std.AutoHashMapUnmanaged(usize, void){};
+            defer remaining.deinit(common.allocator);
+            {
+                var it = shader.breakpoints.keyIterator();
+                while (it.next()) |i| {
+                    _ = try remaining.getOrPut(common.allocator, i.*);
+                }
+            }
+
+            if (in_params.breakpoints) |bps| {
+                for (bps) |bp| {
+                    var bp_result = try shader.addBreakpoint(bp);
+                    if (bp_result.id) |id| {
+                        if (!remaining.remove(id)) { // this is a new breakpoint
+                            if (i_state) |st| {
+                                st.dirty = true;
+                            }
+                        }
+                    }
+                    bp_result.path = try s.fullPath(common.allocator, shader, target.program, target.shader.?.part);
+                    try result.append(common.allocator, bp_result);
+                }
+                var it = remaining.keyIterator();
+                while (it.next()) |i| {
+                    try shader.removeBreakpoint(i.*);
+                    if (i_state) |st| {
+                        st.dirty = true;
+                    }
+                }
+            } else {
+                shader.clearBreakpoints();
+                if (i_state) |st| {
+                    st.dirty = true;
+                }
+            }
+
+            return std.json.stringifyAlloc(common.allocator, result.items, json_options);
         }
 
         pub fn setDataBreakpoint(args: ?ArgumentsMap) !String {
@@ -850,6 +939,7 @@ pub const CommandListener = struct {
             //TODO
         }
 
+        /// The full state of the debugger
         pub fn state() !String {
             var breakpoints_to_send = std.ArrayListUnmanaged(dap.Breakpoint){};
             defer {
@@ -872,6 +962,7 @@ pub const CommandListener = struct {
             return std.json.stringifyAlloc(common.allocator, .{
                 .breakpoints = breakpoints_to_send.items,
                 .debugging = shaders.debugging,
+                .paused = common.command_listener.?.paused,
                 .lsp = if (analysis.isRunning()) setting_vars.languageServerPort else null,
                 .runningShaders = running_to_send.items,
                 .singlePauseMode = shaders.single_pause_mode,
@@ -1040,15 +1131,17 @@ pub const CommandListener = struct {
             return analysis.serverStop();
         }
 
-        /// path: String
+        /// Returns the currently set breakpoints
+        /// ### Arguments (not required)
+        /// `path`: String
         pub fn listBreakpoints(args: ?ArgumentsMap) ![]const String {
+            var result = std.ArrayList(String).init(common.allocator);
             if (args) |sure_args| {
                 if (sure_args.get("path")) |path| {
                     const context = try shaders.ContextLocator.parse(path);
                     const s = context.service orelse return error.InvalidPath;
                     const locator = context.resource orelse return error.InvalidPath;
                     const shader = ((try s.getResourcesByLocator(locator)).shader orelse return error.TargetNotFound).source;
-                    var result = std.ArrayList(String).init(common.allocator);
                     const steps = try shader.*.possibleSteps();
                     const steps_pos = steps.items(.pos);
                     var it = shader.*.breakpoints.keyIterator();
@@ -1058,7 +1151,21 @@ pub const CommandListener = struct {
                     return result.toOwnedSlice();
                 }
             }
-            return error.FileNotFound;
+            // From all files
+            for (shaders.services.values()) |*s| {
+                var it = s.Shaders.all.valueIterator();
+                while (it.next()) |sh| {
+                    for (sh.*.items) |*part| {
+                        var it2 = part.breakpoints.keyIterator();
+                        const steps = try part.possibleSteps();
+                        while (it2.next()) |bp| {
+                            const pos = steps.items(.pos)[bp.*];
+                            try result.append(try std.fmt.allocPrint(common.allocator, "{?d},{?d}", .{ pos.line, pos.character }));
+                        }
+                    }
+                }
+            }
+            return result.toOwnedSlice();
         }
 
         var help_out: [
@@ -1116,8 +1223,8 @@ pub const CommandListener = struct {
                             if (std.ascii.eqlIgnoreCase(decl.name, name)) {
                                 const field = @field(setting_vars, decl.name);
                                 switch (@TypeOf(field)) {
-                                    bool => setBool(decl.name, target_val),
-                                    u16 => try setInt(decl.name, u16, target_val),
+                                    bool => return setBool(decl.name, target_val),
+                                    u16 => return setInt(decl.name, u16, target_val),
                                     else => |t| DeshaderLog.err("Unknown setting datatype: {}", .{t}),
                                 }
                             }
@@ -1149,8 +1256,9 @@ pub const CommandListener = struct {
             common.allocator.free(r);
         }
 
+        const addBreakpoint = stringReturning;
         const list = stringReturning;
-        const setBreakpoint = stringReturning;
+        const setBreakpoints = stringReturning;
         const stat = stringReturning;
         const state = stringReturning;
         //const completion = stringReturning;

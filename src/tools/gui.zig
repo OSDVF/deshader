@@ -17,6 +17,7 @@ const ZString = [:0]const u8;
 
 pub fn getProductJson(allocator: std.mem.Allocator, https: bool, port: u16) !String {
     const authority = try std.fmt.allocPrint(allocator, "127.0.0.1:{}", .{port});
+    // TODO probe the https://open-vsx.org and do not use it if not available (vscode would not even work without the gallery)
     defer allocator.free(authority);
     return try std.json.stringifyAlloc(allocator, .{
         .productConfiguration = .{

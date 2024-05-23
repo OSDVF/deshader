@@ -20,7 +20,7 @@ const ids = @cImport(@cInclude("commands.h"));
 
 const CString = [*:0]const u8;
 const String = []const u8;
-const Buffer = []u8;
+const uvec2 = struct { u32, u32 };
 
 const BufferType = enum(gl.@"enum") {
     AtomicCounter = gl.ATOMIC_COUNTER_BUFFER,
@@ -28,7 +28,11 @@ const BufferType = enum(gl.@"enum") {
     TransformFeedback = gl.TRANSFORM_FEEDBACK_BUFFER,
     Uniform = gl.UNIFORM_BUFFER,
 };
-const UniformTarget = enum { thread_selector, step_selector, bp_selector };
+const UniformTargets = struct {
+    thread_selector: ?gl.int = null,
+    step_selector: ?gl.int = null,
+    bp_selector: ?gl.int = null,
+};
 
 /// The service instance that belongs to currently selected context.
 pub threadlocal var current: *shaders = undefined;
@@ -36,8 +40,8 @@ pub threadlocal var current: *shaders = undefined;
 // Managed per-context state
 const State = struct {
     proc_table: ?gl.ProcTable = null,
-    readback_step_buffers: std.AutoHashMapUnmanaged(usize, Buffer) = .{},
-    unifoms_for_shaders: std.AutoArrayHashMapUnmanaged(usize, std.EnumMap(UniformTarget, gl.int)) = .{},
+    readback_step_buffers: std.AutoHashMapUnmanaged(usize, []uvec2) = .{},
+    uniforms_for_shaders: std.AutoArrayHashMapUnmanaged(usize, UniformTargets) = .{},
     primitives_written_queries: std.ArrayListUnmanaged(gl.uint) = .{},
 
     // memory for used indexed buffer binding indexed. OpenGL does not provide a standard way to query them.
@@ -66,7 +70,7 @@ const State = struct {
         gl.DeleteQueries(@intCast(s.primitives_written_queries.items.len), s.primitives_written_queries.items.ptr);
         s.primitives_written_queries.deinit(common.allocator);
 
-        s.unifoms_for_shaders.deinit(common.allocator);
+        s.uniforms_for_shaders.deinit(common.allocator);
         for (s.replacement_attachment_textures) |t| {
             if (t != 0) {
                 gl.DeleteTextures(1, @constCast(@ptrCast(&t)));
@@ -151,7 +155,7 @@ fn defaultLink(self: decls.ProgramPayload) callconv(.C) u8 {
             log.err("Failed to allocate memory for program info log: {any}", .{err});
             return 1;
         };
-        defer common.allocator.free(info_log[0..@intCast(info_length)]);
+        defer common.allocator.free(info_log[0..@intCast(info_length) :0]);
 
         gl.GetProgramInfoLog(program, info_length, &info_length, info_log);
         log.info("Program {d}:{?s} info:\n{s}", .{ program, self.path, info_log });
@@ -272,8 +276,8 @@ fn processOutput(r: InstrumentationResult) !void {
 
         const selected_thread = instr_state.globalSelectedThread();
         if (instr_state.outputs.step_storage) |*stor| {
-            // Examine if something was hit
-            const threads_hits: Buffer = c_state.readback_step_buffers.get(stor.ref.?).?;
+            // Retrieve the hit storage
+            const threads_hits = c_state.readback_step_buffers.get(stor.ref.?).?;
             switch (stor.location) {
                 .Interface => |interface| {
                     switch (current.Shaders.all.get(shader_ref).?.items[0].stage) {
@@ -303,7 +307,7 @@ fn processOutput(r: InstrumentationResult) !void {
                                 0,
                                 @intCast(instr_state.params.screen[0]),
                                 @intCast(instr_state.params.screen[1]),
-                                gl.RED_INTEGER,
+                                gl.RG_INTEGER,
                                 gl.UNSIGNED_BYTE, // The same format as the texture
                                 @intCast(threads_hits.len),
                                 threads_hits.ptr,
@@ -325,33 +329,37 @@ fn processOutput(r: InstrumentationResult) !void {
                 },
             }
 
+            // Scan for hits
             var max_hit: u32 = 0;
-            for (0..instr_state.params.screen[1]) |y| {
-                for (0..instr_state.params.screen[0]) |x| {
-                    const global_index: usize = x + y * instr_state.params.screen[0];
-                    if (threads_hits[global_index] > 0) { // 1-based (0 means no hit)
-                        const hit_id = threads_hits[global_index] - 1;
-                        // find the corresponding step index for SourceInterface
-                        const offsets = if (instr_state.outputs.parts_offsets) |pos| for (0.., pos) |i, po| {
-                            if (po >= hit_id) {
-                                break .{ i, po };
-                            }
-                        } else .{ 0, 0 } else null;
-                        if (offsets) |off| {
-                            const source_part = shader.items[off[0]];
-                            const local_hit_id = hit_id - off[1];
-                            if (source_part.breakpoints.contains(local_hit_id)) // Maybe should be stored in Result.Outputs instead as snapshot (more thread-safe?)
-                                _ = try bp_hit_ids.getOrPut(common.allocator, local_hit_id);
+            var max_hit_id: u32 = 0;
+            for (0..instr_state.outputs.totalThreadsCount()) |global_index| {
+                const hit: uvec2 = threads_hits[global_index];
+                if (hit[1] > 0) { // 1-based (0 means no hit)
+                    const hit_id = hit[0];
+                    const hit_index = hit[1] - 1;
+                    // find the corresponding step index for SourceInterface
+                    const offsets = if (instr_state.outputs.parts_offsets) |pos| for (0.., pos) |i, po| {
+                        if (po >= hit_id) {
+                            break .{ i, po };
                         }
+                    } else .{ 0, 0 } else null;
+                    if (offsets) |off| {
+                        const source_part = shader.items[off[0]];
+                        const local_hit_id = hit_id - off[1];
+                        if (source_part.breakpoints.contains(local_hit_id)) // Maybe should be stored in Result.Outputs instead as snapshot (more thread-safe?)
+                            _ = try bp_hit_ids.getOrPut(common.allocator, local_hit_id);
+                    }
 
-                        if (global_index == selected_thread) {
-                            instr_state.reached_step = hit_id;
-                            log.debug("Selected thread reached step {d}", .{hit_id});
-                            if (offsets) |off| {
-                                selected_thread_rstep = hit_id - off[1];
-                            }
+                    if (global_index == selected_thread) {
+                        instr_state.reached_step = .{ .index = hit_index, .id = hit_id };
+                        log.debug("Selected thread reached step ID {d} index {d}", .{ hit_id, hit_index });
+                        if (offsets) |off| {
+                            selected_thread_rstep = hit_id - off[1];
                         }
-                        max_hit = @max(max_hit, hit_id);
+                    }
+                    if (hit_index >= max_hit) {
+                        max_hit = hit_index;
+                        max_hit_id = hit_id;
                     }
                 }
             }
@@ -359,7 +367,9 @@ fn processOutput(r: InstrumentationResult) !void {
             if (instr_state.reached_step == null and !shaders.single_pause_mode) {
                 // TODO should not really occur
                 log.err("Stop was not reached but breakpoint was", .{});
-                if (max_hit != 0) instr_state.reached_step = max_hit;
+                if (max_hit != 0) {
+                    instr_state.reached_step = .{ .id = max_hit_id, .index = max_hit };
+                }
             }
         }
         const running_shader = try shaders.running.getOrPut(.{ .service = current, .shader = shader_ref });
@@ -392,14 +402,15 @@ fn deinitTexture(out_storage: *instrumentation.OutputStorage, _: std.mem.Allocat
 }
 
 fn deinitBuffer(out_storage: *instrumentation.OutputStorage, _: std.mem.Allocator) void {
-    if (out_storage.ref) |*r| {
-        gl.DeleteBuffers(1, @ptrCast(r));
+    if (out_storage.ref) |r| {
+        var cast: gl.uint = @intCast(r);
+        gl.DeleteBuffers(1, (&cast)[0..1]);
     }
 }
 
 /// Prepare debug output buffers for instrumented shaders execution
 fn prepareStorage(input: InstrumentationResult) !InstrumentationResult {
-    var result = input;
+    var result = input; // make mutable
     if (result.result.invalidated) {
         if (common.command_listener) |comm| {
             try comm.sendEvent(.invalidated, debug.InvalidatedEvent{ .areas = &.{debug.InvalidatedEvent.Areas.threads} });
@@ -423,57 +434,43 @@ fn prepareStorage(input: InstrumentationResult) !InstrumentationResult {
 
     var plat_params = &result.platform_params;
     var it = result.result.state.iterator();
-    while (it.next()) |state_entry| {
+    while (it.next()) |state_entry| { // for each shader stage (in the order they are executed)
         var instr_state = state_entry.value_ptr.*;
+        const shader_ref = state_entry.key_ptr.*;
         // Update uniforms
         if (result.result.uniforms_invalidated) {
-            const uniforms = try state.getPtr(current).?.unifoms_for_shaders.getOrPut(common.allocator, state_entry.key_ptr.*);
+            const uniforms = try state.getPtr(current).?.uniforms_for_shaders.getOrPut(common.allocator, shader_ref);
             if (!uniforms.found_existing) {
-                uniforms.value_ptr.* = std.EnumMap(UniformTarget, gl.int){};
+                uniforms.value_ptr.* = UniformTargets{};
             }
 
-            var thread_select_ref: gl.int = undefined;
-            if (uniforms.value_ptr.get(UniformTarget.thread_selector)) |ref| {
-                thread_select_ref = ref;
-            } else {
-                // TODO explicit locations, pack to vec4 type
-                thread_select_ref = gl.GetUniformLocation(result.platform_params.program, instr_state.outputs.thread_selector_ident.ptr);
-                uniforms.value_ptr.put(UniformTarget.thread_selector, thread_select_ref);
-            }
+            const thread_select_ref = gl.GetUniformLocation(result.platform_params.program, instr_state.outputs.thread_selector_ident.ptr);
             if (thread_select_ref >= 0) {
+                uniforms.value_ptr.thread_selector = thread_select_ref;
                 const selected_thread = instr_state.globalSelectedThread();
                 gl.Uniform1ui(thread_select_ref, @intCast(selected_thread));
                 log.debug("Setting selected thread to {d}", .{selected_thread});
             } else {
-                log.err("Could not find thread selector uniform in the program {x}", .{result.platform_params.program});
+                log.warn("Could not find thread selector uniform in shader {x}", .{shader_ref});
             }
 
             if (instr_state.target_step) |target| {
-                var step_selector_ref: gl.int = undefined;
-                if (uniforms.value_ptr.get(UniformTarget.step_selector)) |ref| {
-                    step_selector_ref = ref;
-                } else {
-                    step_selector_ref = gl.GetUniformLocation(result.platform_params.program, instr_state.outputs.desired_step_ident.ptr);
-                    uniforms.value_ptr.put(UniformTarget.step_selector, step_selector_ref);
-                }
-
+                const step_selector_ref = gl.GetUniformLocation(result.platform_params.program, instr_state.outputs.desired_step_ident.ptr);
                 if (step_selector_ref >= 0) {
-                    gl.Uniform1ui(step_selector_ref, @intCast(target));
+                    uniforms.value_ptr.step_selector = step_selector_ref;
+                    gl.Uniform1ui(step_selector_ref, target);
                     log.debug("Setting desired step to {d}", .{target});
                 } else {
-                    log.err("Could not find step selector uniform in the program {x}", .{result.platform_params.program});
+                    log.warn("Could not find step selector uniform in shader {x}", .{shader_ref});
                 }
             }
 
-            const bp_selector = if (uniforms.value_ptr.get(UniformTarget.bp_selector)) |ref| ref else blk: {
-                const ref = gl.GetUniformLocation(result.platform_params.program, instr_state.outputs.desired_bp_ident.ptr);
-                uniforms.value_ptr.put(UniformTarget.bp_selector, ref);
-                break :blk ref;
-            };
+            const bp_selector = gl.GetUniformLocation(result.platform_params.program, instr_state.outputs.desired_bp_ident.ptr);
             if (bp_selector >= 0) {
+                uniforms.value_ptr.bp_selector = bp_selector;
                 gl.Uniform1ui(bp_selector, @intCast(instr_state.target_bp));
                 log.debug("Setting desired breakpoint to {d}", .{instr_state.target_bp});
-            } else log.err("Could not find bp selector uniform in the program {x}", .{result.platform_params.program});
+            } else log.warn("Could not find bp selector uniform in shader {x}", .{shader_ref});
         }
         const context_state = state.getPtr(current).?;
         // Prepare storage for step counters
@@ -481,7 +478,7 @@ fn prepareStorage(input: InstrumentationResult) !InstrumentationResult {
             const total_length = instr_state.outputs.totalThreadsCount();
             switch (stor.location) {
                 .Interface => |interface| { // `id` should be the last attachment index
-                    switch (current.Shaders.all.get(state_entry.key_ptr.*).?.items[0].stage) {
+                    switch (current.Shaders.all.get(shader_ref).?.items[0].stage) {
                         .gl_fragment, .vk_fragment => {
                             var max_draw_buffers: gl.uint = undefined;
                             gl.GetIntegerv(gl.MAX_DRAW_BUFFERS, @ptrCast(&max_draw_buffers));
@@ -521,8 +518,8 @@ fn prepareStorage(input: InstrumentationResult) !InstrumentationResult {
                                 // Create a debug attachment for the framebuffer
                                 gl.GenTextures(1, (&debug_texture)[0..1]);
                                 gl.BindTexture(gl.TEXTURE_2D, debug_texture);
-                                gl.TexImage2D(gl.TEXTURE_2D, 0, gl.R32UI, @intCast(instr_state.params.screen[0]), @intCast(instr_state.params.screen[1]), 0, gl.RED_INTEGER, gl.UNSIGNED_INT, null);
-                                try context_state.readback_step_buffers.put(common.allocator, debug_texture, try common.allocator.alloc(u8, total_length));
+                                gl.TexImage2D(gl.TEXTURE_2D, 0, gl.RG32UI, @intCast(instr_state.params.screen[0]), @intCast(instr_state.params.screen[1]), 0, gl.RG_INTEGER, gl.UNSIGNED_INT, null);
+                                try context_state.readback_step_buffers.put(common.allocator, debug_texture, try common.allocator.alloc(uvec2, total_length * 2)); // is an array of uvec2
                                 stor.ref = debug_texture;
                                 stor.deinit_host = &deinitTexture;
                             } else {
@@ -566,16 +563,16 @@ fn prepareStorage(input: InstrumentationResult) !InstrumentationResult {
                     if (stor.ref == null) {
                         var new: gl.uint = undefined;
                         gl.GenBuffers(1, (&new)[0..1]);
-                        gl.NamedBufferStorage(new, @intCast(total_length), null, 0);
-                        stor.deinit_host = &deinitBuffer;
                         gl.BindBufferBase(gl.SHADER_STORAGE_BUFFER, @intCast(binding), @intCast(new));
-                        try context_state.readback_step_buffers.put(common.allocator, new, try common.allocator.alloc(u8, total_length));
+                        gl.NamedBufferStorage(new, @intCast(total_length * 2), null, gl.CLIENT_STORAGE_BIT);
+                        stor.deinit_host = &deinitBuffer;
+                        try context_state.readback_step_buffers.put(common.allocator, new, try common.allocator.alloc(uvec2, total_length * 2));
                         stor.ref = new;
                     }
                 },
             }
         }
-        if (instr_state.outputs.stack_trace) |st_storage| {
+        if (instr_state.outputs.stack_trace) |st_storage| { // not created dynamically as in the case of step storage, because there is always only one stack trace buffer (the one of the currently paused shader)
             gl.BindBufferBase(gl.SHADER_STORAGE_BUFFER, @intCast(st_storage.location.Buffer), c_state.stack_trace_ref);
         }
     }
@@ -645,7 +642,8 @@ fn getGeneralParams(program_ref: gl.uint) !GeneralParams {
     var i: gl.uint = 0;
     while (i < used_buffers_count) : (i += 1) { // for each buffer index
         var binding: gl.uint = undefined; // get the binding number
-        gl.GetProgramResourceiv(program_ref, gl.SHADER_STORAGE_BLOCK, i, 1, gl.BUFFER_BINDING, 1, null, @ptrCast(&binding));
+        const param: gl.@"enum" = gl.BUFFER_BINDING;
+        gl.GetProgramResourceiv(program_ref, gl.SHADER_STORAGE_BLOCK, i, 1, &param, 1, null, @ptrCast(&binding));
         try used_buffers.append(binding);
     }
 
@@ -831,8 +829,10 @@ fn instrumentCompute(num_groups: [3]usize) !InstrumentationResult {
 fn beginXfbQueries() void {
     const c_state = state.getPtr(current).?;
     const queries = &c_state.primitives_written_queries;
+    // TODO handle stale queries from previous frame
     for (0..@intCast(c_state.max_xfb_buffers)) |i| {
         var xfb_stream: gl.int = 0;
+        // check if some buffer is bound to the stream `i`
         gl.GetIntegeri_v(gl.TRANSFORM_FEEDBACK_BUFFER_BINDING, @intCast(i), (&xfb_stream)[0..1]);
         if (xfb_stream != 0) {
             queries.ensureTotalCapacity(common.allocator, i) catch |err| {
@@ -840,13 +840,14 @@ fn beginXfbQueries() void {
                 return;
             };
             const len = queries.items.len;
+            const none = std.math.maxInt(gl.uint);
             if (len <= i) {
                 queries.expandToCapacity();
                 for (len..i) |q| {
-                    queries.items[q] = 0; // any valid id would be probably greater... I promise
+                    queries.items[q] = none;
                 }
             }
-            if (queries.items[i] == 0) {
+            if (queries.items[i] == none) {
                 gl.GenQueries(1, (&queries.items[i])[0..1]);
             }
             gl.BeginQueryIndexed(gl.TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN, @intCast(i), queries.items[i]);
@@ -857,58 +858,81 @@ fn beginXfbQueries() void {
 fn endXfbQueries() void {
     const c_state = state.getPtr(current).?;
     const queries = &c_state.primitives_written_queries;
-    for (0..@intCast(c_state.max_xfb_buffers)) |i| { // TODO streams vs buffers
-        if (queries.items[i] != -1) {
+    for (queries.items, 0..) |q, i| { // TODO streams vs buffers
+        if (q != std.math.maxInt(gl.uint)) {
             gl.EndQueryIndexed(gl.TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN, @intCast(i));
         }
     }
 }
 
 fn dispatchDebug(
-    result_or_error: @typeInfo(@TypeOf(instrumentDraw)).Fn.return_type.?,
+    comptime instrument_func: anytype,
+    i_args: anytype,
     comptime dispatch_func: anytype,
     d_args: anytype,
 ) void {
-    dispatchDebugImpl(result_or_error, dispatch_func, d_args, false);
+    dispatchDebugImpl(instrument_func, i_args, dispatch_func, d_args, false) catch |err| {
+        log.err("Failed to process instrumentation: {}\n{}", .{ err, @errorReturnTrace() orelse &common.null_trace });
+    };
+}
+
+fn dispatchDebugDraw(
+    comptime instrument_func: anytype,
+    i_args: anytype,
+    comptime dispatch_func: anytype,
+    d_args: anytype,
+) void {
+    dispatchDebugImpl(instrument_func, i_args, dispatch_func, d_args, true) catch |err| {
+        log.err("Failed to process instrumentation: {}\n{}", .{ err, @errorReturnTrace() orelse &common.null_trace });
+    };
 }
 
 fn dispatchDebugImpl(
-    result_or_error: @typeInfo(@TypeOf(instrumentDraw)).Fn.return_type.?,
+    comptime instrument_func: anytype,
+    i_args: anytype,
     comptime dispatch_func: anytype,
     d_args: anytype,
     comptime xfb: bool,
-) void {
-    _ = _try: {
-        while (true) {
-            shaders.user_action = false;
-            const prepared = prepareStorage(result_or_error catch |err| break :_try err) catch |err| break :_try err;
-            if (xfb) {
-                beginXfbQueries();
-            }
-            @call(.auto, dispatch_func, d_args);
-            if (xfb) {
-                endXfbQueries();
-            }
-            processOutput(prepared) catch |err| break :_try err;
-            if (!shaders.user_action) {
-                break;
-            }
+) !void {
+    while (true) {
+        shaders.user_action = false;
+        const prepared = try prepareStorage(try @call(.auto, instrument_func, i_args));
+        if (xfb) {
+            beginXfbQueries();
         }
-    } catch |err| {
-        log.err("Failed to process instrumentation: {} {}", .{ err, @errorReturnTrace() orelse &common.null_trace });
-    };
+        @call(.auto, dispatch_func, d_args);
+        if (xfb) {
+            endXfbQueries();
+        }
+        try processOutput(prepared);
+        if (!shaders.user_action) {
+            break;
+        }
+    }
+    try restoreState();
+}
+
+fn restoreState() !void {
+    log.info("Restoring pipeline state", .{});
+    const c_state = state.getPtr(current) orelse return error.NoState;
+    for (c_state.uniforms_for_shaders.values()) |uniform| {
+        inline for (@typeInfo(UniformTargets).Struct.fields) |field| {
+            if (@field(uniform, field.name)) |location|
+                gl.Uniform1ui(location, 0); // reset desired step/breakpoint/thread to 0
+        }
+    }
 }
 
 // TODO
 // pub export fn glDispatchComputeGroupSizeARB(num_groups_x: gl.uint, num_groups_y: gl.uint, num_groups_z: gl.uint, group_size_x: gl.uint, group_size_y: gl.uint, group_size_z: gl.uint) void {
 //     if (shaders.instance.checkDebuggingOrRevert()) {
-//         dispatchDebug(instrumentCompute, .{[_]usize{ @intCast(num_groups_x), @intCast(num_groups_y), @intCast(num_groups_z) }},gl.DispatchComputeGroupSizeARB,.{num_groups_x, num_groups_y, num_groups_z, group_size_x, group_size_y, group_size_z});
+//         dispatchDebug(instrumentCompute, .{ .{[_]usize{ @intCast(num_groups_x), @intCast(num_groups_y), @intCast(num_groups_z) }},gl.DispatchComputeGroupSizeARB,.{num_groups_x, num_groups_y, num_groups_z, group_size_x, group_size_y, group_size_z});
 //     } else gl.DispatchComputeGroupSizeARB(num_groups_x, num_groups_y, num_groups_z, group_size_x, group_size_y, group_size_z);
 // }
 
 pub export fn glDispatchCompute(num_groups_x: gl.uint, num_groups_y: gl.uint, num_groups_z: gl.uint) void {
     if (current.checkDebuggingOrRevert()) {
-        dispatchDebug(instrumentCompute([_]usize{ @intCast(num_groups_x), @intCast(num_groups_y), @intCast(num_groups_z) }), gl.DispatchCompute, .{ num_groups_x, num_groups_y, num_groups_z });
+        dispatchDebug(instrumentCompute, .{[_]usize{ @intCast(num_groups_x), @intCast(num_groups_y), @intCast(num_groups_z) }}, gl.DispatchCompute, .{ num_groups_x, num_groups_y, num_groups_z });
     } else gl.DispatchCompute(num_groups_x, num_groups_y, num_groups_z);
 }
 
@@ -927,67 +951,67 @@ pub export fn glDispatchComputeIndirect(address: gl.intptr) void {
             gl.GetNamedBufferSubData(@intCast(buffer), address, @sizeOf(IndirectComputeCommand), &command);
         }
 
-        dispatchDebug(instrumentCompute([_]usize{ @intCast(command.num_groups_x), @intCast(command.num_groups_y), @intCast(command.num_groups_z) }), gl.DispatchComputeIndirect, .{address});
+        dispatchDebug(instrumentCompute, .{[_]usize{ @intCast(command.num_groups_x), @intCast(command.num_groups_y), @intCast(command.num_groups_z) }}, gl.DispatchComputeIndirect, .{address});
     } else gl.DispatchComputeIndirect(address);
 }
 
 pub export fn glDrawArrays(mode: gl.@"enum", first: gl.int, count: gl.sizei) void {
     if (current.checkDebuggingOrRevert()) {
-        dispatchDebugImpl(instrumentDraw(count, 1), gl.DrawArrays, .{ mode, first, count }, true);
+        dispatchDebugDraw(instrumentDraw, .{ count, 1 }, gl.DrawArrays, .{ mode, first, count });
     } else gl.DrawArrays(mode, first, count);
 }
 
 pub export fn glDrawArraysInstanced(mode: gl.@"enum", first: gl.int, count: gl.sizei, instanceCount: gl.sizei) void {
     if (current.checkDebuggingOrRevert()) {
-        dispatchDebugImpl(instrumentDraw(count, instanceCount), gl.DrawArraysInstanced, .{ mode, first, count, instanceCount }, true);
+        dispatchDebugDraw(instrumentDraw, .{ count, instanceCount }, gl.DrawArraysInstanced, .{ mode, first, count, instanceCount });
     } else gl.DrawArraysInstanced(mode, first, count, instanceCount);
 }
 
 pub export fn glDrawElements(mode: gl.@"enum", count: gl.sizei, _type: gl.@"enum", indices: usize) void {
     if (current.checkDebuggingOrRevert()) {
-        dispatchDebugImpl(instrumentDraw(count, 1), gl.DrawElements, .{ mode, count, _type, indices }, true);
+        dispatchDebugDraw(instrumentDraw, .{ count, 1 }, gl.DrawElements, .{ mode, count, _type, indices });
     } else gl.DrawElements(mode, count, _type, indices);
 }
 
 pub export fn glDrawElementsInstanced(mode: gl.@"enum", count: gl.sizei, _type: gl.@"enum", indices: ?*const anyopaque, instanceCount: gl.sizei) void {
     if (current.checkDebuggingOrRevert()) {
-        dispatchDebugImpl(instrumentDraw(count, instanceCount), gl.DrawElementsInstanced, .{ mode, count, _type, indices, instanceCount }, true);
+        dispatchDebugDraw(instrumentDraw, .{ count, instanceCount }, gl.DrawElementsInstanced, .{ mode, count, _type, indices, instanceCount });
     } else gl.DrawElementsInstanced(mode, count, _type, indices, instanceCount);
 }
 
 pub export fn glDrawElementsBaseVertex(mode: gl.@"enum", count: gl.sizei, _type: gl.@"enum", indices: ?*const anyopaque, basevertex: gl.int) void {
     if (current.checkDebuggingOrRevert()) {
-        dispatchDebugImpl(instrumentDraw(count, 1), gl.DrawElementsBaseVertex, .{ mode, count, _type, indices, basevertex }, true);
+        dispatchDebugDraw(instrumentDraw, .{ count, 1 }, gl.DrawElementsBaseVertex, .{ mode, count, _type, indices, basevertex });
     } else gl.DrawElementsBaseVertex(mode, count, _type, indices, basevertex);
 }
 
 pub export fn glDrawElementsInstancedBaseVertex(mode: gl.@"enum", count: gl.sizei, _type: gl.@"enum", indices: ?*const anyopaque, instanceCount: gl.sizei, basevertex: gl.int) void {
     if (current.checkDebuggingOrRevert()) {
-        dispatchDebugImpl(instrumentDraw(count, instanceCount), gl.DrawElementsInstancedBaseVertex, .{ mode, count, _type, indices, instanceCount, basevertex }, true);
+        dispatchDebugDraw(instrumentDraw, .{ count, instanceCount }, gl.DrawElementsInstancedBaseVertex, .{ mode, count, _type, indices, instanceCount, basevertex });
     } else gl.DrawElementsInstancedBaseVertex(mode, count, _type, indices, instanceCount, basevertex);
 }
 
 pub export fn glDrawRangeElements(mode: gl.@"enum", start: gl.uint, end: gl.uint, count: gl.sizei, _type: gl.@"enum", indices: ?*const anyopaque) void {
     if (current.checkDebuggingOrRevert()) {
-        dispatchDebugImpl(instrumentDraw(count, 1), gl.DrawRangeElements, .{ mode, start, end, count, _type, indices }, true);
+        dispatchDebugDraw(instrumentDraw, .{ count, 1 }, gl.DrawRangeElements, .{ mode, start, end, count, _type, indices });
     } else gl.DrawRangeElements(mode, start, end, count, _type, indices);
 }
 
 pub export fn glDrawRangeElementsBaseVertex(mode: gl.@"enum", start: gl.uint, end: gl.uint, count: gl.sizei, _type: gl.@"enum", indices: ?*const anyopaque, basevertex: gl.int) void {
     if (current.checkDebuggingOrRevert()) {
-        dispatchDebugImpl(instrumentDraw(count, 1), gl.DrawRangeElementsBaseVertex, .{ mode, start, end, count, _type, indices, basevertex }, true);
+        dispatchDebugDraw(instrumentDraw, .{ count, 1 }, gl.DrawRangeElementsBaseVertex, .{ mode, start, end, count, _type, indices, basevertex });
     } else gl.DrawRangeElementsBaseVertex(mode, start, end, count, _type, indices, basevertex);
 }
 
 pub export fn glDrawElementsInstancedBaseVertexBaseInstance(mode: gl.@"enum", count: gl.sizei, _type: gl.@"enum", indices: ?*const anyopaque, instanceCount: gl.sizei, basevertex: gl.int, baseInstance: gl.uint) void {
     if (current.checkDebuggingOrRevert()) {
-        dispatchDebugImpl(instrumentDraw(count, instanceCount), gl.DrawElementsInstancedBaseVertexBaseInstance, .{ mode, count, _type, indices, instanceCount, basevertex, baseInstance }, true);
+        dispatchDebugDraw(instrumentDraw, .{ count, instanceCount }, gl.DrawElementsInstancedBaseVertexBaseInstance, .{ mode, count, _type, indices, instanceCount, basevertex, baseInstance });
     } else gl.DrawElementsInstancedBaseVertexBaseInstance(mode, count, _type, indices, instanceCount, basevertex, baseInstance);
 }
 
 pub export fn glDrawElementsInstancedBaseInstance(mode: gl.@"enum", count: gl.sizei, _type: gl.@"enum", indices: ?*const anyopaque, instanceCount: gl.sizei, baseInstance: gl.uint) void {
     if (current.checkDebuggingOrRevert()) {
-        dispatchDebugImpl(instrumentDraw(count, instanceCount), gl.DrawElementsInstancedBaseInstance, .{ mode, count, _type, indices, instanceCount, baseInstance }, true);
+        dispatchDebugDraw(instrumentDraw, .{ count, instanceCount }, gl.DrawElementsInstancedBaseInstance, .{ mode, count, _type, indices, instanceCount, baseInstance });
     } else gl.DrawElementsInstancedBaseInstance(mode, count, _type, indices, instanceCount, baseInstance);
 }
 
@@ -1015,20 +1039,20 @@ pub fn parseIndirect(indirect: ?*const IndirectCommand) IndirectCommand {
 pub export fn glDrawArraysIndirect(mode: gl.@"enum", indirect: ?*const IndirectCommand) void {
     if (current.checkDebuggingOrRevert()) {
         const i = parseIndirect(indirect);
-        dispatchDebugImpl(instrumentDraw(@intCast(i.count), @intCast(i.instanceCount)), gl.DrawArraysIndirect, .{ mode, indirect }, true);
+        dispatchDebugDraw(instrumentDraw, .{ @as(gl.sizei, @intCast(i.count)), @as(gl.sizei, @intCast(i.instanceCount)) }, gl.DrawArraysIndirect, .{ mode, indirect });
     } else gl.DrawArraysIndirect(mode, indirect);
 }
 
 pub export fn glDrawElementsIndirect(mode: gl.@"enum", _type: gl.@"enum", indirect: ?*const IndirectCommand) void {
     if (current.checkDebuggingOrRevert()) {
         const i = parseIndirect(indirect);
-        dispatchDebugImpl(instrumentDraw(@intCast(i.count), @intCast(i.instanceCount)), gl.DrawElementsIndirect, .{ mode, _type, indirect }, true);
+        dispatchDebugDraw(instrumentDraw, .{ @as(gl.sizei, @intCast(i.count)), @as(gl.sizei, @intCast(i.instanceCount)) }, gl.DrawElementsIndirect, .{ mode, _type, indirect });
     } else gl.DrawElementsIndirect(mode, _type, indirect);
 }
 
 pub export fn glDrawArraysInstancedBaseInstance(mode: gl.@"enum", first: gl.int, count: gl.sizei, instanceCount: gl.sizei, baseInstance: gl.uint) void {
     if (current.checkDebuggingOrRevert()) {
-        dispatchDebugImpl(instrumentDraw(count, instanceCount), gl.DrawArraysInstancedBaseInstance, .{ mode, first, count, instanceCount, baseInstance }, true);
+        dispatchDebugDraw(instrumentDraw, .{ count, instanceCount }, gl.DrawArraysInstancedBaseInstance, .{ mode, first, count, instanceCount, baseInstance });
     } else gl.DrawArraysInstancedBaseInstance(mode, first, count, instanceCount, baseInstance);
 }
 
@@ -1038,7 +1062,7 @@ pub export fn glDrawTransformFeedback(mode: gl.@"enum", id: gl.uint) void {
         // get GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN
         var primitiveCount: gl.int = undefined;
         gl.GetQueryObjectiv(query, gl.QUERY_RESULT, &primitiveCount);
-        dispatchDebugImpl(instrumentDraw(primitiveCount, 1), gl.DrawTransformFeedback, .{ mode, id }, true);
+        dispatchDebugDraw(instrumentDraw, .{ primitiveCount, 1 }, gl.DrawTransformFeedback, .{ mode, id });
     } else gl.DrawTransformFeedback(mode, id);
 }
 
@@ -1048,7 +1072,7 @@ pub export fn glDrawTransformFeedbackInstanced(mode: gl.@"enum", id: gl.uint, in
         // get GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN
         var primitiveCount: gl.int = undefined;
         gl.GetQueryObjectiv(query, gl.QUERY_RESULT, &primitiveCount);
-        dispatchDebugImpl(instrumentDraw(primitiveCount, instanceCount), gl.DrawTransformFeedbackInstanced, .{ mode, id, instanceCount }, true);
+        dispatchDebugDraw(instrumentDraw, .{ primitiveCount, instanceCount }, gl.DrawTransformFeedbackInstanced, .{ mode, id, instanceCount });
     } else gl.DrawTransformFeedbackInstanced(mode, id, instanceCount);
 }
 
@@ -1058,7 +1082,7 @@ pub export fn glDrawTransformFeedbackStream(mode: gl.@"enum", id: gl.uint, strea
         // get GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN
         var primitiveCount: gl.int = undefined;
         gl.GetQueryObjectiv(query, gl.QUERY_RESULT, &primitiveCount);
-        dispatchDebugImpl(instrumentDraw(primitiveCount, 1), gl.DrawTransformFeedbackStream, .{ mode, id, stream }, true);
+        dispatchDebugDraw(instrumentDraw, .{ primitiveCount, 1 }, gl.DrawTransformFeedbackStream, .{ mode, id, stream });
     } else gl.DrawTransformFeedbackStream(mode, id, stream);
 }
 
@@ -1068,7 +1092,7 @@ pub export fn glDrawTransformFeedbackStreamInstanced(mode: gl.@"enum", id: gl.ui
         // get GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN
         var primitiveCount: gl.int = undefined;
         gl.GetQueryObjectiv(query, gl.QUERY_RESULT, &primitiveCount);
-        dispatchDebugImpl(instrumentDraw(primitiveCount, instanceCount), gl.DrawTransformFeedbackStreamInstanced, .{ mode, id, stream, instanceCount }, true);
+        dispatchDebugDraw(instrumentDraw, .{ primitiveCount, instanceCount }, gl.DrawTransformFeedbackStreamInstanced, .{ mode, id, stream, instanceCount });
     } else gl.DrawTransformFeedbackStreamInstanced(mode, id, stream, instanceCount);
 }
 
@@ -1077,14 +1101,22 @@ fn hashStr(str: String) u32 {
     return std.hash.CityHash32.hash(str);
 }
 
+/// Maximum number of lines from the shader source to scan for deshader pragmas
 const MAX_SHADER_PRAGMA_SCAN = 128;
 /// Supports pragmas:
+/// ```glsl
 /// #pragma deshader [property] "[value1]" "[value2]"
+/// #pragma deshader breakpoint
+/// #pragma deshader breakpoint-if [expression]
+/// #pragma deshader breakpoint-after [expression]
+/// #pragma deshader print "format string" [value1] [value2] ...
+/// #pragma deshader print-if [expression] "format string" [value1] [value2] ...
 /// #pragma deshader source "path/to/virtual/or/workspace/relative/file.glsl"
 /// #pragma deshader source-link "path/to/etc/file.glsl" - link to previous source
 /// #pragma deshader source-purge-previous "path/to/etc/file.glsl" - purge previous source (if exists)
-/// #pragma deshader workspace "/another/real/path" "/virtual/path" - include real path in vitual workspace
+/// #pragma deshader workspace "/another/real/path" "/virtual/path" - include real path in vitual workspace (for the current context)
 /// #pragma deshader workspace-overwrite "/absolute/real/path" "/virtual/path" - purge all previous virtual paths and include real path in vitual workspace
+/// ```
 /// Does not support multiline pragmas with \ at the end of line
 // TODO mutliple shaders for the same stage (OpenGL treats them as if concatenated)
 pub export fn glShaderSource(shader: gl.uint, count: gl.sizei, sources: [*][*:0]const gl.char, lengths: ?[*]gl.int) void {
@@ -1186,6 +1218,10 @@ pub export fn glShaderSource(shader: gl.uint, count: gl.sizei, sources: [*][*:0]
                         struct {},
                         union(enum) {
                             breakpoint: void,
+                            @"breakpoint-if": void,
+                            @"breakpoint-after": void,
+                            print: void,
+                            @"print-if": void,
                             workspace: void,
                             source: void,
                             @"source-link": void,
@@ -1211,8 +1247,17 @@ pub export fn glShaderSource(shader: gl.uint, count: gl.sizei, sources: [*][*:0]
                                 .@"source-purge-previous" => {
                                     current.Shaders.assignTag(shader_wide, source_i, options.positionals[0], .Overwrite) catch |err| objLabErr(options.positionals[0], shader, source_i, err);
                                 },
-                                .breakpoint => {
-                                    const new = debug.SourceBreakpoint{ .line = line_i + 1 }; // The breakpoint is in fact targeted on the next line
+                                .breakpoint, .print, .@"breakpoint-if", .@"breakpoint-after", .@"print-if" => {
+                                    const condition_pos: usize = if (v == .@"breakpoint-after" or v == .@"breakpoint-if" or v == .@"print-if") 1 else 0;
+                                    const new = debug.SourceBreakpoint{
+                                        .line = line_i + 1,
+                                        .logMessage = if (v == .print or v == .@"print-if")
+                                            std.mem.join(common.allocator, " ", options.positionals[condition_pos..]) catch null
+                                        else
+                                            null,
+                                        .condition = if (v == .@"breakpoint-if" or v == .@"print-if") options.positionals[condition_pos] else null,
+                                        .hitCondition = if (v == .@"breakpoint-after") options.positionals[condition_pos] else null,
+                                    }; // The breakpoint is in fact targeted on the next line
                                     if (current.addBreakpoint(.{ .untagged = .{ .ref = shader_wide, .part = source_i } }, new)) |bp| {
                                         if (bp.id) |stop_id| { // if verified
                                             log.debug("Shader {x} part {d}: breakpoint at line {d}, column {?d}", .{ shader, source_i, line_i, bp.column });
@@ -1227,6 +1272,9 @@ pub export fn glShaderSource(shader: gl.uint, count: gl.sizei, sources: [*][*:0]
                                         }
                                     } else |err| {
                                         log.warn("Failed to add breakpoint for shader {x} part {d}: {any}", .{ shader, source_i, err });
+                                    }
+                                    if (new.logMessage) |l| {
+                                        common.allocator.free(l);
                                     }
                                 },
                             }
@@ -1435,12 +1483,14 @@ pub const context_procs = if (builtin.os.tag == .windows)
     struct {
         pub export fn wglMakeCurrent(hdc: *const anyopaque, context: ?*const anyopaque) c_int {
             const result = loaders.APIs.gl.wgl.make_current[0](hdc, context);
+            loaders.APIs.gl.wgl.last_params = .{hdc};
             makeCurrent(loaders.APIs.gl.wgl, context);
             return result;
         }
 
         pub export fn wglMakeContextCurrentARB(hReadDC: *const anyopaque, hDrawDC: *const anyopaque, hglrc: ?*const anyopaque) c_int {
             const result = loaders.APIs.gl.wgl.make_current[1](hReadDC, hDrawDC, hglrc);
+            loaders.APIs.gl.wgl.last_params = .{hDrawDC};
             makeCurrent(loaders.APIs.gl.wgl, hglrc);
             return result;
         }
@@ -1462,8 +1512,7 @@ pub const context_procs = if (builtin.os.tag == .windows)
         }
 
         pub export fn wglDeleteContext(context: *const anyopaque) void {
-            deleteContext(context);
-            loaders.APIs.gl.wgl.destroy.?(context);
+            deleteContext(context, loaders.APIs.gl.wgl, .{});
         }
     }
 else
@@ -1471,71 +1520,60 @@ else
         //#region Context functions
         pub export fn glXMakeCurrent(display: *const anyopaque, drawable: c_ulong, context: ?*const anyopaque) c_int {
             const result = loaders.APIs.gl.glX.make_current[0](display, drawable, context);
+            loaders.APIs.gl.glX.last_params = .{ display, drawable };
             makeCurrent(loaders.APIs.gl.glX, context);
             return result;
         }
 
         pub export fn glXMakeContextCurrent(display: *const anyopaque, read: c_ulong, write: c_ulong, context: ?*const anyopaque) c_int {
             const result = loaders.APIs.gl.glX.make_current[1](display, read, write, context);
+            loaders.APIs.gl.glX.last_params = .{ display, write };
             makeCurrent(loaders.APIs.gl.glX, context);
             return result;
         }
 
         pub export fn glXCreateContext(display: *const anyopaque, vis: *const anyopaque, share: *const anyopaque, direct: c_int) ?*const anyopaque {
             const result = loaders.APIs.gl.glX.create[0](display, vis, share, direct);
-
-            makeCurrent(loaders.APIs.gl.glX, result);
-
             return result;
         }
 
         pub export fn glXCreateNewContext(display: *const anyopaque, render_type: c_int, share: *const anyopaque, direct: c_int) ?*const anyopaque {
             const result = loaders.APIs.gl.glX.create[1](display, render_type, share, direct);
-
-            makeCurrent(loaders.APIs.gl.glX, result);
-
             return result;
         }
 
         pub export fn glXCreateContextAttribsARB(display: *const anyopaque, vis: *const anyopaque, share: *const anyopaque, direct: c_int, attribs: ?[*]const c_int) ?*const anyopaque {
             const result = loaders.APIs.gl.glX.create[2](display, vis, share, direct, attribs);
-
-            makeCurrent(loaders.APIs.gl.glX, result);
-
             return result;
         }
 
         pub export fn eglMakeCurrent(display: *const anyopaque, read: *const anyopaque, write: *const anyopaque, context: ?*const anyopaque) c_uint {
             const result = loaders.APIs.gl.egl.make_current[0](display, read, write, context);
+            loaders.APIs.gl.egl.last_params = .{ display, read, write };
             makeCurrent(loaders.APIs.gl.egl, context);
             return result;
         }
 
         pub export fn eglCreateContext(display: *const anyopaque, config: *const anyopaque, share: *const anyopaque, attribs: ?[*]c_int) ?*const anyopaque {
             const result = loaders.APIs.gl.egl.create[0](display, config, share, attribs);
-
-            makeCurrent(loaders.APIs.gl.egl, result);
-
             return result;
         }
         //#endregion
 
         //#region Context destroy functions
         pub export fn glXDestroyContext(display: *const anyopaque, context: *const anyopaque) void {
-            deleteContext(context);
-            loaders.APIs.gl.glX.destroy.?(display, context);
+            deleteContext(context, loaders.APIs.gl.glX, .{display});
         }
 
         pub export fn eglDestroyContext(display: *const anyopaque, context: *const anyopaque) void {
-            deleteContext(context);
-            loaders.APIs.gl.egl.destroy.?(display, context);
+            deleteContext(context, loaders.APIs.gl.glX, .{display});
         }
         //#endregion
     };
 
 pub fn supportCheck(extension_iterator: anytype) bool {
     while (extension_iterator.next()) |ex| {
-        if (std.mem.endsWith(u8, ex, "shader_storage_buffer_object")) {
+        if (std.ascii.endsWithIgnoreCase(ex, "shader_storage_buffer_object")) {
             return true;
         }
     }
@@ -1636,16 +1674,23 @@ pub fn makeCurrent(comptime api: anytype, c: ?*const anyopaque) void {
     }
 }
 
-fn deleteContext(c: *const anyopaque) void {
+fn deleteContext(c: *const anyopaque, api: anytype, arg: anytype) void {
+    const prev_context = api.get_current.?();
     if (shaders.services.getPtr(c)) |s| {
-        s.deinit();
-        if (state.getPtr(s)) |c_state| {
-            c_state.deinit();
-            _ = state.remove(s);
+        deinit: {
+            if (@call(.auto, api.make_current[0], api.last_params ++ .{c}) != 0) break :deinit;
+            makeCurrent(api, c);
+            s.deinit();
+            if (state.getPtr(s)) |c_state| {
+                c_state.deinit();
+            }
+            if (@call(.auto, api.make_current[0], api.last_params ++ .{prev_context}) != 0) break :deinit;
+            makeCurrent(api, prev_context);
         }
-
+        _ = state.remove(s);
         _ = shaders.services.swapRemove(c);
     }
+    @call(.auto, api.destroy.?, arg ++ .{c});
 }
 
 pub fn deinit() void {

@@ -8,6 +8,7 @@ pub const DependenciesStep = struct {
     target: std.Target,
     sub_steps: std.ArrayList(SubStep),
     no_fail: bool = false,
+    env_map: std.process.EnvMap,
 
     const SubStep = struct {
         name: String,
@@ -22,13 +23,18 @@ pub const DependenciesStep = struct {
         fn deinit(self: *SubStep, allocator: std.mem.Allocator) void {
             if (self.args) |a|
                 allocator.free(a);
-            if (self.after) |a|
+            if (self.after) |a| {
+                for (a) |aa| {
+                    aa.deinit(allocator);
+                }
                 allocator.free(a);
+            }
         }
     };
 
     pub fn init(b: *std.Build, name: String, target: std.Target) DependenciesStep {
         return DependenciesStep{
+            .env_map = std.process.getEnvMap(b.allocator) catch @panic("OOM"),
             .target = target,
             .step = std.Build.Step.init(
                 .{
@@ -43,15 +49,12 @@ pub const DependenciesStep = struct {
     }
 
     pub fn initSubprocess(self: *DependenciesStep, argv: []const String, cwd: ?String) !std.process.Child {
-        var env_map = try std.process.getEnvMap(self.step.owner.allocator);
-        try env_map.put("ZIG_PATH", self.step.owner.graph.zig_exe);
-
         return .{
             .id = undefined,
             .allocator = self.step.owner.allocator,
             .argv = argv,
             .cwd = cwd,
-            .env_map = &env_map,
+            .env_map = &self.env_map,
             .thread_handle = undefined,
             .err_pipe = null,
             .term = null,
@@ -77,6 +80,8 @@ pub const DependenciesStep = struct {
 
     pub fn doStep(step: *std.Build.Step, progressNode: *std.Progress.Node) anyerror!void {
         const self: *DependenciesStep = @fieldParentPtr("step", step);
+        try self.env_map.put("ZIG_PATH", self.step.owner.graph.zig_exe);
+        defer self.env_map.deinit();
 
         defer self.sub_steps.deinit();
 
@@ -150,7 +155,6 @@ pub const DependenciesStep = struct {
                     defer step2.owner.allocator.free(lib_path);
                     try doOnEachFileIf(step2, lib_path, hasLibPrefix, removeLibPrefix);
                     try doOnEachFileIf(step2, lib_path, hasWrongSuffix, renameSuffix);
-                    step2.owner.allocator.free(tripl.?);
                 }
             }.create,
             .arg = triplet,
@@ -171,6 +175,11 @@ pub const DependenciesStep = struct {
             }
             if (sub_step.args) |args| {
                 var sub_process = try self.initSubprocess(args, sub_step.cwd);
+                if (self.step.owner.verbose) {
+                    const joined = try std.mem.join(self.step.owner.allocator, " ", sub_process.argv);
+                    defer self.step.owner.allocator.free(joined);
+                    std.log.info("Running: {s} in dir {?s}", .{ joined, sub_process.cwd });
+                }
                 if (sub_process.spawn()) {
                     var sub_progress_node = progressNode.start(sub_step.name, 1);
                     sub_progress_node.activate();
@@ -195,7 +204,7 @@ pub const DependenciesStep = struct {
                 progressNode.setCompletedItems(i + 1);
                 sub_step.progress_node.end();
             }
-            sub_step.deinit(self.step.owner.allocator);
+            //sub_step.deinit(self.step.owner.allocator);
         }
     }
 

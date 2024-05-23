@@ -101,6 +101,7 @@ pub const Result = struct {
     pub const Outputs = struct {
         /// Can only be a SSBO
         log_storage: ?OutputStorage = null,
+        /// Contains `uvec2` - the reached step ID and offset.
         step_storage: ?OutputStorage = null,
         stack_trace: ?OutputStorage = null,
         variables_storage: ?OutputStorage = null,
@@ -155,6 +156,19 @@ pub const Result = struct {
                 }
             }
             return total;
+        }
+
+        /// Computes the part index and an offset into its `steps` array from the global step index returned by instrumented shader invocation.
+        pub fn localStepOffset(self: @This(), global_step: usize) struct { part: usize, offset: ?usize } {
+            var reached_part: usize = 0;
+            const local_offset = if (self.parts_offsets) |pos| for (pos, 0..) |offset, part_index| {
+                if (global_step <= offset) {
+                    reached_part = part_index;
+                    break offset;
+                }
+            } else 0 else null;
+
+            return .{ .part = reached_part, .offset = local_offset };
         }
     };
 
@@ -225,7 +239,6 @@ pub const Processor = struct {
 
     pub const prefix = "deshader_";
     const step_counter = prefix ++ "step_counter";
-    const bp_counter = prefix ++ "bp_counter";
 
     const global_thread_id = prefix ++ "global_id";
     const temp_thread_id = prefix ++ "threads";
@@ -271,10 +284,22 @@ pub const Processor = struct {
         self.node_pool.deinit();
         self.lnode_pool.deinit();
 
-        if (self.outputs.step_storage) |_| { // if breakpoints were initialized at some point
-            self.config.allocator.free(self.outputs.step_storage.?.name);
-            // TODO where to free storage names?
+        if (self.outputs.step_storage) |s| {
+            self.config.allocator.free(s._name);
         }
+        if (self.outputs.log_storage) |s| {
+            self.config.allocator.free(s._name);
+        }
+        if (self.outputs.stack_trace) |s| {
+            self.config.allocator.free(s._name);
+        }
+        if (self.outputs.variables_storage) |s| {
+            self.config.allocator.free(s._name);
+        }
+        if (self.outputs.another_variables_storage) |s| {
+            self.config.allocator.free(s._name);
+        }
+
         self.guarded.deinit(self.config.allocator);
         return self.outputs;
     }
@@ -315,13 +340,12 @@ pub const Processor = struct {
         const tree = tree_info.tree;
         // Store GLSL version
         self.glsl_version = tree_info.version;
-        if (self.glsl_version < 420) {
-            self.config.support.buffers = false; // not supported in older GLSL
+        if (self.glsl_version < 400) {
+            self.config.support.buffers = false; // the extension is not supported in older GLSL
         }
         self.after_version = tree_info.version_span.end + 1; // assume there is a line break
         self.last_interface_decl = self.after_version;
 
-        var threads_total: usize = 0;
         if (self.config.groups_count) |groups| {
             std.debug.assert(groups.len == self.config.group_dim.len);
 
@@ -333,7 +357,7 @@ pub const Processor = struct {
             self.threads = try self.config.allocator.dupe(usize, self.config.group_dim);
         }
         for (self.threads) |thread| {
-            threads_total += thread;
+            self.threads_total += thread;
         }
 
         // Scan through the tree to find some top-level characteristics
@@ -459,9 +483,15 @@ pub const Processor = struct {
 
                             const is_void = std.mem.eql(u8, func.return_type, "void");
                             const has_breakpoint = self.config.breakpoints.contains(step_id);
+
+                            // Initialize hit indicator in the "step storage"
                             if (!hit_indicator_initialized and std.mem.eql(u8, func.name, "main")) {
-                                // initialize step counter
-                                try self.insertStart(try self.print("{s}=0u;\n", .{self.outputs.step_storage.?.name}), (first_outermost_statement orelse {
+                                try self.insertStart(try self.print("{s}{s}=0u;{s}{s}=0u;\n", .{
+                                    self.outputs.step_storage.?._name,
+                                    self.bufferIndexer("0"),
+                                    self.outputs.step_storage.?._name,
+                                    self.bufferIndexer("1"),
+                                }), (first_outermost_statement orelse {
                                     log.err("Step point {d} was not inside a 'block' node", .{step_id});
                                     return Error.InvalidTree;
                                 }).start);
@@ -501,13 +531,6 @@ pub const Processor = struct {
                                             ss.start,
                                             0,
                                         );
-                                    } else { // => self.config.stepping == false && !has_breakpoint
-                                        // insert just step counter increment and restore the wrapped code
-                                        try self.insertEnd(
-                                            try self.advanceStep(),
-                                            ss.start,
-                                            0,
-                                        );
                                     }
                                     // replace the _step_ call with the temp result variable
                                     try self.insertEnd(
@@ -528,9 +551,9 @@ pub const Processor = struct {
                                         step_span_len,
                                     );
                                 } else {
-                                    // insert just step counter increment
+                                    // just remove the __step__() identifier
                                     try self.insertEnd(
-                                        try self.advanceStep(),
+                                        "",
                                         step_span.start,
                                         step_span_len,
                                     );
@@ -645,13 +668,13 @@ pub const Processor = struct {
         if (self.outputs.step_storage == null) { // existence of step storage as an indicator of initialization
             self.outputs.step_storage = try OutputStorage.nextAvailable(
                 &self.config,
-                false,
+                true,
                 "",
                 null,
                 null,
             ) orelse return Error.OutOfStorage;
-            self.outputs.step_storage.?.name = switch (self.outputs.step_storage.?.location) {
-                .Buffer => |_| try self.print(templates.hit_storage ++ "{s}{s}", .{ try self.bufferIndexer(), self.config.shader_stage.toString() }),
+            self.outputs.step_storage.?._name = switch (self.outputs.step_storage.?.location) {
+                .Buffer => |_| try self.print(templates.hit_storage ++ "{s}", .{self.config.shader_stage.toString()}),
                 .Interface => |i| if (self.glsl_version >= 130 or !self.config.shader_stage.isFragment()) //
                     try self.print(templates.hit_storage ++ "{s}", .{self.config.shader_stage.toString()}) // will be the step counter
                 else
@@ -692,10 +715,15 @@ pub const Processor = struct {
         const step_storage = self.outputs.step_storage orelse return Error.OutOfStorage;
         if (self.outputs.stack_trace) |st| {
             try self.insertStart(try self.print(
-                \\layout(binding={d}) restrict buffer DeshaderStackTrace {{
+                \\layout(binding={d}) restrict buffer DeshaderStackTrace{s} {{
                 \\    uint {s}[];
                 \\}};
-            ++ "uint {s}" ++ cursor ++ "=0u;\n", .{ st.location.Buffer, st.name, st.name }), self.after_version);
+            ++ "uint {s}" ++ cursor ++ "=0u;\n", .{
+                st.location.Buffer,
+                self.config.shader_stage.toString(),
+                st._name,
+                st._name,
+            }), self.after_version);
         }
 
         if (self.outputs.variables_storage) |vs| {
@@ -703,10 +731,14 @@ pub const Processor = struct {
                 .Buffer => |binding| {
                     try self.insertStart(
                         try self.print(
-                            \\layout(binding={d}) restrict buffer DeshaderVariables {{
+                            \\layout(binding={d}) restrict buffer DeshaderVariables{s} {{
                         ++ "uint {s}[];\n" ++ //
                             \\}};
-                        , .{ binding, vs.name }),
+                        , .{
+                            binding,
+                            self.config.shader_stage.toString(),
+                            vs._name,
+                        }),
                         self.after_version,
                     );
                 },
@@ -716,40 +748,49 @@ pub const Processor = struct {
                             try self.insertStart(try if (location.component != 0)
                                 self.print(
                                     \\layout(location={d},component={d}) out uvec{d} {s}0;
-                                , .{ location.location, location.component, 4 - location.component, vs.name })
+                                , .{ location.location, location.component, 4 - location.component, vs._name })
                             else
-                                self.print("layout(location={d}) out uvec4 {s};\n", .{ location.location, vs.name }), self.last_interface_decl);
+                                self.print("layout(location={d}) out uvec4 {s};\n", .{ location.location, vs._name }), self.last_interface_decl);
                         } // else gl_FragData is implicit
                     } else {
-                        try self.insertStart(try self.print("layout(location={d}) out uvec4 {s};\n", .{ location.location, vs.name }), self.last_interface_decl);
+                        try self.insertStart(try self.print("layout(location={d}) out uvec4 {s};\n", .{ location.location, vs._name }), self.last_interface_decl);
                     }
                 },
             }
 
-            try self.insertStart(try self.print("uint {s}" ++ cursor ++ "=0u;\n", .{vs.name}), self.after_version);
+            try self.insertStart(try self.print("uint {s}" ++ cursor ++ "=0u;\n", .{vs._name}), self.after_version);
         }
         if (self.outputs.another_variables_storage) |as| {
             switch (as.location) {
                 .Interface => |interface| {
-                    try self.insertStart(try self.print("layout(location={d}) out uvec4 {s}1;", .{ interface.location, as.name }), self.last_interface_decl);
+                    try self.insertStart(try self.print("layout(location={d}) out uvec4 {s}1;", .{ interface.location, as._name }), self.last_interface_decl);
                 },
                 .Buffer => |binding| {
                     try self.insertStart(try self.print(
-                        \\layout(binding={d}) restrict buffer DeshaderVariables {{
+                        \\layout(binding={d}) restrict buffer DeshaderVariables{s} {{
                     ++ "uint {s}1[];\n" ++ //
                         \\}};
-                    , .{ binding, as.name }), self.after_version);
+                    , .{
+                        binding,
+                        self.config.shader_stage.toString(),
+                        as._name,
+                    }), self.after_version);
                 },
             }
         }
 
         if (self.outputs.log_storage) |ls| {
             try self.insertStart(try self.print(
-                \\layout(binding={d}) restrict buffer DeshaderLog {{
+                \\layout(binding={d}) restrict buffer DeshaderLog{s} {{
             ++ "uint {s}" ++ cursor ++ ";\n" //
             ++ "uint {s}[];\n" ++ //
                 \\}};
-            , .{ ls.location.Buffer, ls.name, ls.name }), self.after_version);
+            , .{
+                ls.location.Buffer,
+                self.config.shader_stage.toString(),
+                ls._name,
+                ls._name,
+            }), self.after_version);
         }
 
         switch (step_storage.location) {
@@ -760,31 +801,31 @@ pub const Processor = struct {
                     .gl_fragment, .vk_fragment => {
                         try self.insertStart(try self.print(
                             "const uvec2 " ++ temp_thread_id ++ "= uvec2({d}, {d});\n" ++
-                                "const uint " ++ global_thread_id ++ " = uint(gl_FragCoord.y) * " ++ temp_thread_id ++ ".x + uint(gl_FragCoord.x);\n",
+                                "uint " ++ global_thread_id ++ " = uint(gl_FragCoord.y) * " ++ temp_thread_id ++ ".x + uint(gl_FragCoord.x);\n",
                             .{ self.threads[0], self.threads[1] },
                         ), self.after_version);
                     },
                     .gl_geometry => {
                         try self.insertStart(try self.print(
                             "const uint " ++ temp_thread_id ++ "= {d};\n" ++
-                                "const uint " ++ global_thread_id ++ "= gl_PrimitiveIDIn * " ++ temp_thread_id ++ " + gl_InvocationID;\n",
+                                "uint " ++ global_thread_id ++ "= gl_PrimitiveIDIn * " ++ temp_thread_id ++ " + gl_InvocationID;\n",
                             .{self.threads[0]},
                         ), self.after_version);
                     },
                     .gl_tess_evaluation => {
                         try self.insertStart(try self.print(
-                            "const ivec2 " ++ temp_thread_id ++ "= ivec2(gl_TessCoord.xy * float({d}-1) + 0.5);\n" ++
-                                "const uint " ++ global_thread_id ++ " =" ++ temp_thread_id ++ ".y * {d} + " ++ temp_thread_id ++ ".x;\n",
+                            "ivec2 " ++ temp_thread_id ++ "= ivec2(gl_TessCoord.xy * float({d}-1) + 0.5);\n" ++
+                                "uint " ++ global_thread_id ++ " =" ++ temp_thread_id ++ ".y * {d} + " ++ temp_thread_id ++ ".x;\n",
                             .{ self.threads[0], self.threads[0] },
                         ), self.after_version);
                     },
                     .gl_mesh, .gl_task, .gl_compute => {
-                        try self.insertStart(try self.print("const uint " ++ global_thread_id ++
+                        try self.insertStart(try self.print("uint " ++ global_thread_id ++
                             "= gl_GlobalInvocationID.z * gl_NumWorkGroups.x * gl_NumWorkGroups.y * " ++ wg_size ++ " + gl_GlobalInvocationID.y * gl_NumWorkGroups.x * " ++ wg_size ++ " + gl_GlobalInvocationID.x);\n", .{}), self.after_version);
                         if (self.glsl_version < 430) {
                             try self.insertStart(try self.print("const uvec3 " ++ wg_size ++ "= uvec3({d},{d},{d});\n", .{ self.config.group_dim[0], self.config.group_dim[1], self.config.group_dim[2] }), self.after_version);
                         } else {
-                            try self.insertStart(try self.config.allocator.dupe(u8, "const uvec3 " ++ wg_size ++ "= gl_WorkGroupSize;\n"), self.after_version);
+                            try self.insertStart(try self.config.allocator.dupe(u8, "uvec3 " ++ wg_size ++ "= gl_WorkGroupSize;\n"), self.after_version);
                         }
                     },
                     else => {},
@@ -792,23 +833,22 @@ pub const Processor = struct {
 
                 // Declare the global hit storage
                 try self.insertStart(try self.print(
-                    \\layout(std{d}, binding={d}) restrict writeonly buffer Deshader {{
-                ++ "uint {s}[{d}];" ++
+                    \\layout(std{d}, binding={d}) restrict writeonly buffer Deshader{s} {{
+                ++ "uvec4 " ++ templates.hit_storage ++ "{s}[{d}];" ++
                     \\}};
                     \\
                 ++ "uint " ++ step_counter ++ "=0u;\n" //
-                ++ "uint " ++ bp_counter ++ "=0u;\n" //
                 ++ "bool " ++ was_hit ++ "=false;\n", .{
                     @as(u16, if (self.glsl_version >= 430) 430 else 140),
                     binding,
-                    step_storage.name,
-                    self.threads_total,
+                    self.config.shader_stage.toString(),
+                    self.config.shader_stage.toString(),
+                    self.threads_total / 2,
                 }), self.after_version);
             },
             .Interface => |location| {
                 try self.insertStart(try self.config.allocator.dupe(u8, //
                     "uint " ++ step_counter ++ "=0u;\n" //
-                ++ "uint " ++ bp_counter ++ "=0u;\n" //
                 ++ "bool " ++ was_hit ++ "=false;\n"), self.after_version);
 
                 if (self.glsl_version >= 130 or !self.config.shader_stage.isFragment()) {
@@ -816,13 +856,13 @@ pub const Processor = struct {
                         try if (self.glsl_version >= 440) //TODO or check for ARB_enhanced_layouts support
                             self.print(
                                 \\layout(location={d},component={d}) out
-                            ++ " uint {s};\n" //
-                            , .{ location.location, location.component, step_storage.name })
+                            ++ " uvec2 {s};\n" //
+                            , .{ location.location, location.component, step_storage._name })
                         else
                             self.print(
                                 \\layout(location={d}) out
-                            ++ " uint {s};\n" //
-                            , .{ location.location, step_storage.name }),
+                            ++ " uvec2 {s};\n" //
+                            , .{ location.location, step_storage._name }),
                         self.last_interface_decl,
                     );
                 }
@@ -835,19 +875,19 @@ pub const Processor = struct {
         try self.insertEnd(try self.print("uniform uint {s};\n", .{self.outputs.desired_bp_ident}), self.after_version, 0);
         try self.insertEnd(try self.print("uniform uint {s};\n", .{self.outputs.thread_selector_ident}), self.after_version, 0);
 
-        if (self.glsl_version >= 430) {
+        if (self.config.support.buffers and self.glsl_version >= 400) {
             try self.insertStart(try self.config.allocator.dupe(u8, " #extension GL_ARB_shader_storage_buffer_object : require\n"), self.after_version);
         }
     }
 
     /// Index into the global hit indication storage for the current thread
-    fn bufferIndexer(self: *const @This()) !String {
-        return switch (self.config.shader_stage) {
-            .gl_vertex => if (self.vulkan) "[gl_VertexIndex]" else "[gl_VertexID]",
-            .gl_tess_control => "[gl_InvocationID]",
-            .gl_fragment, .gl_tess_evaluation, .gl_mesh, .gl_task, .gl_compute, .gl_geometry => "[" ++ global_thread_id ++ "]",
+    fn bufferIndexer(self: *const @This(), comptime component: String) String {
+        return if (self.outputs.step_storage.?.location == .Buffer) switch (self.config.shader_stage) {
+            .gl_vertex => if (self.vulkan) "[gl_VertexIndex/2][(gl_VertexIndex%2)*2+" ++ component ++ "]" else "[gl_VertexID/2][(gl_VertexID%2)*2+" ++ component ++ "]",
+            .gl_tess_control => "[gl_InvocationID/2*][(gl_InvocationID%2)*2+" ++ component ++ "]",
+            .gl_fragment, .gl_tess_evaluation, .gl_mesh, .gl_task, .gl_compute, .gl_geometry => "[" ++ global_thread_id ++ "/2][(" ++ global_thread_id ++ "%2)*2+" ++ component ++ "]",
             else => unreachable,
-        };
+        } else "[" ++ component ++ "]";
     }
 
     //
@@ -865,27 +905,23 @@ pub const Processor = struct {
     }
 
     fn checkAndHit(self: *@This(), comptime cond: String, cond_args: anytype, step_id: usize, comptime ret: String, ret_args: anytype, comptime append: String, args: anytype) !String {
-        return self.print("if((" ++ step_counter ++ "++>={s})" ++ cond ++ "){{{s}={d};{s}=true;return " ++ ret ++ ";}}" ++ append, //
-            .{self.outputs.desired_step_ident} ++ cond_args ++ .{ self.outputs.step_storage.?.name, step_id, was_hit } ++ ret_args ++ args);
-    }
-
-    fn advanceStep(self: *@This()) !String {
-        return self.config.allocator.dupe(u8, step_counter ++ "++;");
+        return self.print("if((" ++ step_counter ++ "++>={s})" ++ cond ++ "){{{s}{s}={d};{s}{s}=" ++ step_counter ++ ";{s}=true;return " ++ ret ++ ";}}" ++ append, //
+            .{self.outputs.desired_step_ident} ++ cond_args ++ .{ self.outputs.step_storage.?._name, self.bufferIndexer("0"), step_id, self.outputs.step_storage.?._name, self.bufferIndexer("1"), was_hit } ++ ret_args ++ args);
     }
 
     fn advanceAndCheck(self: *@This(), step_id: usize, func: Func, is_void: bool, has_bp: bool, comptime append: String, args: anytype) !String {
-        const bp_cond = "||({s}++>={s})";
+        const bp_cond = "||(" ++ step_counter ++ ">{s})";
         const return_init = "{s}()";
         return // TODO initialize structs for returning
         if (has_bp)
             if (is_void)
-                self.checkAndHit(bp_cond, .{ bp_counter, self.outputs.desired_bp_ident }, step_id + 1, "", .{}, append, args)
+                self.checkAndHit(bp_cond, .{self.outputs.desired_bp_ident}, step_id, "", .{}, append, args)
             else
-                self.checkAndHit(bp_cond, .{ bp_counter, self.outputs.desired_bp_ident }, step_id + 1, return_init, .{func.return_type}, append, args)
+                self.checkAndHit(bp_cond, .{self.outputs.desired_bp_ident}, step_id, return_init, .{func.return_type}, append, args)
         else if (is_void)
-            self.checkAndHit("", .{}, step_id + 1, "", .{}, append, args)
+            self.checkAndHit("", .{}, step_id, "", .{}, append, args)
         else
-            self.checkAndHit("", .{}, step_id + 1, return_init, .{func.return_type}, append, args);
+            self.checkAndHit("", .{}, step_id, return_init, .{func.return_type}, append, args);
     }
 
     fn guard(self: *@This(), is_parent_void: bool, parent_func: Func, pos: usize) !void {
@@ -1114,10 +1150,12 @@ pub const Processor = struct {
 
 /// Specifies a writable shader output channel
 pub const OutputStorage = struct {
-    name: String,
+    /// private for the Processor. Will be freed by the Processor
+    _name: String,
     location: OutputStorage.Location,
     /// Handle to the storage created in the host graphics API
     ref: ?usize = null,
+    // TODO deinit on new instrumentation
     /// Function to free the storage object in the host API
     deinit_host: ?*const fn (self: *@This(), allocator: std.mem.Allocator) void = null,
 
@@ -1125,7 +1163,7 @@ pub const OutputStorage = struct {
         if (self.deinit_host) |d| d(self, allocator);
     }
 
-    /// Frees name upon failure
+    /// Frees name upon failure, does not copy
     pub fn nextAvailable(
         config: *Processor.Config,
         force_buffer: bool,
@@ -1138,7 +1176,7 @@ pub const OutputStorage = struct {
                 .gl_fragment, .vk_fragment, .gl_vertex, .vk_vertex => {
                     if (fit_into_component) |another_stor| {
                         if (another_stor == .Interface and component != null) {
-                            return OutputStorage{ .name = name, .location = .{ .Interface = .{ .location = another_stor.Interface.location, .component = component.? } } };
+                            return OutputStorage{ ._name = name, .location = .{ .Interface = .{ .location = another_stor.Interface.location, .component = component.? } } };
                         }
                     }
                     // these can have output interfaces
@@ -1150,13 +1188,13 @@ pub const OutputStorage = struct {
                             } else {
                                 try config.used_interface.insert(loc, candidate);
                             }
-                            return OutputStorage{ .name = name, .location = .{ .Interface = .{ .location = candidate } } };
+                            return OutputStorage{ ._name = name, .location = .{ .Interface = .{ .location = candidate } } };
                         }
                         candidate = loc + 1;
                     }
                     if (candidate < config.max_interface) {
                         try config.used_interface.append(candidate);
-                        return OutputStorage{ .name = name, .location = .{ .Interface = .{ .location = candidate } } };
+                        return OutputStorage{ ._name = name, .location = .{ .Interface = .{ .location = candidate } } };
                     }
                 },
                 else => {
@@ -1169,16 +1207,17 @@ pub const OutputStorage = struct {
             for (0.., config.used_buffers.items) |i, used| {
                 if (used > binding_i) {
                     try config.used_buffers.insert(i, binding_i);
-                    return OutputStorage{ .name = name, .location = .{ .Buffer = binding_i } };
+                    return OutputStorage{ ._name = name, .location = .{ .Buffer = binding_i } };
                 }
                 binding_i = used + 1;
             }
             if (binding_i < config.max_buffers) {
                 try config.used_buffers.append(binding_i);
-                return OutputStorage{ .name = name, .location = .{ .Buffer = binding_i } };
+                return OutputStorage{ ._name = name, .location = .{ .Buffer = binding_i } };
             }
         }
-        config.allocator.free(name);
+        if (name.len > 0)
+            config.allocator.free(name);
         return null;
     }
 

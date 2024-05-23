@@ -4,6 +4,13 @@ const gl = @import("gl");
 
 const log = std.log.scoped(.Engine);
 const gl_stack_trace = false;
+const gl_severity: Severity = .low;
+const Severity = enum(usize) {
+    notification = 0,
+    low = 1,
+    medium = 2,
+    high = 3,
+};
 
 /// Default GLFW error handling callback
 fn errorCallback(error_code: glfw.ErrorCode, description: [:0]const u8) void {
@@ -92,9 +99,9 @@ pub fn glDebugMessageCallback(source: gl.@"enum", typ: gl.@"enum", id: gl.uint, 
     };
     const severity_string = switch (severity) {
         gl.DEBUG_SEVERITY_HIGH => "High",
-        gl.DEBUG_SEVERITY_MEDIUM => "Medium",
-        gl.DEBUG_SEVERITY_LOW => "Low",
-        gl.DEBUG_SEVERITY_NOTIFICATION => "Notification",
+        gl.DEBUG_SEVERITY_MEDIUM => if (@intFromEnum(Severity.medium) >= @intFromEnum(gl_severity)) "Medium" else return,
+        gl.DEBUG_SEVERITY_LOW => if (@intFromEnum(Severity.low) >= @intFromEnum(gl_severity)) "Low" else return,
+        gl.DEBUG_SEVERITY_NOTIFICATION => if (@intFromEnum(Severity.notification) >= @intFromEnum(gl_severity)) "Notification" else return,
         else => unreachable,
     };
     log.debug("{d}: {s} {s} {s} {s}\n", .{ id, source_string, typ_string, severity_string, message }); // TODO use debug build of OpenGL
