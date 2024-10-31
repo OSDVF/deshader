@@ -40,7 +40,7 @@ Feel free to fork and add your own goals or even better, break the non-goals!
 
 Deshader consists of several (mostly third party; mostly forked) components that require different dev stacks and frameworks. Some of them are installed as git submodules or as Zig dependencies.
 
-- Deshader runner
+- Deshader Launcher
     - [/src/tools/run.zig](/src/tools/run.zig)
 - Deshader library
     - [/src/](/src/)
@@ -79,7 +79,7 @@ Deshader consists of several (mostly third party; mostly forked) components that
             - [Edge Dev Channel](https://www.microsoftedgeinsider.com/download) installed by offline installer
             - WebView2 runtime must be installed by [standalone installer](https://developer.microsoft.com/en-us/microsoft-edge/webview2#download) (not bootstraper) under Wine
             - **NOTES**
-                - Cross compiled Runner is not compatible with Deshader compiled on Windows because there are inconsistencies between library names (`[lib]wolfssl`) 
+                - Cross compiled Launcher is not compatible with Deshader compiled on Windows because there are inconsistencies between library names (`[lib]wolfssl`) 
                 - DLL interception does not work for OpenGL under Wine. Intercept on host side instead (however this does not really work for now)
 - For using CMake to compile C++ examples
     - `pkg-config`
@@ -108,18 +108,18 @@ If that does not output any errors, it will autmatically
 for you. If there weren't any errors, then you can then
 ```sh
 # Build
-zig build runner
+zig build **launcher**
 
-# Use Runner tool
+# Use Launcher tool
 ./zig-out/bin/deshader-run your_application
 
-# Or display Runner GUI
+# Or display Launcher GUI
 ./zig-out/bin/deshader-run
 
 # Or run & build all the provided examples one-by-one
 zig build examples-run
 ```
-If the Runner is not able to find Deshader library, you can specify it
+If the Launcher is not able to find Deshader library, you can specify it
 ```sh
 DESHADER_LIB=zig-out/lib/libdeshader.so
 ```
@@ -153,7 +153,7 @@ Output files will be placed at `./zig-out/`:
 
 The files inside `include/` are API definitions for use in your application.
 
-### Without Runner
+### Without Launcher
 #### Linux
 ```sh
 DESHADER_LIB=your/lib/dir/libdeshader.so /your/app/dir/app # Loads Deshader into your application
@@ -174,7 +174,7 @@ DYLD_INSERT_LIBRARIES=./zig-out/lib/libdeshader.dylib your_application
 Specify options as `-Doption=value` to `zig build` commands. See also `zig build --help`.  
 Boolean options can be set to true using `-Doption=true` or `-Doption`.
 
-**NOTE**: Options must be specified when compiling both Deshader (`deshader-lib`/`deshader`) and Runner (`runner`).
+**NOTE**: Options must be specified when compiling both Deshader (`deshader-lib`/`deshader`) and Launcher (`Launcher`).
 Name           | Values                        | Description
 ---------------|-------------------------------|--------------------------------------------------------------------------------------------------
 `linkage`      | `Static`, `Dynamic` (default) | Select type of for Deshader library
@@ -194,8 +194,8 @@ Name           | Values                        | Description
     - Something with `struct_XSTAT` inside WolfSSL
         - fix by `powershell .\fix_c_import.sh` or `./fix_c_import.ps1` and build again
         **CAUTION**: The script searches the whole `zls` global cache in `~/.cache/zls` and deletes lines with `struct_XSTAT` so be careful.
-- Segmentation fault at when starting application from Runner GUI
-    - Check if Runner is build with the same tracing and release options as Deshader
+- Segmentation fault at when starting application from Launcher GUI
+    - Check if Launcher is build with the same tracing and release options as Deshader
 - Editor window is blank
     - This is a known issue between WebKit and vendor GL drivers
     - Disable GPU acceleration
@@ -209,16 +209,16 @@ Name           | Values                        | Description
 ## Environment variables
 Runtime settings can be specified by environment variables.
 All names start with DESHADER_ prefix e.g. `DESHADER_PORT`
-### Deshader runner
+### Deshader Launcher
 Name      | Default                                                   | Description
 ----------|-----------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------
 LIB_ROOT  | `/usr/lib` / `C:\Windows\System32`                        | Override the default path to the folder where the original libraries are located
-LIB       | \[app work dir\]/`libdeshader.so`/`.dylib`/`deshader.dll` | Location/name of Deshader shared libraray
+LIB       | \[app work dir\]/`libdeshader.so`/`.dylib`/`deshader.dll` | Directory/complete path to Deshader library. If the laucher does not succeed in finding the library and it was started with the GUI, it will show an open dialog to select the library
 HOOK_LIBS | value of `GL_LIBS`                                        | Set to comma separated list of **additional** libraries to replace with Deshader library (defaults always included)
 ### Deshader library
 Name              | Default                                 | Description
 ------------------|-----------------------------------------|---------------------------------------------------------------------------------------------------------------------------
-LIB_ROOT          | `/usr/lib` / `C:\Windows\System32`      | **REQUIRED** and automatically set by the Runner. Path to the folder where the original libraries are located
+LIB_ROOT          | `/usr/lib` / `C:\Windows\System32`      | **REQUIRED** and automatically set by the Launcher. Path to the folder where the original libraries are located
 GUI               | none                                    | Pass `true` or `1` to show the editor window on startup
 PORT              | 8080                                    | Port for the web editor at `http://localhost:DESHADER_PORT/index.html`
 START_SERVER      | none                                    | Pass `true` or `1` to start the editor server on startup	2300325930 / 2010

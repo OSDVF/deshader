@@ -1,7 +1,7 @@
 # Debugging Shaders using GUI
 
-## Runner Tool
-When Runner is started without arguments, it will show a GUI for starting an application with Deshader injected.
+## Launcher Tool
+When Launcher is started without arguments, it will show a GUI for starting an application with Deshader injected.
 ```sh
 ./zig-out/bin/deshader-run
 ```

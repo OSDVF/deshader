@@ -19,7 +19,7 @@ const c = @cImport({
 });
 const common = @import("common");
 
-const RunLogger = std.log.scoped(.DeshaderRun);
+const LauncherLog = std.log.scoped(.Launcher);
 var specified_libs_dir: ?String = null;
 const OriginalLibDir = switch (builtin.os.tag) {
     .macos => "/usr/lib",
@@ -63,17 +63,17 @@ pub fn main() !u8 {
         common.allocator.free(new_env_path);
     }
 
-    //Exclude runner process from deshader interception
+    //Exclude launcher process from deshader interception
     {
         const old_ignore_processes = common.env.get(common.env_prefix ++ "IGNORE_PROCESS");
         if (old_ignore_processes != null) {
             const merged = try std.fmt.allocPrint(common.allocator, "{s},{s}", .{ old_ignore_processes.?, this_path });
             defer common.allocator.free(merged);
             common.setenv(common.env_prefix ++ "IGNORE_PROCESS", merged);
-            RunLogger.debug("Setting DESHADER_IGNORE_PROCESS to {s}", .{merged});
+            LauncherLog.debug("Setting DESHADER_IGNORE_PROCESS to {s}", .{merged});
         } else {
             common.setenv(common.env_prefix ++ "IGNORE_PROCESS", this_path);
-            RunLogger.debug("Setting DESHADER_IGNORE_PROCESS to {s}", .{this_path});
+            LauncherLog.debug("Setting DESHADER_IGNORE_PROCESS to {s}", .{this_path});
         }
     }
 
@@ -83,9 +83,9 @@ pub fn main() !u8 {
         break :fallback dlopenAbsolute(lib_name_in_dir);
     } catch
         fallback: {
-        RunLogger.debug("Failed to open global deshader: {s}", .{dlerror()});
+        LauncherLog.debug("Failed to open global deshader: {s}", .{dlerror()});
         const at_cwd = cwd.realpathAlloc(common.allocator, deshader_lib_name) catch {
-            RunLogger.debug("Failed to find deshader at CWD: {s}", .{deshader_lib_name});
+            LauncherLog.debug("Failed to find deshader at CWD: {s}", .{deshader_lib_name});
 
             const new_env_path = try std.mem.concat(common.allocator, u8, &.{ previous_env_path, ";", specified_libs_dir orelse OriginalLibDir });
             defer common.allocator.free(new_env_path);
@@ -93,37 +93,32 @@ pub fn main() !u8 {
 
             break :fallback dlopenAbsolute(try path.join(common.allocator, &[_]String{ specified_libs_dir orelse OriginalLibDir, deshader_lib_name })) catch {
                 if (specified_libs_dir) |s| {
-                    RunLogger.err("Failed to open deshader at {s} (DESHADER_LIB_ROOT): {s}", .{ s, dlerror() });
+                    LauncherLog.err("Failed to open deshader at {s} (DESHADER_LIB_ROOT): {s}", .{ s, dlerror() });
                 } else {
-                    RunLogger.err("Failed to open deshader at dir {s} (set DESHADER_LIB_ROOT to specify the location): {s}", .{ OriginalLibDir, dlerror() });
+                    LauncherLog.err("Failed to open deshader at dir {s} (set DESHADER_LIB_ROOT to specify the location): {s}", .{ OriginalLibDir, dlerror() });
                 }
                 break :fallback error.DeshaderNotFound;
             };
         };
 
         break :fallback dlopenAbsolute(at_cwd) catch {
-            RunLogger.err("Failed to load deshader: {s}. Specify its location in evironment variable " ++ common.env_prefix ++ "LIB.", .{dlerror()});
+            LauncherLog.err("Failed to load deshader: {s}. Specify its location in evironment variable " ++ common.env_prefix ++ "LIB.", .{dlerror()});
             break :fallback error.DeshaderNotFound;
         };
     } catch fallback: {
-        if (builtin.os.tag == .windows or common.env.get("GIO_LAUNCHED_DESKTOP_FILE") != null) {
-            if (std.c.isatty(std.io.getStdOut().handle) == 1) {
-                //If process does have open stdoiut, it has a terminal
-                var b = [1]u8{0};
-                _ = try std.io.getStdIn().read(&b);
-            } else {
-                const err = "Failed to load Deshader library. Specify its location in environment variable DESHADER_LIB. Would you like to find it now?";
-                if (builtin.os.tag == .windows) {
-                    const result = c.MessageBoxA(null, err, "Deshader Error", c.MB_OK | c.MB_ICONERROR);
-                    if (result == c.IDOK) {
-                        if (browseFile()) |selected| {
-                            break :fallback dlopenAbsolute(selected) catch return error.DeshaderNotFound;
-                        }
+        if (args.len <= 1) {
+            const err = "Failed to load Deshader library. Specify its location in environment variable DESHADER_LIB. Would you like to find it now?";
+            if (builtin.os.tag == .windows) {
+                const result = c.MessageBoxA(null, err, "Deshader Error", c.MB_OK | c.MB_ICONERROR);
+                if (result == c.IDOK) {
+                    if (browseFile()) |selected| {
+                        break :fallback dlopenAbsolute(selected) catch return error.DeshaderNotFound;
                     }
-                } else if (builtin.os.tag == .linux) {
-                    _ = c.gtk_init_check(null, null);
-                    _ = c.gtk_message_dialog_new(null, c.GTK_DIALOG_MODAL, c.GTK_MESSAGE_ERROR, c.GTK_BUTTONS_OK, err);
                 }
+            } else if (builtin.os.tag == .linux) {
+                // TODO show open file dialog
+                _ = c.gtk_init_check(null, null);
+                _ = c.gtk_message_dialog_new(null, c.GTK_DIALOG_MODAL, c.GTK_MESSAGE_ERROR, c.GTK_BUTTONS_OK, err);
             }
         }
         return error.DeshaderNotFound;
@@ -135,14 +130,14 @@ pub fn main() !u8 {
             _ = c.FreeConsole();
         }
         // Run the GUI
-        const deshaderRunnerGUI = deshader_lib.lookup(*const fn (*const anyopaque) void, "deshaderRunnerGUI") orelse {
-            RunLogger.err("Could not find Deshader GUI startup function", .{});
+        const deshaderLauncherGUI = deshader_lib.lookup(*const fn (*const anyopaque) void, "deshaderLauncherGUI") orelse {
+            LauncherLog.err("Could not find Deshader GUI startup function", .{});
             return 1;
         };
         if (builtin.os.tag == .linux) {
-            try std.io.getStdOut().writeAll("\x33]0;Deshader Runner\x07");
+            try std.io.getStdOut().writeAll("\x1b[33mDeshader Launcher\x1b[0m");
         }
-        deshaderRunnerGUI(@ptrCast(&run));
+        deshaderLauncherGUI(@ptrCast(&run));
     } else {
         var target_cwd: ?String = null;
         var whitelist = true;
@@ -168,7 +163,7 @@ pub fn main() !u8 {
                 next_arg += 1;
             } else if (std.ascii.eqlIgnoreCase(args[next_arg], "-version")) {
                 const deshaderVersion = deshader_lib.lookup(*const fn () [*:0]const u8, "deshaderVersion") orelse {
-                    RunLogger.err("Could not find deshaderVersion symbol in the Deshader Library.", .{});
+                    LauncherLog.err("Could not find deshaderVersion symbol in the Deshader Library.", .{});
                     return 2;
                 };
                 try std.io.getStdOut().writer().print("{s}\n", .{deshaderVersion()});
@@ -185,10 +180,10 @@ pub fn main() !u8 {
                 const merged = try std.fmt.allocPrint(common.allocator, "{s},{s}", .{ old_whitelist_processes.?, process_name });
                 defer common.allocator.free(merged);
                 common.setenv(common.env_prefix ++ "PROCESS", merged);
-                RunLogger.debug("Setting DESHADER_PROCESS to {s}", .{merged});
+                LauncherLog.debug("Setting DESHADER_PROCESS to {s}", .{merged});
             } else {
                 common.setenv(common.env_prefix ++ "PROCESS", process_name);
-                RunLogger.debug("Setting DESHADER_PROCESS to {s}", .{process_name});
+                LauncherLog.debug("Setting DESHADER_PROCESS to {s}", .{process_name});
             }
         }
         try run(args[next_arg..], target_cwd, null);
@@ -204,7 +199,7 @@ fn symlinkLibToLib(cwd: std.fs.Dir, target_path: String, symlink_dir: String, dl
     const stdout = std.io.getStdOut().writer();
     const stdin = std.io.getStdIn().reader();
     if (cwd.access(symlink_path, .{})) {
-        RunLogger.debug("Symlink at {s} already exists", .{symlink_path});
+        LauncherLog.debug("Symlink at {s} already exists", .{symlink_path});
         if (cwd.readLink(symlink_path, &buffer)) |previous_target| {
             if (std.mem.eql(u8, previous_target, target_path)) {
                 try stdout.print("Symlink at {s} to {s} already exists\n", .{ symlink_path, previous_target });
@@ -238,7 +233,7 @@ fn symlinkLibToLib(cwd: std.fs.Dir, target_path: String, symlink_dir: String, dl
     }
 
     try common.symlinkOrCopy(cwd, target_path, symlink_path);
-    RunLogger.info("Created symlink at {s} to {s}", .{ symlink_path, target_path });
+    LauncherLog.info("Created symlink at {s} to {s}", .{ symlink_path, target_path });
 }
 
 fn dlerror() if (builtin.os.tag == .windows) String else [*:0]const u8 {
@@ -259,7 +254,7 @@ fn dlerror() if (builtin.os.tag == .windows) String else [*:0]const u8 {
             null,
         );
         _ = std.unicode.utf16leToUtf8(&buf_utf8, buf_wstr[0..len]) catch unreachable;
-        RunLogger.warn("{s}", .{buf_utf8[0..len]});
+        LauncherLog.warn("{s}", .{buf_utf8[0..len]});
         return @tagName(err);
     }
 }
@@ -284,14 +279,14 @@ fn run(target_argv: []const String, working_dir: ?String, env: ?std.StringHashMa
     } else {
         if (c.dlinfo(deshader_lib.inner.handle, c.RTLD_DI_ORIGIN, @ptrCast(deshader_path_buffer)) != 0) {
             const err = c.dlerror();
-            RunLogger.err("Failed to get deshader library path: {s}", .{err});
+            LauncherLog.err("Failed to get deshader library path: {s}", .{err});
             return error.DeshaderPathResolutionFailed;
         }
     }
     const deshader_path = if (builtin.target.os.tag == .windows) deshader_or_dir_name else try path.join(common.allocator, &[_]String{ deshader_path_buffer[0..std.mem.indexOfScalar(u8, deshader_path_buffer, 0).?], options.deshaderLibName });
     defer common.allocator.free(deshader_path);
 
-    RunLogger.info("Using deshader at {s}", .{deshader_path});
+    LauncherLog.info("Using deshader at {s}", .{deshader_path});
 
     //
     // Start target
@@ -308,7 +303,7 @@ fn run(target_argv: []const String, working_dir: ?String, env: ?std.StringHashMa
                 break :blk target_argv[0]; //To workaround wine bug
             },
             else => {
-                RunLogger.err("Program {s} not accessible: {any}", .{ target_argv[0], err });
+                LauncherLog.err("Program {s} not accessible: {any}", .{ target_argv[0], err });
             },
         }
         return err;
@@ -329,7 +324,7 @@ fn run(target_argv: []const String, working_dir: ?String, env: ?std.StringHashMa
 
     {
         try child_envs.put(common.env_prefix ++ "LIB_ROOT", specified_libs_dir orelse OriginalLibDir);
-        RunLogger.debug("Setting DESHADER_LIB_ROOT to {s}", .{specified_libs_dir orelse OriginalLibDir});
+        LauncherLog.debug("Setting DESHADER_LIB_ROOT to {s}", .{specified_libs_dir orelse OriginalLibDir});
     }
     if (builtin.os.tag == .windows) {
         const symlink_dir = path.dirname(target_realpath) orelse ".";
@@ -372,22 +367,22 @@ fn run(target_argv: []const String, working_dir: ?String, env: ?std.StringHashMa
     child.stdout_behavior = .Inherit;
     child.stdin_behavior = .Inherit;
     try child.spawn();
-    RunLogger.info("Launched PID {d}", .{if (builtin.os.tag == .windows) c.GetProcessId(child.id) else child.id});
+    LauncherLog.info("Launched PID {d}", .{if (builtin.os.tag == .windows) c.GetProcessId(child.id) else child.id});
 
     switch (try child.wait()) {
         .Exited => |status| {
             if (status != 0) {
-                RunLogger.err("Target process exited with status {d}", .{status});
+                LauncherLog.err("Target process exited with status {d}", .{status});
             }
         },
         .Signal => |signal| {
-            RunLogger.err("Target process terminated with signal {d}", .{signal});
+            LauncherLog.err("Target process terminated with signal {d}", .{signal});
         },
         .Stopped => |signal| {
-            RunLogger.err("Target process stopped with signal {d}", .{signal});
+            LauncherLog.err("Target process stopped with signal {d}", .{signal});
         },
         .Unknown => |result| {
-            RunLogger.err("Target process terminated with unknown result {d}", .{result});
+            LauncherLog.err("Target process terminated with unknown result {d}", .{result});
         },
     }
 
@@ -401,7 +396,7 @@ fn browseFile() ?String {
         c.NFD_OKAY => return std.mem.span(out_path),
         c.NFD_CANCEL => return null,
         else => {
-            RunLogger.err("NFD error: {s}", .{std.mem.span(c.NFD_GetError())});
+            LauncherLog.err("NFD error: {s}", .{std.mem.span(c.NFD_GetError())});
             return null;
         },
     }

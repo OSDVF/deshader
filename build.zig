@@ -76,7 +76,7 @@ pub fn build(b: *std.Build) !void {
     const option_linkage = b.option(Linkage, "linkage", "Select linkage type for deshader library. Cannot be combined with -Dofmt.") orelse Linkage.Dynamic;
     const option_log_intercept = b.option(bool, "logIntercept", "Log intercepted GL and VK procedure list to stdout") orelse false;
     const option_memory_frames = b.option(u32, "memoryFrames", "Number of frames in memory leak backtrace") orelse 7;
-    const options_traces = b.option(bool, "traces", "Enable traces for debugging (even in release mode)") // important! keep tracing support synced for Deshader Library and Runner, because there are casts from error aware functions to anyopaque
+    const options_traces = b.option(bool, "traces", "Enable traces for debugging (even in release mode)") // important! keep tracing support synced for Deshader Library and Launcher, because there are casts from error aware functions to anyopaque
     orelse if ((targetTarget != .windows or builtin.os.tag == .windows) and (optimize == .Debug or optimize == .ReleaseSafe)) true else false;
     const options_unwind = b.option(bool, "unwind", "Enable unwind tables for debugging (even in release mode)") orelse options_traces;
     const options_sanitize = b.option(bool, "sanitize", "Enable sanitizers for debugging (even in release mode)") orelse options_traces;
@@ -446,41 +446,41 @@ pub fn build(b: *std.Build) !void {
     deshader_docs.dependOn(&docs.step);
 
     //
-    // Runner utility
+    // Launcher utility
     //
-    const runner_exe = b.addExecutable(.{
+    const launcher_exe = b.addExecutable(.{
         .name = "deshader-run",
         .root_source_file = b.path("src/tools/run.zig"),
         .link_libc = true,
         .optimize = optimize,
         .target = target,
     });
-    runner_exe.root_module.error_tracing = options_traces;
-    runner_exe.root_module.unwind_tables = options_unwind;
-    runner_exe.root_module.addAnonymousImport("common", .{
+    launcher_exe.root_module.error_tracing = options_traces;
+    launcher_exe.root_module.unwind_tables = options_unwind;
+    launcher_exe.root_module.addAnonymousImport("common", .{
         .root_source_file = b.path("src/common.zig"),
         .imports = &.{
             .{ .name = "options", .module = options.createModule() },
         },
     });
     if (targetTarget == .linux) {
-        runner_exe.linkSystemLibrary("gtk+-3.0");
+        launcher_exe.linkSystemLibrary("gtk+-3.0");
     } else {
-        runner_exe.linkSystemLibrary("ole32");
-        nfd(runner_exe, system_nfd);
+        launcher_exe.linkSystemLibrary("ole32");
+        nfd(launcher_exe, system_nfd);
     }
-    const runner_install = b.addInstallArtifact(runner_exe, .{});
-    _ = b.step("runner", "Build Deshader Runner - a utility to run any application with Deshader").dependOn(&runner_install.step);
+    const laucher_install = b.addInstallArtifact(launcher_exe, .{});
+    _ = b.step("launcher", "Build Deshader Launcher - a utility to run any application with Deshader").dependOn(&laucher_install.step);
 
-    const runner_options = b.addOptions();
-    runner_options.addOption(String, "deshaderLibName", deshader_lib_name);
-    runner_options.addOption(u32, "memoryFrames", option_memory_frames);
-    runner_options.addOption([]const String, "dependencies", deshader_dependent_dlls.items);
-    runner_options.addOption(String, "deshaderRelativeRoot", try std.fs.path.relative(b.allocator, b.exe_dir, b.lib_dir));
-    runner_exe.root_module.addOptions("options", runner_options);
-    runner_exe.defineCMacro("_GNU_SOURCE", null); // To access dlinfo
+    const launcher_options = b.addOptions();
+    launcher_options.addOption(String, "deshaderLibName", deshader_lib_name);
+    launcher_options.addOption(u32, "memoryFrames", option_memory_frames);
+    launcher_options.addOption([]const String, "dependencies", deshader_dependent_dlls.items);
+    launcher_options.addOption(String, "deshaderRelativeRoot", try std.fs.path.relative(b.allocator, b.exe_dir, b.lib_dir));
+    launcher_exe.root_module.addOptions("options", launcher_options);
+    launcher_exe.defineCMacro("_GNU_SOURCE", null); // To access dlinfo
     if (targetTarget == .windows) {
-        runner_exe.addWin32ResourceFile(.{ .file = b.path(b.pathJoin(&.{ "src", "resources.rc" })) });
+        launcher_exe.addWin32ResourceFile(.{ .file = b.path(b.pathJoin(&.{ "src", "resources.rc" })) });
     }
 
     const vcpkg_cmd = b.step("vcpkg", "Download and build dependencies managed by vcpkg");
@@ -492,10 +492,10 @@ pub fn build(b: *std.Build) !void {
     const system_libs_available = system_glslang and system_wolf and system_nfd;
     if (!system_libs_available) {
         try addVcpkgInstalledPaths(b, deshader_lib);
-        try addVcpkgInstalledPaths(b, runner_exe);
+        try addVcpkgInstalledPaths(b, launcher_exe);
         try addVcpkgInstalledPaths(b, serve); // add WolfSSL from VCPKG to serve
         deshader_lib.step.dependOn(&vcpkg_step.step);
-        runner_exe.step.dependOn(&vcpkg_step.step);
+        launcher_exe.step.dependOn(&vcpkg_step.step);
     } else {
         log.info("All required libraries are available on system, skipping installing vcpkg dependencies", .{});
     }
@@ -602,13 +602,13 @@ pub fn build(b: *std.Build) !void {
         examplesStep.dependOn(&exampleInstall.step);
 
         // Run examples by `deshader-run`
-        const exampleRun = b.addRunArtifact(runner_install.artifact);
+        const exampleRun = b.addRunArtifact(laucher_install.artifact);
         const exampleRunCmd = b.step("examples-run", "Run example with injected Deshader debugging");
         exampleRun.setEnvironmentVariable("DESHADER_LIB", try std.fs.path.join(b.allocator, &.{ b.lib_dir, deshader_lib_name }));
         exampleRun.addArg(try std.fs.path.join(b.allocator, &.{ b.exe_dir, "examples" }));
         exampleRunCmd.dependOn(&exampleInstall.step);
         exampleRunCmd.dependOn(&exampleRun.step);
-        exampleRunCmd.dependOn(&runner_install.step);
+        exampleRunCmd.dependOn(&laucher_install.step);
         exampleRunCmd.dependOn(stub_gen_cmd);
     }
 

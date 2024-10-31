@@ -263,7 +263,7 @@ pub fn editorShow(command_listener: ?*const commands.CommandListener) !void {
     }
 }
 
-pub fn runnerGUI(run: *const fn (target_argv: []const String, working_dir: ?String, env: ?std.StringHashMapUnmanaged(String)) anyerror!void) !void {
+pub fn launcherGUI(run: *const fn (target_argv: []const String, working_dir: ?String, env: ?std.StringHashMapUnmanaged(String)) anyerror!void) !void {
     state.run = run;
     const content = @embedFile("../tools/run.html");
     const result_len = std.base64.standard.Encoder.calcSize(content.len);
@@ -283,7 +283,7 @@ pub fn runnerGUI(run: *const fn (target_argv: []const String, working_dir: ?Stri
     } else {
         common.setenv(common.env_prefix ++ "IGNORE_PROCESS", "zenity");
     }
-    try guiProcess(result, "Deshader Runner Tool");
+    try guiProcess(result, "Deshader Launcher Tool");
 }
 
 pub fn editorTerminate() !void {
@@ -330,11 +330,6 @@ pub fn guiProcess(url: ZString, title: ZString) !void {
     state.view.setSize(600, 400, .none);
     const exe = try common.selfDllPathAlloc(common.allocator, "");
     defer common.allocator.free(exe);
-
-    if (builtin.os.tag == .linux) {
-        // try icon name first (because GTK4 doesn't even support loading icons from files)
-        state.view.setIcon("deshader");
-    }
 
     const icon = try std.fs.path.joinZ(common.allocator, &.{ std.fs.path.dirname(exe) orelse ".", "deshader." ++ (if (builtin.os.tag == .windows) "ico" else "png") });
     defer common.allocator.free(icon);

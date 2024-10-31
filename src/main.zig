@@ -214,10 +214,10 @@ pub export fn deshaderTaggedSource(payload: SourcesPayload, if_exists: ExistsBeh
     return 0;
 }
 
-/// Not meant to be called externally by any other program than Deshader Runner Tool. The runner callback parameters are zig objects which cannot be handled in C
-pub export fn deshaderRunnerGUI(run: *const anyopaque) void {
-    gui.runnerGUI(@ptrCast(run)) catch |err| {
-        DeshaderLog.err("Runner GUI Error {}", .{err});
+/// Not meant to be called externally by any other program than Deshader Launcher Tool. The launcher callback parameters are zig objects which cannot be handled in C
+pub export fn deshaderLauncherGUI(run: *const anyopaque) void {
+    gui.launcherGUI(@ptrCast(run)) catch |err| {
+        DeshaderLog.err("Launcher GUI Error {}", .{err});
     };
 }
 
