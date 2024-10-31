@@ -110,19 +110,13 @@ pub const DependenciesStep = struct {
         // Init
         const bunInstallCmd = try std.mem.concat(self.step.owner.allocator, String, &.{ bun_cmd, if (builtin.os.tag == .windows) &.{"bun install --frozen-lockfile"} else &[_]String{ "install", "--frozen-lockfile" } });
         const deshaderVsCodeExt = "editor/deshader-vscode";
+        const compile_verb = if (self.step.owner.release_mode == .off) "compile-prod" else "compile-dev";
         try self.sub_steps.append(.{
             .name = "Installing node.js dependencies by Bun for deshader-vscode",
             .args = bunInstallCmd,
             .cwd = deshaderVsCodeExt,
             .after = try self.step.owner.allocator.dupe(SubStep, &[_]SubStep{
-                .{
-                    .name = "Download proposed (experimental) API definition",
-                    .args = try std.mem.concat(self.step.owner.allocator, String, &.{ bun_cmd, if (builtin.os.tag == .windows) &.{"bun proposed"} else &.{"proposed"} }),
-                    .cwd = deshaderVsCodeExt,
-                    .after = try self.step.owner.allocator.dupe(SubStep, &[_]SubStep{
-                        .{ .name = "Compiling deshader-vscode extension", .args = try std.mem.concat(self.step.owner.allocator, String, &.{ bun_cmd, if (builtin.os.tag == .windows) &.{"bun compile-web"} else &.{"compile-web"} }), .cwd = deshaderVsCodeExt },
-                    }),
-                },
+                .{ .name = "Compiling deshader-vscode extension", .args = try std.mem.concat(self.step.owner.allocator, String, &.{ bun_cmd, if (builtin.os.tag == .windows) &.{"bun " ++ compile_verb} else &.{compile_verb} }), .cwd = deshaderVsCodeExt },
             }),
         });
         try self.sub_steps.append(.{ .name = "Installing node.js dependencies by Bun for editor", .args = try std.mem.concat(self.step.owner.allocator, String, &.{ bunInstallCmd, &.{"--production"} }), .cwd = "editor" });

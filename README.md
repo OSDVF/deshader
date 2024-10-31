@@ -96,7 +96,7 @@ If that does not output any errors, it will autmatically
 - Install Node.js dependencies
     - `bun install` inside `/editor/` and `/editor/deshader-vscode/`
 - Compile Deshader VSCode Extension
-    - `bun compile-web` inside `/editor/deshader-vscode/`
+    - `bun compile-dev` or `bun compile-prod` inside `/editor/deshader-vscode/`
 - <details>
     <summary>Install VCPKG managed libraries (when target is Windows, or they are not present or system) and correct ther names (`.dll.a` -> `.lib`)</summary>
 

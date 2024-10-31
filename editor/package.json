@@ -11,6 +11,6 @@
     "typescript": "^5.0.0"
   },
   "dependencies": {
-    "vscode-web": "^1.82.0"
+    "vscode-web": "^1.91.1"
   }
 }

@@ -19,6 +19,7 @@ node_modules/vscode-web/dist/node_modules/vscode-oniguruma/release/main.js
 node_modules/vscode-web/dist/node_modules/vscode-oniguruma/release/onig.wasm
 node_modules/vscode-web/dist/node_modules/vscode-textmate/release/main.js
 node_modules/vscode-web/dist/node_modules/@vscode/vscode-languagedetection/dist/lib/index.js
+node_modules/vscode-web/dist/out/vs/base/common/uri.js
 node_modules/vscode-web/dist/out/vs/base/browser/ui/codicons/codicon/codicon.ttf
 node_modules/vscode-web/dist/out/vs/base/worker/workerMain.js
 node_modules/vscode-web/dist/out/vs/code/browser/workbench/workbench.js

@@ -32,7 +32,7 @@ pub fn getProductJson(allocator: std.mem.Allocator, https: bool, port: u16) !Str
                 .resourceUrlTemplate = "https://openvsxorg.blob.core.windows.net/resources/{publisher}/{name}/{version}/{path}",
             },
             .extensionEnabledApiProposals = .{
-                .@"osdvf.deshader-vscode" = .{ "fileSearchProvider", "textSearchProvider", "debugFocus" },
+                .@"osdvf.deshader-vscode" = .{ "fileSearchProvider", "textSearchProvider" },
             },
         },
         .folderUri = .{
