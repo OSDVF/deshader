@@ -30,15 +30,19 @@ pub const CompressStep = struct {
     fn wrapped(self: *@This()) !void {
         var step = &self.step;
         const source = self.source.getPath(step.owner);
-        const reader = try std.fs.openFileAbsolute(source, .{});
-        var buffer: [10 * 1024 * 1024]u8 = undefined;
-        const size = try reader.readAll(&buffer);
+        const reader = std.fs.openFileAbsolute(source, .{}) catch |e| {
+            return step.fail("unable to open file '{s}': {s}", .{ source, @errorName(e) });
+        };
+
+        const read = reader.readToEndAlloc(self.step.owner.allocator, 20 * 1024 * 1024) catch |e| {
+            return step.fail("unable to read file '{s}': {s}", .{ source, @errorName(e) });
+        };
         var man = step.owner.graph.cache.obtain();
         defer man.deinit();
         // Random bytes to make unique. Refresh this with new random bytes when
         // implementation is modified in a non-backwards-compatible way.
         man.hash.add(@as(u32, 0xad95e922));
-        man.hash.addBytes(buffer[0..size]);
+        man.hash.addBytes(read);
         const dest = try step.owner.cache_root.join(step.owner.allocator, &.{ "c", "compressed", &man.hash.final(), std.fs.path.basename(source) });
         self.generatedFile.path = dest;
         if (try step.cacheHit(&man)) {
@@ -67,7 +71,7 @@ pub const CompressStep = struct {
         };
 
         const file = try step.owner.cache_root.handle.createFile(tmp_sub_path, .{});
-        var stream = std.io.fixedBufferStream(buffer[0..size]);
+        var stream = std.io.fixedBufferStream(read);
         try std.compress.zlib.compress(stream.reader(), file.writer(), .{});
 
         file.close();

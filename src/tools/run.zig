@@ -50,8 +50,8 @@ pub fn main() !u8 {
     // Find Deshader
     //
     specified_libs_dir = common.env.get(common.env_prefix ++ "LIB_ROOT");
-    if (specified_libs_dir != null) {
-        specified_libs_dir = try cwd.realpathAlloc(common.allocator, specified_libs_dir.?);
+    if (specified_libs_dir) |s| { //convert to realpath
+        specified_libs_dir = try cwd.realpathAlloc(common.allocator, s);
     }
     const deshader_lib_name = common.env.get(common.env_prefix ++ "LIB") orelse try std.fs.path.join(common.allocator, &.{ this_dirname orelse ".", options.deshaderRelativeRoot, options.deshaderLibName });
 
@@ -328,8 +328,8 @@ fn run(target_argv: []const String, working_dir: ?String, env: ?std.StringHashMa
     }
 
     {
-        try child_envs.put(common.env_prefix ++ "LIB_ROOT", specified_libs_dir.?);
-        RunLogger.debug("Setting DESHADER_LIB_ROOT to {s}", .{specified_libs_dir.?});
+        try child_envs.put(common.env_prefix ++ "LIB_ROOT", specified_libs_dir orelse OriginalLibDir);
+        RunLogger.debug("Setting DESHADER_LIB_ROOT to {s}", .{specified_libs_dir orelse OriginalLibDir});
     }
     if (builtin.os.tag == .windows) {
         const symlink_dir = path.dirname(target_realpath) orelse ".";

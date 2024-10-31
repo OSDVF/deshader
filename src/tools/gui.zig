@@ -121,13 +121,13 @@ pub fn createEditorProvider(command_listener: ?*const commands.CommandListener) 
                     if (builtin.mode == .Debug) {
                         const handle = try if (dll_dir) |d| d.openFile(options.editorDirRelative ++ f_address, .{}) else std.fs.cwd().openFile(file, .{});
                         defer handle.close();
-                        decompressed_data = try handle.readToEndAlloc(provider.allocator, 10 * 1024 * 1024);
+                        decompressed_data = try handle.readToEndAlloc(provider.allocator, provider.max_file_size);
                     } else {
                         var stream = std.io.fixedBufferStream(compressed_or_content);
                         const reader = stream.reader();
                         var decompressor = std.compress.zlib.decompressor(reader);
                         var decompressed = decompressor.reader();
-                        decompressed_data = try decompressed.readAllAlloc(provider.allocator, 10 * 1024 * 1024);
+                        decompressed_data = try decompressed.readAllAlloc(provider.allocator, provider.max_file_size);
                     }
                     defer provider.allocator.free(decompressed_data);
                     if (cl.ws_config) |wsc| {
