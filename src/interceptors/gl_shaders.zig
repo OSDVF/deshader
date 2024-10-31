@@ -21,6 +21,7 @@ const ids = @cImport(@cInclude("commands.h"));
 const CString = [*:0]const u8;
 const String = []const u8;
 const uvec2 = struct { u32, u32 };
+const MAX_VARIABLES_SIZE = 1024 * 1024; // 1MB
 
 const BufferType = enum(gl.@"enum") {
     AtomicCounter = gl.ATOMIC_COUNTER_BUFFER,
@@ -41,6 +42,8 @@ pub threadlocal var current: *shaders = undefined;
 const State = struct {
     proc_table: ?gl.ProcTable = null,
     readback_step_buffers: std.AutoHashMapUnmanaged(usize, []uvec2) = .{},
+    stack_trace_buffer: [shaders.STACK_TRACE_MAX]shaders.StackTraceT = undefined,
+    variables_buffer: [MAX_VARIABLES_SIZE]u8 = undefined,
     uniforms_for_shaders: std.AutoArrayHashMapUnmanaged(usize, UniformTargets) = .{},
     primitives_written_queries: std.ArrayListUnmanaged(gl.uint) = .{},
 
@@ -49,6 +52,7 @@ const State = struct {
 
     // Handles for the debug output objects
     stack_trace_ref: gl.uint = gl.NONE,
+    variables_ref: gl.uint = gl.NONE,
     print_ref: gl.uint = gl.NONE,
     replacement_attachment_textures: [32]gl.uint = [_]gl.uint{0} ** 32,
     debug_fbo: gl.uint = undefined,
@@ -78,6 +82,9 @@ const State = struct {
         }
         if (s.stack_trace_ref != gl.NONE) {
             gl.DeleteBuffers(1, (&s.stack_trace_ref)[0..1]);
+        }
+        if (s.variables_ref != gl.NONE) {
+            gl.DeleteBuffers(1, @ptrCast(&s.variables_ref));
         }
         gl.makeProcTableCurrent(prev_proc_table);
     }
@@ -372,6 +379,16 @@ fn processOutput(r: InstrumentationResult) !void {
                 }
             }
         }
+
+        if (instr_state.outputs.variables) |vars| {
+            gl.GetNamedBufferSubData(c_state.variables_ref, 0, MAX_VARIABLES_SIZE, &c_state.variables_buffer);
+            for (vars) |_| {}
+        }
+
+        if (instr_state.outputs.stack_trace) |_| {
+            gl.GetNamedBufferSubData(c_state.stack_trace_ref, 0, shaders.STACK_TRACE_MAX * @sizeOf(shaders.StackTraceT), &c_state.stack_trace_buffer);
+        }
+
         const running_shader = try shaders.running.getOrPut(.{ .service = current, .shader = shader_ref });
         if (bp_hit_ids.count() > 0) {
             if (common.command_listener) |comm| {
@@ -419,17 +436,12 @@ fn prepareStorage(input: InstrumentationResult) !InstrumentationResult {
     const c_state = state.getPtr(current) orelse return error.NoState;
     // Prepare storage for stack traces (there is always only one stack trace and the program which writes to it is dynamically selected)
     if (c_state.stack_trace_ref == gl.NONE) {
-        gl.GenBuffers(1, (&c_state.stack_trace_ref)[0..1]);
-        var previous: gl.int = undefined;
-        gl.GetIntegerv(gl.SHADER_STORAGE_BUFFER_BINDING, (&previous)[0..1]);
-        if (previous >= 0) {
-            gl.BindBuffer(gl.SHADER_STORAGE_BUFFER, c_state.stack_trace_ref);
-            gl.BufferStorage(gl.SHADER_STORAGE_BUFFER, shaders.STACK_TRACE_MAX * @sizeOf(shaders.StackTraceT), null, gl.MAP_READ_BIT | gl.MAP_PERSISTENT_BIT);
-            current.stack_trace_buffer = @ptrCast(gl.MapBuffer(gl.SHADER_STORAGE_BUFFER, gl.READ_ONLY));
-            gl.BindBuffer(gl.SHADER_STORAGE_BUFFER, @intCast(previous));
-        } else {
-            log.err("Stack trace buffer allocation error", .{});
-        }
+        gl.CreateBuffers(1, (&c_state.stack_trace_ref)[0..1]);
+        gl.NamedBufferStorage(c_state.stack_trace_ref, shaders.STACK_TRACE_MAX * @sizeOf(shaders.StackTraceT), null, gl.CLIENT_STORAGE_BIT);
+    }
+    if (c_state.variables_ref == gl.NONE) {
+        gl.CreateBuffers(1, @ptrCast(&c_state.variables_ref));
+        gl.NamedBufferStorage(c_state.variables_ref, MAX_VARIABLES_SIZE, null, gl.CLIENT_STORAGE_BIT);
     }
 
     var plat_params = &result.platform_params;
@@ -574,6 +586,9 @@ fn prepareStorage(input: InstrumentationResult) !InstrumentationResult {
         }
         if (instr_state.outputs.stack_trace) |st_storage| { // not created dynamically as in the case of step storage, because there is always only one stack trace buffer (the one of the currently paused shader)
             gl.BindBufferBase(gl.SHADER_STORAGE_BUFFER, @intCast(st_storage.location.Buffer), c_state.stack_trace_ref);
+        }
+        if (instr_state.outputs.variables_storage) |var_storage| {
+            gl.BindBufferBase(gl.SHADER_STORAGE_BUFFER, @intCast(var_storage.location.Buffer), c_state.variables_ref);
         }
     }
     return result;
@@ -1647,6 +1662,7 @@ pub fn makeCurrent(comptime api: anytype, c: ?*const anyopaque) void {
 
                 result.value_ptr.* = shaders{ .context = context, .support = .{
                     .buffers = buffers_supported,
+                    .max_variables_size = MAX_VARIABLES_SIZE,
                 } };
 
                 if (c_state.max_xfb_streams == 0) {

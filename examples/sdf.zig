@@ -18,7 +18,7 @@ fn errorCallback(error_code: glfw.ErrorCode, description: [:0]const u8) void {
 }
 
 const vertex_source = @embedFile("vertex.vert");
-const fragment_source = @embedFile("fragment.frag");
+const fragment_source = @embedFile("sdf.frag");
 
 const vertex_data = [_]f32{
     -1, -1, //
@@ -66,10 +66,13 @@ pub fn linkProgram(program: gl.uint) void {
     }
 }
 
+var w: gl.int = 640;
+var h: gl.int = 480;
+
 pub fn onResize(window: glfw.Window, width: u32, height: u32) void {
     _ = window;
-    const w: gl.int = @intCast(width);
-    const h: gl.int = @intCast(height);
+    w = @intCast(width);
+    h = @intCast(height);
     gl.Viewport(0, 0, w * 2, h * 2);
 }
 
@@ -112,11 +115,14 @@ pub fn glDebugMessageCallback(source: gl.@"enum", typ: gl.@"enum", id: gl.uint, 
 
 // Procedure table that will hold OpenGL functions loaded at runtime.
 var procs: gl.ProcTable = undefined;
+// count of seconds from the start of the program
+var iTime: f32 = 0;
 
 pub fn main() !void {
+    const start_time = std.time.milliTimestamp();
     const env = try std.process.getEnvMap(std.heap.page_allocator);
     const powerSave = try std.fmt.parseInt(usize, env.get("POWER_SAVE") orelse "0", 0);
-    log.info("Showing a window with GLFW and OpenGL", .{});
+    log.info("Showing a SDF window with GLFW and OpenGL", .{});
     // Initialize GLFW
     glfw.setErrorCallback(errorCallback);
     if (!glfw.init(.{})) {
@@ -126,7 +132,7 @@ pub fn main() !void {
     defer glfw.terminate();
 
     // Create our window
-    const window = glfw.Window.create(640, 480, "zig-glfw + zig-opengl", null, null, .{ .opengl_profile = .opengl_core_profile, .context_version_major = 4, .context_version_minor = 0, .context_debug = true }) orelse {
+    const window = glfw.Window.create(@intCast(w), @intCast(h), "SDF", null, null, .{ .opengl_profile = .opengl_core_profile, .context_version_major = 4, .context_version_minor = 0, .context_debug = true }) orelse {
         log.err("failed to create GLFW window: {?s}", .{glfw.getErrorString()});
         std.process.exit(1);
     };
@@ -171,6 +177,9 @@ pub fn main() !void {
     gl.VertexAttribPointer(0, 2, gl.FLOAT, gl.FALSE, 0, 0);
     gl.VertexArrayVertexBuffer(vao, 0, vertex_buffer, 0, 2 * @sizeOf(f32));
 
+    const iResolution = gl.GetUniformLocation(program, "iResolution");
+    const iTimeLoc = gl.GetUniformLocation(program, "iTime");
+
     gl.Disable(gl.CULL_FACE);
 
     // Wait for the user to close the window.
@@ -181,6 +190,9 @@ pub fn main() !void {
         gl.Clear(gl.COLOR_BUFFER_BIT);
         gl.UseProgram(program);
         gl.BindVertexArray(vao);
+        gl.Uniform2f(iResolution, @floatFromInt(w), @floatFromInt(h));
+        iTime = @as(f32, @floatFromInt(std.time.milliTimestamp() - start_time)) / 1000.0;
+        gl.Uniform1f(iTimeLoc, iTime);
         gl.DrawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
         window.swapBuffers();

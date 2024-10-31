@@ -9,13 +9,13 @@
         "build.zig.zon",
     },
     .dependencies = .{
-        .mach_glfw = .{
-            .url = "https://github.com/CoBrooks/mach-glfw/tarball/main/bac62013d302c3bac0fdd1dfa3b4e9b406455448.tar.gz",
-            .hash = "1220a98fcc667b1822749558b44cfebd681d7f5d974b1e869c329f7eea8fa87b610b",
+        .zig_glfw = .{
+            .url = "https://github.com/griush/zig-glfw/archive/fd8aa407a461f02887e2f905ac1ce5e0b1ea13fe.tar.gz",
+            .hash = "1220852e3e3bf07492d465a2f61146613e5be82f9cc26b3889af98b76b0e18d29aa7",
         },
         .vulkan_zig = .{
-            .url = "https://github.com/Snektron/vulkan-zig/archive/571cecdda64d548e2df59226ab72112ac0fcdec4.tar.gz",
-            .hash = "1220b7727a5bccd0a6009b3b2b2320d49e49a702a26e3a9450ac63dbc3dbe35527e4",
+            .url = "https://github.com/Snektron/vulkan-zig/archive/66b7b773bb61e2102025f2d5ff0ae8c5f53e19cc.tar.gz",
+            .hash = "12208958f173b8b81bfac797955f0416ab38b21d1f69d4ebf6c7ca460a828a41cd45",
         },
         .zigglgen = .{
             .url = "https://github.com/castholm/zigglgen/releases/download/v0.2.3/zigglgen.tar.gz",

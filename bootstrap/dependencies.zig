@@ -16,7 +16,7 @@ pub const DependenciesStep = struct {
         cwd: ?String = null,
         process: ?std.process.Child = null,
         progress_node: std.Progress.Node = undefined,
-        create: ?*const fn (step: *std.Build.Step, progressNode: *std.Progress.Node, arg: ?String) anyerror!void = null,
+        create: ?*const fn (step: *std.Build.Step, progressNode: std.Progress.Node, arg: ?String) anyerror!void = null,
         arg: ?String = null,
         after: ?[]SubStep = null,
 
@@ -78,19 +78,18 @@ pub const DependenciesStep = struct {
         }
     }
 
-    pub fn doStep(step: *std.Build.Step, progressNode: *std.Progress.Node) anyerror!void {
+    pub fn doStep(step: *std.Build.Step, progressNode: std.Progress.Node) anyerror!void {
         const self: *DependenciesStep = @fieldParentPtr("step", step);
         try self.env_map.put("ZIG_PATH", self.step.owner.graph.zig_exe);
         defer self.env_map.deinit();
 
         defer self.sub_steps.deinit();
 
-        progressNode.setEstimatedTotalItems(self.sub_steps.items.len);
-        progressNode.activate();
+        const node = progressNode.start("Dependencies", self.sub_steps.items.len);
 
-        try self.doSubSteps(self.sub_steps.items, progressNode);
+        try self.doSubSteps(self.sub_steps.items, node);
 
-        progressNode.end();
+        defer node.end();
     }
 
     pub fn editor(self: *DependenciesStep) !void {
@@ -144,7 +143,7 @@ pub const DependenciesStep = struct {
             .name = "Rename VCPKG artifacts",
             .create = struct {
                 // After building VCPKG libraries rename the output files
-                fn create(step2: *std.Build.Step, _: *std.Progress.Node, tripl: ?String) anyerror!void {
+                fn create(step2: *std.Build.Step, _: std.Progress.Node, tripl: ?String) anyerror!void {
                     const debug2 = step2.owner.release_mode == .off;
                     std.log.info("Renaming VCPKG artifacts", .{});
                     const bin_path = step2.owner.pathJoin(&.{ "build", "vcpkg_installed", tripl.?, if (debug2) "debug" else "", "bin" });
@@ -167,7 +166,7 @@ pub const DependenciesStep = struct {
         });
     }
 
-    fn doSubSteps(self: *DependenciesStep, sub_steps: []SubStep, progressNode: *std.Progress.Node) !void {
+    fn doSubSteps(self: *DependenciesStep, sub_steps: []SubStep, progressNode: std.Progress.Node) !void {
         // Spawn
         for (sub_steps) |*sub_step| {
             if (sub_step.create) |c| {
@@ -181,8 +180,7 @@ pub const DependenciesStep = struct {
                     std.log.info("Running: {s} in dir {?s}", .{ joined, sub_process.cwd });
                 }
                 if (sub_process.spawn()) {
-                    var sub_progress_node = progressNode.start(sub_step.name, 1);
-                    sub_progress_node.activate();
+                    const sub_progress_node = progressNode.start(sub_step.name, 1);
                     sub_step.process = sub_process;
                     sub_step.progress_node = sub_progress_node;
                 } else |err| try self.noFail(sub_step.name, err, @errorReturnTrace());
@@ -202,7 +200,7 @@ pub const DependenciesStep = struct {
                 } else |err| try self.noFail(sub_step.name, err, @errorReturnTrace());
 
                 progressNode.setCompletedItems(i + 1);
-                sub_step.progress_node.end();
+                defer sub_step.progress_node.end();
             }
             //sub_step.deinit(self.step.owner.allocator);
         }

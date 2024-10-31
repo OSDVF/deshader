@@ -28,7 +28,10 @@ fn browseFile(_: *State, current: CString) ?String {
     switch (result) {
         C.NFD_OKAY => return std.mem.span(out_path),
         C.NFD_CANCEL => return null,
-        else => return std.mem.span(C.NFD_GetError()),
+        else => {
+            log.err("NFD error: {s}", .{std.mem.span(C.NFD_GetError())});
+            return null;
+        },
     }
 }
 
@@ -38,7 +41,10 @@ fn browseDirectory(_: *State, current: CString) ?String {
     switch (result) {
         C.NFD_OKAY => return std.mem.span(out_path.?),
         C.NFD_CANCEL => return null,
-        else => return std.mem.span(C.NFD_GetError()),
+        else => {
+            log.err("NFD error: {s}", .{std.mem.span(C.NFD_GetError())});
+            return null;
+        },
     }
 }
 

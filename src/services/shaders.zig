@@ -61,8 +61,6 @@ Shaders: Storage(Shader.SourceInterface, void, true) = undefined,
 Programs: Storage(Shader.Program, Shader.SourceInterface, false) = undefined,
 allocator: std.mem.Allocator = undefined,
 revert_requested: bool = false, // set by the command listener thread, read by the drawing thread
-/// can be directly mapped or assigned by the platform graphics API
-stack_trace_buffer: ?[*]u8 = null,
 /// Instrumentation and debugging state for each stage
 state: std.AutoHashMapUnmanaged(usize, State) = .{},
 support: instrumentation.Processor.Config.Support,
@@ -1213,6 +1211,10 @@ pub const Shader = struct {
                     switch (tag) {
                         .statement => {
                             try result.append(self.allocator, .{ .pos = span.position(source), .offset = span.start, .wrap_next = 0 });
+                        },
+                        .declaration => {
+                            if (tree.tag(tree.parent(node) orelse 0) == .block)
+                                try result.append(self.allocator, .{ .pos = span.position(source), .offset = span.start, .wrap_next = 0 });
                         },
                         else => {},
                     }

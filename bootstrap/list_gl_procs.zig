@@ -29,11 +29,11 @@ pub const ListGlProcsStep = struct {
         return self;
     }
 
-    fn make(step: *std.Build.Step, progressNode: *std.Progress.Node) anyerror!void {
-        progressNode.activate();
-        defer progressNode.end();
+    fn make(step: *std.Build.Step, progressNode: std.Progress.Node) anyerror!void {
+        const node = progressNode.start("List GL procs", 1);
+        defer node.end();
         const self: *@This() = @fieldParentPtr("step", step);
-        const symbolsFile = try std.fs.cwd().openFile(self.symbolsOutput.generated.getPath(), .{});
+        const symbolsFile = try std.fs.cwd().openFile(self.symbolsOutput.generated.file.getPath(), .{});
         const reader = symbolsFile.reader();
         var glProcs = std.StringArrayHashMap(void).init(step.owner.allocator);
         defer glProcs.deinit();
@@ -110,7 +110,7 @@ pub const ListGlProcsStep = struct {
             });
         };
 
-        step.owner.cache_root.handle.writeFile(tmp_sub_path, output) catch |err| {
+        step.owner.cache_root.handle.writeFile(.{ .data = output, .sub_path = tmp_sub_path }) catch |err| {
             return step.fail("unable to write procs to '{}{s}': {s}", .{
                 step.owner.cache_root, tmp_sub_path, @errorName(err),
             });

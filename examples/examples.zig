@@ -10,13 +10,13 @@ pub fn main() !void {
     for (options.exampleNames) |example_name| {
         const example_path = try std.fs.path.join(allocator, &.{ base_dir, "deshader-examples", example_name });
         std.log.debug("spawning {s}", .{example_path});
-        var child_process = std.ChildProcess.init(&.{example_path}, allocator);
+        var child_process = std.process.Child.init(&.{example_path}, allocator);
 
         printResult(try child_process.spawnAndWait());
     }
 }
 
-fn printResult(term: std.ChildProcess.Term) void {
+fn printResult(term: std.process.Child.Term) void {
     switch (term) {
         .Exited => |result| {
             if (result != 0) {

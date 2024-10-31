@@ -17,6 +17,7 @@ const log = @import("log.zig").DeshaderLog;
 
 const String = []const u8;
 const CString = [*:0]const u8;
+const ZString = [:0]const u8;
 
 pub var gpa = std.heap.GeneralPurposeAllocator(.{
     .stack_trace_frames = options.memoryFrames,
@@ -261,6 +262,22 @@ pub fn LoadLibraryEx(path_or_name: String, only_system: bool) !std.os.windows.HM
         return std.os.windows.unexpectedError(std.os.windows.kernel32.GetLastError());
     }
     return @ptrCast(handle.?);
+}
+
+pub fn getFullPath(alloc: std.mem.Allocator, path: String) !ZString {
+    if (builtin.os.tag == .windows) {
+        const path16 = try std.os.windows.sliceToPrefixedFileW(null, path);
+        var buffer: [std.fs.MAX_PATH_BYTES]u16 = undefined;
+        const length = std.os.windows.kernel32.GetFullPathNameW(path16.span().ptr, std.fs.MAX_PATH_BYTES, &buffer, null);
+        if (length == 0) {
+            return std.os.windows.unexpectedError(std.os.windows.kernel32.GetLastError());
+        }
+        return try std.unicode.wtf16LeToWtf8AllocZ(alloc, buffer[0..length]);
+    } else {
+        var buffer: [std.fs.MAX_PATH_BYTES]u8 = undefined;
+        const out = try std.fs.realpath(path, &buffer);
+        return try alloc.dupeZ(u8, out);
+    }
 }
 
 /// Handles WINE workaround

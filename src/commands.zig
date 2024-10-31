@@ -297,7 +297,7 @@ pub const CommandListener = struct {
                 .free = if (@hasDecl(free_funcs, function.name)) &@field(free_funcs, function.name) else null,
             } };
         }
-        const map = std.ComptimeStringMap(@TypeOf(command_array[0][1]), command_array);
+        const map = std.StaticStringMap(@TypeOf(command_array[0][1])).initComptime(command_array);
         break :blk map;
     };
 
@@ -876,6 +876,7 @@ pub const CommandListener = struct {
                         if (!remaining.remove(id)) { // this is a new breakpoint
                             if (i_state) |st| {
                                 st.dirty = true;
+                                shader.dirty = true;
                             }
                         }
                     }
@@ -887,12 +888,14 @@ pub const CommandListener = struct {
                     try shader.removeBreakpoint(i.*);
                     if (i_state) |st| {
                         st.dirty = true;
+                        shader.dirty = true;
                     }
                 }
             } else {
                 shader.clearBreakpoints();
                 if (i_state) |st| {
                     st.dirty = true;
+                    shader.dirty = true;
                 }
             }
 

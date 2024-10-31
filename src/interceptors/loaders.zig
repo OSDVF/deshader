@@ -268,7 +268,7 @@ pub const intercepted = blk: {
     }
     break :blk struct {
         const names = names2;
-        const map = std.ComptimeStringMap(gl.PROC, procs);
+        const map = std.StaticStringMap(gl.PROC).initComptime(procs);
     };
 };
 pub const all_exported_names = _known_gl_loaders ++ intercepted.names;
@@ -336,37 +336,37 @@ pub fn loadGlLib() !void {
             defer if (builtin.os.tag != .windows) common.allocator.free(full_lib_name);
             if (loadNotDeshaderLibrary(full_lib_name)) |lib| {
                 gl_lib.lib = lib;
-                DeshaderLog.debug("Loaded library {s}", .{full_lib_name});
+                if (options.logIntercept) DeshaderLog.debug("Loaded library {s}", .{full_lib_name});
                 for (gl_lib.possible_loaders) |loader| {
                     const loaderZ = try common.allocator.dupeZ(u8, loader);
                     defer common.allocator.free(loaderZ);
                     if (gl_lib.lib.?.lookup(*const GetProcAddressSignature, loaderZ)) |proc| {
                         gl_lib.loader = proc;
-                        DeshaderLog.debug("Found loader {s}", .{loader});
+                        if (options.logIntercept) DeshaderLog.debug("Found loader {s}", .{loader});
                     }
                 }
                 inline for (gl_lib.make_current, 0..) |func, i| {
                     if (gl_lib.lib.?.lookup(@TypeOf(func), gl_lib.make_current_names[i])) |target| {
                         gl_lib.make_current[i] = @ptrCast(target);
-                        DeshaderLog.debug("Found make current {s}", .{gl_lib.make_current_names[i]});
+                        if (options.logIntercept) DeshaderLog.debug("Found make current {s}", .{gl_lib.make_current_names[i]});
                     }
                 }
                 inline for (gl_lib.create, 0..) |func, i| {
                     if (gl_lib.lib.?.lookup(@TypeOf(func), gl_lib.create_names[i])) |target| {
                         gl_lib.create[i] = @ptrCast(target);
 
-                        DeshaderLog.debug("Found create {s}", .{gl_lib.create_names[i]});
+                        if (options.logIntercept) DeshaderLog.debug("Found create {s}", .{gl_lib.create_names[i]});
                     }
                 }
                 if (gl_lib.lib.?.lookup(@TypeOf(gl_lib.destroy), gl_lib.destroy_name)) |target| {
                     gl_lib.destroy = @ptrCast(target);
 
-                    DeshaderLog.debug("Found destroy {s}", .{gl_lib.destroy_name});
+                    if (options.logIntercept) DeshaderLog.debug("Found destroy {s}", .{gl_lib.destroy_name});
                 }
                 if (gl_lib.lib.?.lookup(@TypeOf(gl_lib.get_current), gl_lib.get_current_name)) |target| {
                     gl_lib.get_current = @ptrCast(target);
 
-                    DeshaderLog.debug("Found get current {s}", .{gl_lib.get_current_name});
+                    if (options.logIntercept) DeshaderLog.debug("Found get current {s}", .{gl_lib.get_current_name});
                 }
             } else |err| {
                 if (builtin.os.tag == .linux and builtin.link_libc) {

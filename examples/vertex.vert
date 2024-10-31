@@ -1,5 +1,5 @@
 #version 400
-#pragma deshader source "glfw/vertex.vert"
+//#pragma deshader source "glfw/vertex.vert"
 in vec2 vPosition;
 out vec3 vColor;
 

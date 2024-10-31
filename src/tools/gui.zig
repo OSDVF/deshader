@@ -328,6 +328,22 @@ pub fn guiProcess(url: ZString, title: ZString) !void {
     defer common.allocator.free(titleZ);
     state.view.setTitle(titleZ);
     state.view.setSize(600, 400, .none);
+    const exe = try common.selfDllPathAlloc(common.allocator, "");
+    defer common.allocator.free(exe);
+
+    if (builtin.os.tag == .linux) {
+        // try icon name first (because GTK4 doesn't even support loading icons from files)
+        state.view.setIcon("deshader");
+    }
+
+    const icon = try std.fs.path.joinZ(common.allocator, &.{ std.fs.path.dirname(exe) orelse ".", "deshader." ++ (if (builtin.os.tag == .windows) "ico" else "png") });
+    defer common.allocator.free(icon);
+    if (std.fs.cwd().access(icon, .{})) {
+        const full = try common.getFullPath(common.allocator, icon);
+        defer common.allocator.free(full);
+        state.view.setIcon(full);
+    } else |_| {}
+
     state.injectFunctions();
 
     // Inform the deshader-editor VSCode extension that it is running inside embdedded editor

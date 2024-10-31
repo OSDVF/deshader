@@ -63,6 +63,24 @@
             }
         },
         {
+            "label": "Build Documentation",
+            "command": "zig",
+            "args": [
+                "build",
+                "docs"
+            ],
+            "problemMatcher": "$zig",
+            "group": "build",
+            "presentation": {
+                "echo": false,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": true,
+                "clear": true
+            }
+        },
+        {
             "label": "Build Runner",
             "command": "zig",
             "args": [
@@ -151,7 +169,6 @@
                 "build",
                 "deshader",
                 "-fwine",
-                "-Ddeps",
                 "-Dtarget=x86_64-windows-gnu",
                 "-DlogIntercept",
                 "-freference-trace"
@@ -178,6 +195,7 @@
                 "-freference-trace"
             ],
             "problemMatcher": "$zig",
+            "group": "build",
             "presentation": {
                 "echo": true,
                 "reveal": "always",

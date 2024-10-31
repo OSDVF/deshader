@@ -7,7 +7,15 @@ const c = @cImport({
     if (builtin.target.os.tag == .windows) {
         @cInclude("processthreadsapi.h");
         @cInclude("libloaderapi.h");
-    } else @cInclude("dlfcn.h");
+        @cInclude("windows.h");
+        @cInclude("winuser.h");
+        @cInclude("nfd.h");
+    } else {
+        if (builtin.os.tag == .linux) {
+            @cInclude("gtk/gtk.h");
+        }
+        @cInclude("dlfcn.h");
+    }
 });
 const common = @import("common");
 
@@ -42,9 +50,7 @@ pub fn main() !u8 {
     // Find Deshader
     //
     specified_libs_dir = common.env.get(common.env_prefix ++ "LIB_ROOT");
-    if (specified_libs_dir == null) {
-        specified_libs_dir = OriginalLibDir;
-    } else {
+    if (specified_libs_dir != null) {
         specified_libs_dir = try cwd.realpathAlloc(common.allocator, specified_libs_dir.?);
     }
     const deshader_lib_name = common.env.get(common.env_prefix ++ "LIB") orelse try std.fs.path.join(common.allocator, &.{ this_dirname orelse ".", options.deshaderRelativeRoot, options.deshaderLibName });
@@ -81,24 +87,53 @@ pub fn main() !u8 {
         const at_cwd = cwd.realpathAlloc(common.allocator, deshader_lib_name) catch {
             RunLogger.debug("Failed to find deshader at CWD: {s}", .{deshader_lib_name});
 
-            const new_env_path = try std.mem.concat(common.allocator, u8, &.{ previous_env_path, ";", specified_libs_dir.? });
+            const new_env_path = try std.mem.concat(common.allocator, u8, &.{ previous_env_path, ";", specified_libs_dir orelse OriginalLibDir });
             defer common.allocator.free(new_env_path);
             common.setenv("PATH", new_env_path);
 
-            break :fallback dlopenAbsolute(try path.join(common.allocator, &[_]String{ specified_libs_dir.?, deshader_lib_name })) catch {
-                RunLogger.err("Failed to open deshader at {s} (DESHADER_LIB_ROOT): {s}", .{ specified_libs_dir.?, dlerror() });
-                return error.DeshaderNotFound;
+            break :fallback dlopenAbsolute(try path.join(common.allocator, &[_]String{ specified_libs_dir orelse OriginalLibDir, deshader_lib_name })) catch {
+                if (specified_libs_dir) |s| {
+                    RunLogger.err("Failed to open deshader at {s} (DESHADER_LIB_ROOT): {s}", .{ s, dlerror() });
+                } else {
+                    RunLogger.err("Failed to open deshader at dir {s} (set DESHADER_LIB_ROOT to specify the location): {s}", .{ OriginalLibDir, dlerror() });
+                }
+                break :fallback error.DeshaderNotFound;
             };
         };
 
         break :fallback dlopenAbsolute(at_cwd) catch {
             RunLogger.err("Failed to load deshader: {s}. Specify its location in evironment variable " ++ common.env_prefix ++ "LIB.", .{dlerror()});
-            return error.DeshaderNotFound;
+            break :fallback error.DeshaderNotFound;
         };
+    } catch fallback: {
+        if (builtin.os.tag == .windows or common.env.get("GIO_LAUNCHED_DESKTOP_FILE") != null) {
+            if (std.c.isatty(std.io.getStdOut().handle) == 1) {
+                //If process does have open stdoiut, it has a terminal
+                var b = [1]u8{0};
+                _ = try std.io.getStdIn().read(&b);
+            } else {
+                const err = "Failed to load Deshader library. Specify its location in environment variable DESHADER_LIB. Would you like to find it now?";
+                if (builtin.os.tag == .windows) {
+                    const result = c.MessageBoxA(null, err, "Deshader Error", c.MB_OK | c.MB_ICONERROR);
+                    if (result == c.IDOK) {
+                        if (browseFile()) |selected| {
+                            break :fallback dlopenAbsolute(selected) catch return error.DeshaderNotFound;
+                        }
+                    }
+                } else if (builtin.os.tag == .linux) {
+                    _ = c.gtk_init_check(null, null);
+                    _ = c.gtk_message_dialog_new(null, c.GTK_DIALOG_MODAL, c.GTK_MESSAGE_ERROR, c.GTK_BUTTONS_OK, err);
+                }
+            }
+        }
+        return error.DeshaderNotFound;
     };
     defer deshader_lib.close();
 
     if (args.len <= 1) {
+        if (builtin.os.tag == .windows) {
+            _ = c.FreeConsole();
+        }
         // Run the GUI
         const deshaderRunnerGUI = deshader_lib.lookup(*const fn (*const anyopaque) void, "deshaderRunnerGUI") orelse {
             RunLogger.err("Could not find Deshader GUI startup function", .{});
@@ -357,4 +392,17 @@ fn run(target_argv: []const String, working_dir: ?String, env: ?std.StringHashMa
     }
 
     // TODO cleanup
+}
+
+fn browseFile() ?String {
+    var out_path: [*:0]c.nfdchar_t = undefined;
+    const result: c.nfdresult_t = c.NFD_OpenDialog(null, null, @ptrCast(&out_path));
+    switch (result) {
+        c.NFD_OKAY => return std.mem.span(out_path),
+        c.NFD_CANCEL => return null,
+        else => {
+            RunLogger.err("NFD error: {s}", .{std.mem.span(c.NFD_GetError())});
+            return null;
+        },
+    }
 }

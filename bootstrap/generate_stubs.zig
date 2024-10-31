@@ -8,14 +8,15 @@ pub fn main() !void {
 
 pub const GenerateStubsStep = struct {
     step: std.Build.Step,
-    output: std.fs.File,
+    output: []const u8,
     short_names: bool,
 
-    pub fn init(b: *std.Build, output: std.fs.File, short_names: bool) GenerateStubsStep {
+    /// output path will be copied
+    pub fn init(b: *std.Build, output: []const u8, short_names: bool) GenerateStubsStep {
         return @as(
             GenerateStubsStep,
             .{
-                .output = output,
+                .output = b.dupe(output),
                 .short_names = short_names,
                 .step = std.Build.Step.init(
                     .{
@@ -29,11 +30,14 @@ pub const GenerateStubsStep = struct {
         );
     }
 
-    pub fn makeFn(step: *std.Build.Step, progressNode: *std.Progress.Node) anyerror!void {
+    pub fn makeFn(step: *std.Build.Step, progressNode: std.Progress.Node) anyerror!void {
         const self: *@This() = @fieldParentPtr("step", step);
-        progressNode.activate();
-        try generateStubs(step.owner.allocator, self.output, self.short_names);
-        progressNode.end();
+        const node = progressNode.start("Generate Stubs", 1);
+        const file = try std.fs.createFileAbsolute(self.output, .{});
+        defer file.close();
+        try generateStubs(step.owner.allocator, file, self.short_names);
+        defer node.end();
+        defer self.step.owner.allocator.free(self.output);
     }
 };
 /// Generates stubs for all function declarations in the main.zig file and writes them to the output file.
@@ -51,10 +55,10 @@ pub const GenerateStubsStep = struct {
 /// The function returns an error if there is an issue with parsing the main.zig file or writing to the output file.
 pub fn generateStubs(allocator: std.mem.Allocator, output: std.fs.File, short_names: bool) !void {
     // Struct decalrations
-    try output.writeAll(@embedFile("../declarations/shaders.zig"));
+    try output.writeAll(@embedFile("../src/declarations/shaders.zig"));
 
     // Function declarations
-    var tree = try std.zig.Ast.parse(allocator, @embedFile("../main.zig"), .zig);
+    var tree = try std.zig.Ast.parse(allocator, @embedFile("../src/main.zig"), .zig);
     defer tree.deinit(allocator);
 
     for (tree.rootDecls()) |rootDecl| {

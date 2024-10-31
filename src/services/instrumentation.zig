@@ -192,6 +192,7 @@ pub const Processor = struct {
     pub const Config = struct {
         pub const Support = struct {
             buffers: bool,
+            max_variables_size: usize,
         };
 
         allocator: std.mem.Allocator,
@@ -911,7 +912,7 @@ pub const Processor = struct {
 
     fn advanceAndCheck(self: *@This(), step_id: usize, func: Func, is_void: bool, has_bp: bool, comptime append: String, args: anytype) !String {
         const bp_cond = "||(" ++ step_counter ++ ">{s})";
-        const return_init = "{s}()";
+        const return_init = "{s}(0)";
         return // TODO initialize structs for returning
         if (has_bp)
             if (is_void)
@@ -928,7 +929,7 @@ pub const Processor = struct {
         try self.insertEnd(try std.fmt.allocPrint(
             self.config.allocator,
             "if(" ++ was_hit ++ ")return {s}{s};",
-            if (is_parent_void) .{ "", "" } else .{ parent_func.return_type, "()" }, //TODO in ESSL struct must be initialized
+            if (is_parent_void) .{ "", "" } else .{ parent_func.return_type, "(0)" }, //TODO in ESSL struct must be initialized
         ), pos, 0);
     }
 
@@ -1015,8 +1016,7 @@ pub const Processor = struct {
                         }
                     },
                     .file => {
-                        log.err("No parent function found for call to {s} at node {d}", .{ func.name, node });
-                        return Error.InvalidTree;
+                        log.err("No parent function found for call to {s} at {d}", .{ func.name, tree.nodeSpan(node).start });
                     },
                     else => {}, // continue up
                 }
@@ -1275,13 +1275,11 @@ pub const Variable = struct {
 };
 pub const VariableInstrumentation = struct {
     variable: Variable,
-    output: OutputStorage,
     /// Multiple variables can be stored in the same storage
     offset: usize,
     stride: usize,
 
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
         self.variable.deinit(allocator);
-        self.output.deinit(allocator);
     }
 };
