@@ -12,6 +12,10 @@ const extended_wv = @import("./extended_wv.zig");
 
 const DeshaderLog = @import("../log.zig").DeshaderLog;
 
+const C = @cImport(if (builtin.os.tag == .linux) {
+    @cInclude("gtk/gtk.h");
+});
+
 const String = []const u8;
 const ZString = [:0]const u8;
 
@@ -283,7 +287,7 @@ pub fn launcherGUI(run: *const fn (target_argv: []const String, working_dir: ?St
     } else {
         common.setenv(common.env_prefix ++ "IGNORE_PROCESS", "zenity");
     }
-    try guiProcess(result, "Deshader Launcher Tool");
+    try guiProcess(result, "Deshader Launcher");
 }
 
 pub fn editorTerminate() !void {
@@ -321,7 +325,19 @@ fn dummyRun(_: []const String, _: ?String, _: ?std.StringHashMapUnmanaged(String
 // The following code should exist only in the GUI subprocess
 //
 pub fn guiProcess(url: ZString, title: ZString) !void {
-    state.view = try positron.View.create((@import("builtin").mode == .Debug), null);
+    const deshader = "deshader";
+    const window = if (builtin.os.tag == .linux) create: {
+        _ = C.gtk_init_check(null, null);
+        C.g_set_prgname(deshader);
+        C.g_set_application_name(title); // Application name must be set before the window is created to be accepted by the window manager (and to assign the icon)
+        C.gtk_window_set_default_icon_name(deshader);
+        const w = C.gtk_window_new(C.GTK_WINDOW_TOPLEVEL);
+        C.gtk_window_set_icon_name(@ptrCast(w), deshader);
+        C.gtk_window_set_wmclass(@ptrCast(w), deshader, title);
+        break :create w;
+    } else null;
+
+    state.view = try positron.View.create((@import("builtin").mode == .Debug), window);
     defer state.view.destroy();
 
     const titleZ = try common.allocator.dupeZ(u8, title);
@@ -331,13 +347,15 @@ pub fn guiProcess(url: ZString, title: ZString) !void {
     const exe = try common.selfDllPathAlloc(common.allocator, "");
     defer common.allocator.free(exe);
 
-    const icon = try std.fs.path.joinZ(common.allocator, &.{ std.fs.path.dirname(exe) orelse ".", "deshader." ++ (if (builtin.os.tag == .windows) "ico" else "png") });
-    defer common.allocator.free(icon);
-    if (std.fs.cwd().access(icon, .{})) {
-        const full = try common.getFullPath(common.allocator, icon);
-        defer common.allocator.free(full);
-        state.view.setIcon(full);
-    } else |_| {}
+    if (builtin.os.tag != .linux) {
+        const icon = try std.fs.path.joinZ(common.allocator, &.{ std.fs.path.dirname(exe) orelse ".", deshader ++ "." ++ (if (builtin.os.tag == .windows) "ico" else "png") });
+        defer common.allocator.free(icon);
+        if (std.fs.cwd().access(icon, .{})) {
+            const full = try common.getFullPath(common.allocator, icon);
+            defer common.allocator.free(full);
+            state.view.setIcon(full);
+        } else |_| {}
+    }
 
     state.injectFunctions();
 

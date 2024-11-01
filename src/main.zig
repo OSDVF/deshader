@@ -289,7 +289,7 @@ fn runOnLoad() !void {
         const urlZ = try common.allocator.dupeZ(u8, url.?);
         defer common.allocator.free(urlZ);
 
-        try gui.guiProcess(urlZ, "Deshader");
+        try gui.guiProcess(urlZ, "Deshader Editor");
         replaced.deinit();
         std.process.exit(0xde); // Do not continue to original program main()
     }

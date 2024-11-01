@@ -29,6 +29,7 @@ const OriginalLibDir = switch (builtin.os.tag) {
 };
 const DefaultDllNames = .{ "opengl32.dll", "vulkan-1.dll" };
 var yes = false;
+var gui = false;
 var deshader_lib: std.DynLib = undefined;
 
 pub fn main() !u8 {
@@ -45,6 +46,51 @@ pub fn main() !u8 {
     };
     defer if (!this_path_from_args) common.allocator.free(this_path);
     const this_dirname = path.dirname(this_path);
+
+    //
+    // Parse args
+    //
+
+    gui = args.len <= 1;
+
+    var target_cwd: ?String = null;
+    var whitelist = true;
+    while (args.len > next_arg) {
+        if (std.ascii.endsWithIgnoreCase(args[next_arg], "-help")) {
+            try std.io.getStdErr().writeAll(
+                \\Usage: deshader-run [options] <program> [args...]
+                \\Options:
+                \\  -y             Answer yes to all library symlink questions
+                \\  -cwd <dir>     Set the current working directory for the target program
+                \\  -version       Print the version of the Deshader library
+                \\  -gui           Run with a GUI
+                \\  -no-whitelist  Do not whitelist the target process for OpenGL interception
+                \\  -help          Show this help
+            );
+            return 0;
+        } else if (std.ascii.eqlIgnoreCase(args[next_arg], "-y")) {
+            next_arg += 1;
+            yes = true;
+        } else if (std.ascii.eqlIgnoreCase(args[next_arg], "-gui")) {
+            next_arg += 1;
+            gui = true;
+        } else if (std.ascii.eqlIgnoreCase(args[next_arg], "-cwd")) {
+            target_cwd = args[next_arg + 1];
+            next_arg += 2;
+        } else if (std.ascii.eqlIgnoreCase(args[next_arg], "-no-whitelist")) {
+            whitelist = false;
+            next_arg += 1;
+        } else if (std.ascii.eqlIgnoreCase(args[next_arg], "-version")) {
+            const deshaderVersion = deshader_lib.lookup(*const fn () [*:0]const u8, "deshaderVersion") orelse {
+                LauncherLog.err("Could not find deshaderVersion symbol in the Deshader Library.", .{});
+                return 2;
+            };
+            try std.io.getStdOut().writer().print("{s}\n", .{deshaderVersion()});
+            return 0;
+        } else {
+            break;
+        }
+    }
 
     //
     // Find Deshader
@@ -106,7 +152,7 @@ pub fn main() !u8 {
             break :fallback error.DeshaderNotFound;
         };
     } catch fallback: {
-        if (args.len <= 1) {
+        if (gui) {
             const err = "Failed to load Deshader library. Specify its location in environment variable DESHADER_LIB. Would you like to find it now?";
             if (builtin.os.tag == .windows) {
                 const result = c.MessageBoxA(null, err, "Deshader Error", c.MB_OK | c.MB_ICONERROR);
@@ -125,53 +171,9 @@ pub fn main() !u8 {
     };
     defer deshader_lib.close();
 
-    if (args.len <= 1) {
-        if (builtin.os.tag == .windows) {
-            _ = c.FreeConsole();
-        }
-        // Run the GUI
-        const deshaderLauncherGUI = deshader_lib.lookup(*const fn (*const anyopaque) void, "deshaderLauncherGUI") orelse {
-            LauncherLog.err("Could not find Deshader GUI startup function", .{});
-            return 1;
-        };
-        if (builtin.os.tag == .linux) {
-            try std.io.getStdOut().writeAll("\x1b[33mDeshader Launcher\x1b[0m");
-        }
-        deshaderLauncherGUI(@ptrCast(&run));
+    if (gui) {
+        return runWithGUI();
     } else {
-        var target_cwd: ?String = null;
-        var whitelist = true;
-        while (args.len > next_arg) {
-            if (std.ascii.endsWithIgnoreCase(args[next_arg], "-help")) {
-                try std.io.getStdErr().writeAll(
-                    \\Usage: deshader-run [options] <program> [args...]
-                    \\Options:
-                    \\  -y             Assume yes to all library symlink questions
-                    \\  -cwd <dir>     Set the current working directory for the target program
-                    \\  -no-whitelist  Do not whitelist the target process for OpenGL interception
-                    \\  -help          Show this help
-                );
-                return 0;
-            } else if (std.ascii.eqlIgnoreCase(args[next_arg], "-y")) {
-                next_arg += 1;
-                yes = true;
-            } else if (std.ascii.eqlIgnoreCase(args[next_arg], "-cwd")) {
-                target_cwd = args[next_arg + 1];
-                next_arg += 2;
-            } else if (std.ascii.eqlIgnoreCase(args[next_arg], "-no-whitelist")) {
-                whitelist = false;
-                next_arg += 1;
-            } else if (std.ascii.eqlIgnoreCase(args[next_arg], "-version")) {
-                const deshaderVersion = deshader_lib.lookup(*const fn () [*:0]const u8, "deshaderVersion") orelse {
-                    LauncherLog.err("Could not find deshaderVersion symbol in the Deshader Library.", .{});
-                    return 2;
-                };
-                try std.io.getStdOut().writer().print("{s}\n", .{deshaderVersion()});
-                return 0;
-            } else {
-                break;
-            }
-        }
         if (whitelist) {
             // Whitelist only the target process
             const old_whitelist_processes = common.env.get(common.env_prefix ++ "PROCESS");
@@ -400,4 +402,17 @@ fn browseFile() ?String {
             return null;
         },
     }
+}
+
+fn runWithGUI() !u8 {
+    if (builtin.os.tag == .windows) {
+        _ = c.FreeConsole();
+    }
+    // Run the GUI
+    const deshaderLauncherGUI = deshader_lib.lookup(*const fn (*const anyopaque) void, "deshaderLauncherGUI") orelse {
+        LauncherLog.err("Could not find Deshader GUI startup function", .{});
+        return 1;
+    };
+    deshaderLauncherGUI(@ptrCast(&run));
+    return 0;
 }

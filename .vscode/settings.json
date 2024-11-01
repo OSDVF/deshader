@@ -135,6 +135,8 @@
     "files.exclude": {
         "**/node_modules": true,
         "**/.git": true,
+        "**/.zig-cache": true,
+        "editor/deshader-vscode/dist": true,
     },
     "lldb.displayFormat": "auto",
     "lldb.dereferencePointers": true,
