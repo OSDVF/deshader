@@ -147,9 +147,10 @@ Output files will be placed at `./zig-out/`:
     - `deshader`
         - `commands.h`
         - `macros.h`
-    - `deshader.h`
-    - `deshader.hpp`
-    - `deshader.zig`
+        - `deshader.h`
+        - `deshader.hpp`
+        - `deshader.zig`
+        - `deshader_prefixed.zig`
 
 The files inside `include/` are API definitions for use in your application.
 

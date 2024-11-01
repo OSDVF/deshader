@@ -295,7 +295,7 @@ pub fn build(b: *std.Build) !void {
     //
     // Steps for building generated and embedded files
     //
-    const stubs_path = b.getInstallPath(.header, "deshader.zig");
+    const stubs_path = b.getInstallPath(.header, "deshader/deshader.zig");
     var stub_gen_cmd = b.step("generate_stubs", "Generate .zig file with function stubs for deshader library");
     const header_gen_cmd = b.step("generate_headers", "Generate C header file for deshader library");
 
@@ -409,14 +409,14 @@ pub fn build(b: *std.Build) !void {
             .optimize = optimize,
         });
         const heade_gen_opts = b.addOptions();
-        heade_gen_opts.addOption(String, "emitHDir", b.h_dir);
+        heade_gen_opts.addOption(String, "h_dir", b.pathJoin(&.{ b.h_dir, "deshader" }));
         header_gen.root_module.addOptions("options", heade_gen_opts);
         header_gen.root_module.addAnonymousImport("header_gen", .{
             .root_source_file = b.path("libs/zig-header-gen/src/header_gen.zig"),
         });
         // no-short stubs for the C header
         {
-            const long_name = b.getInstallPath(.header, "deshader_long.zig");
+            const long_name = b.getInstallPath(.header, "deshader/deshader_prefixed.zig");
             var stub_gen_long = try b.allocator.create(stubGenSrc.GenerateStubsStep);
             stub_gen_long.* = stubGenSrc.GenerateStubsStep.init(b, long_name, false);
             header_gen.step.dependOn(&stub_gen_long.step);

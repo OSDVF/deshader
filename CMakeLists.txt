@@ -41,9 +41,10 @@ set(DESHADER_OUTPUTS
     lib/deshader.c
     lib/${CMAKE_SHARED_LIBRARY_PREFIX}deshader${CMAKE_SHARED_LIBRARY_SUFFIX}
     lib/${CMAKE_IMPORT_LIBRARY_PREFIX}deshader${CMAKE_IMPORT_LIBRARY_SUFFIX}
-    include/deshader.hpp
-    include/deshader.h
-    include/deshader.zig
+    include/deshader/deshader.hpp
+    include/deshader/deshader.h
+    include/deshader/deshader.zig
+    include/deshader/deshader_prefixed.zig
     lib/deshader.ll
     lib/deshader.bc
 )
