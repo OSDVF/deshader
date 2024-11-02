@@ -1,0 +1,92 @@
+// Copyright (C) 2024  Ondřej Sabela
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+const std = @import("std");
+const log = @import("../log.zig").DeshaderLog;
+const builtin = @import("builtin");
+
+const c = @cImport({
+    @cInclude("stdlib.h"); //setenv or _putenv_s, unsetenv
+    @cInclude("string.h"); //strerror
+});
+
+var env: std.process.EnvMap = undefined;
+var allocator: std.mem.Allocator = undefined;
+
+pub fn init(allocat: std.mem.Allocator) !void {
+    env = try std.process.getEnvMap(allocat);
+    allocator = allocat;
+}
+
+pub fn deinit() void {
+    env.deinit();
+}
+
+const String = []const u8;
+
+pub fn getMap() *const std.process.EnvMap {
+    return &env;
+}
+
+pub fn set(name: String, value: String) void {
+    const with_sentinel_name = std.mem.concatWithSentinel(allocator, u8, &.{name}, 0) catch |err| {
+        log.err("Failed to allocate memory for env {s}={s}: {any}", .{ name, value, err });
+        return;
+    };
+    defer allocator.free(with_sentinel_name);
+    const with_sentinel_value = std.mem.concatWithSentinel(allocator, u8, &.{value}, 0) catch |err| {
+        log.err("Failed to allocate memory for env {s}={s}: {any}", .{ name, value, err });
+        return;
+    };
+    defer allocator.free(with_sentinel_value);
+    if (builtin.target.os.tag == .windows) {
+        const result = c._putenv_s(with_sentinel_name, with_sentinel_value);
+        if (result != 0) {
+            log.err("Failed to set env {s}={s}: {d}", .{ name, value, result });
+        }
+    } else {
+        const result = c.setenv(with_sentinel_name, with_sentinel_value, 1);
+        if (result != 0) {
+            log.err("Failed to set env {s}={s}: {s}", .{ name, value, c.strerror(@intFromEnum(std.posix.errno(result))) });
+        }
+    }
+    env.put(name, value) catch |err| {
+        log.err("Failed to set env {s}={s}: {any}", .{ name, value, err });
+    };
+}
+
+pub fn remove(name: String) void {
+    const with_sentinel_name = std.mem.concatWithSentinel(allocator, u8, &.{name}, 0) catch |err| {
+        log.err("Failed to allocate memory for unsetenv {s}: {any}", .{ name, err });
+        return;
+    };
+    defer allocator.free(with_sentinel_name);
+    if (builtin.target.os.tag == .windows) {
+        const result = c._putenv_s(with_sentinel_name, "");
+        if (result != 0) {
+            log.err("Failed to remove env {s}: {d}", .{ name, result });
+        }
+    } else {
+        const result = c.unsetenv(with_sentinel_name);
+        if (result != 0) {
+            log.err("Failed to remove env {s}: {s}", .{ name, c.strerror(@intFromEnum(std.posix.errno(result))) });
+        }
+    }
+    env.remove(name);
+}
+
+pub fn get(name: String) ?String {
+    return env.get(name);
+}

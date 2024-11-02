@@ -1,3 +1,18 @@
+// Copyright (C) 2024  Ondřej Sabela
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 //! > Graphics API agnostic interface for shader sources and programs
 //! (Should not contain any gl* or vk* calls)
 //! Provides
@@ -35,6 +50,7 @@ const ShadersRefMap = std.AutoHashMap(usize, *std.ArrayListUnmanaged(Shader.Sour
 
 const Service = @This();
 
+pub var inited_static = false;
 pub var available_data: std.StringHashMap(Data) = undefined;
 pub var data_breakpoints: std.StringHashMap(StoredDataBreakpoint) = undefined;
 pub var debugging = false;
@@ -73,14 +89,20 @@ pub fn initStatic(allocator: std.mem.Allocator) !void {
     if (glslang.glslang_initialize_process() == 0) {
         return error.GLSLang;
     }
+    inited_static = true;
+    log.debug("Shaders service initialized", .{});
 }
 
 pub fn deinitStatic() void {
-    running.deinit();
-    available_data.deinit();
-    data_breakpoints.deinit();
+    if (inited_static) {
+        running.deinit();
+        available_data.deinit();
+        data_breakpoints.deinit();
 
-    glslang.glslang_finalize_process();
+        glslang.glslang_finalize_process();
+    } else {
+        log.warn("Deinitializing shaders service without initializing it", .{});
+    }
 }
 
 pub fn init(service: *@This(), a: std.mem.Allocator) !void {

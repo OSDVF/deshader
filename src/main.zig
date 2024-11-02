@@ -1,3 +1,18 @@
+// Copyright (C) 2024  Ondřej Sabela
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 //! Contains:
 //! Code that will be executed upon library load
 //! Public symbols for interaction with Deshader library (shader tagging etc.)
@@ -261,7 +276,7 @@ fn runOnLoad() !void {
         try common.init(); // init allocator and env
     }
 
-    try loaders.loadGlLib(); // at least load gl lib to forward calls
+    try loaders.loadGlLib(); // at least load gl lib to forward calls. This must be done to ensure any host program has usable GL
     try transitive.TransitiveSymbols.loadOriginal();
 
     if (!loaders.ignored) {
@@ -276,7 +291,7 @@ fn runOnLoad() !void {
             DeshaderLog.warn("This GUI process is ignored", .{});
             return;
         }
-        common.setenv(common.env_prefix ++ "EDITOR_SHOWN", "1");
+        common.env.set(common.env_prefix ++ "EDITOR_SHOWN", "1");
         const preload = common.env.get("LD_PRELOAD") orelse "";
         var replaced = std.ArrayList(u8).init(common.allocator);
         var it = std.mem.splitAny(u8, preload, ": ");
@@ -285,7 +300,7 @@ fn runOnLoad() !void {
                 try replaced.appendSlice(part);
             }
         }
-        common.setenv("LD_PRELOAD", replaced.items);
+        common.env.set("LD_PRELOAD", replaced.items);
         const urlZ = try common.allocator.dupeZ(u8, url.?);
         defer common.allocator.free(urlZ);
 
@@ -295,11 +310,11 @@ fn runOnLoad() !void {
     }
 
     if (loaders.ignored) {
-        DeshaderLog.warn("This process is ignored", .{});
+        DeshaderLog.info("This process is ignored", .{});
         return;
     }
     if (common.env.get(common.env_prefix ++ "HOOKED") == null) {
-        common.setenv(common.env_prefix ++ "HOOKED", "1");
+        common.env.set(common.env_prefix ++ "HOOKED", "1");
     } else {
         return;
     }
@@ -354,7 +369,7 @@ fn runOnLoad() !void {
 }
 
 fn finalize() callconv(.C) void {
-    DeshaderLog.info("Unloading Deshader library", .{});
+    DeshaderLog.debug("Unloading Deshader library", .{});
     defer common.deinit();
     if (common.command_listener != null) {
         common.command_listener.?.stop();
@@ -372,7 +387,7 @@ fn finalize() callconv(.C) void {
             };
         }
     }
-    if (!loaders.ignored and common.env.get(common.env_prefix ++ "HOOKED") == null) {
+    if (shaders.inited_static) {
         shaders.deinitStatic();
     }
     loaders.deinit(); // also deinits gl_shaders

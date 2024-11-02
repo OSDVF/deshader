@@ -45,30 +45,27 @@ Deshader consists of several (mostly third party; mostly forked) components that
 - Deshader library
     - [/src/](/src/)
     - Written in **Zig**
-    - [Graphical API bindings](https://github.com/MasterQ32/zig-opengl)
-        - Code generator written in **C#** [/libs/zig-opengl/](/libs/zig-opengl/)
-    - [Web View (WebKit2Gtk)](https://github.com/ziglibs/positron) at [/libs/positron/](/libs/positron/)
+    - [Web View (WebKit2Gtk)](https://github.com/ziglibs/positron) at [/libs/positron/](/libs/positron/) (MIT)
     - Example applications
         - [/examples/](/examples/)
-    - Fork of [GLSL Analyzer](https://github.com/nolanderc/glsl_analyzer) at [/libs/glsl_analyzer/](/libs/glsl_analyzer/)
-- [Visual Studio Code for Web distribution](https://github.com/Felx-B/vscode-web)
+    - Fork of [GLSL Analyzer](https://github.com/nolanderc/glsl_analyzer) at [/libs/glsl_analyzer/](/libs/glsl_analyzer/) (GPL-3.0)
+- [Visual Studio Code for Web distribution](https://github.com/Felx-B/vscode-web) (MIT)
     - [/editor/](/editor/)
     - With node.js packages
     - Managed by **Bun**
 - VSCode extension
-    - [/editor/deshader-vscode/](/editor/deshader-vscode/)
+    - [/editor/deshader-vscode/](/editor/deshader-vscode/) (MIT)
     - With node.js packages
     - Managed by **Bun** and bundled by Webpack
 
 ## Requirements
-- Zig 0.12.0-dev.1718+3acb0e30a [built from source](https://github.com/ziglang/zig#building-from-source) (checkout the commit with hash 027aabf49)
-- Bun 1.0.6 [Install](https://github.com/oven-sh/bun#install)
+- [Zig 0.13](https://ziglang.org/) (MIT)
+- Bun 1.1.34 [Install](https://github.com/oven-sh/bun#install) (MIT)
 - GNU Make and .NET Core for generating OpenGL bindings
-- Webpack
-- [VCPKG](https://vcpkg.io)
+- [VCPKG](https://vcpkg.io) (MIT)
 - C libraries
     - Linux
-        - gtk-3 and webkit2gtk
+        - gtk-3 (LGPL-2.1) and webkit2gtk (BSD, LGPL-2.1)
     - Windows
         - [Edge Dev Channel](https://www.microsoftedgeinsider.com/download)
         - WebView2 runtime
@@ -239,3 +236,6 @@ PROCESS           | none                                    | Comma separated li
 [^2]: In this case `DESHADER_GL_PROC_LOADERS` must be a single function. Does not work on Mac OS.
 
 If Deshader saved some of your time, you can leave a comment in the [discussions](https://github.com/OSDVF/deshader/discussions) or [star](https://github.com/OSDVF/deshader/star) the repo.
+
+# License
+Deshader is licensed under the [GPL-3.0](https://www.gnu.org/licenses/gpl-3.0.html) license. See [LICENSE](LICENSE) for more information.

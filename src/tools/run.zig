@@ -1,3 +1,18 @@
+// Copyright (C) 2024  Ondřej Sabela
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 const std = @import("std");
 const builtin = @import("builtin");
 const options = @import("options");
@@ -28,8 +43,6 @@ const OriginalLibDir = switch (builtin.os.tag) {
     else => unreachable,
 };
 const DefaultDllNames = .{ "opengl32.dll", "vulkan-1.dll" };
-var yes = false;
-var gui = false;
 var deshader_lib: std.DynLib = undefined;
 
 pub fn main() !u8 {
@@ -48,10 +61,28 @@ pub fn main() !u8 {
     const this_dirname = path.dirname(this_path);
 
     //
+    // Find Deshader
+    //
+    specified_libs_dir = common.env.get(common.env_prefix ++ "LIB_ROOT");
+    if (specified_libs_dir) |s| { //convert to realpath
+        specified_libs_dir = try cwd.realpathAlloc(common.allocator, s);
+    }
+    const deshader_lib_name = common.env.get(common.env_prefix ++ "LIB") orelse try std.fs.path.join(common.allocator, &.{ this_dirname orelse ".", options.deshaderRelativeRoot, options.deshaderLibName });
+
+    const previous_env_path = common.env.get("PATH") orelse "";
+    if (builtin.os.tag == .windows) {
+        const deshader_env_path = path.dirname(deshader_lib_name) orelse ".";
+        const new_env_path = try std.mem.concat(common.allocator, u8, &.{ previous_env_path, ";", deshader_env_path });
+        common.env.set("PATH", new_env_path);
+        common.allocator.free(new_env_path);
+    }
+
+    //
     // Parse args
     //
-
-    gui = args.len <= 1;
+    var yes = false;
+    var gui = args.len <= 1;
+    var version = false;
 
     var target_cwd: ?String = null;
     var whitelist = true;
@@ -81,32 +112,11 @@ pub fn main() !u8 {
             whitelist = false;
             next_arg += 1;
         } else if (std.ascii.eqlIgnoreCase(args[next_arg], "-version")) {
-            const deshaderVersion = deshader_lib.lookup(*const fn () [*:0]const u8, "deshaderVersion") orelse {
-                LauncherLog.err("Could not find deshaderVersion symbol in the Deshader Library.", .{});
-                return 2;
-            };
-            try std.io.getStdOut().writer().print("{s}\n", .{deshaderVersion()});
-            return 0;
+            version = true;
+            next_arg += 1;
         } else {
             break;
         }
-    }
-
-    //
-    // Find Deshader
-    //
-    specified_libs_dir = common.env.get(common.env_prefix ++ "LIB_ROOT");
-    if (specified_libs_dir) |s| { //convert to realpath
-        specified_libs_dir = try cwd.realpathAlloc(common.allocator, s);
-    }
-    const deshader_lib_name = common.env.get(common.env_prefix ++ "LIB") orelse try std.fs.path.join(common.allocator, &.{ this_dirname orelse ".", options.deshaderRelativeRoot, options.deshaderLibName });
-
-    const previous_env_path = common.env.get("PATH") orelse "";
-    if (builtin.os.tag == .windows) {
-        const deshader_env_path = path.dirname(deshader_lib_name) orelse ".";
-        const new_env_path = try std.mem.concat(common.allocator, u8, &.{ previous_env_path, ";", deshader_env_path });
-        common.setenv("PATH", new_env_path);
-        common.allocator.free(new_env_path);
     }
 
     //Exclude launcher process from deshader interception
@@ -115,10 +125,10 @@ pub fn main() !u8 {
         if (old_ignore_processes != null) {
             const merged = try std.fmt.allocPrint(common.allocator, "{s},{s}", .{ old_ignore_processes.?, this_path });
             defer common.allocator.free(merged);
-            common.setenv(common.env_prefix ++ "IGNORE_PROCESS", merged);
+            common.env.set(common.env_prefix ++ "IGNORE_PROCESS", merged);
             LauncherLog.debug("Setting DESHADER_IGNORE_PROCESS to {s}", .{merged});
         } else {
-            common.setenv(common.env_prefix ++ "IGNORE_PROCESS", this_path);
+            common.env.set(common.env_prefix ++ "IGNORE_PROCESS", this_path);
             LauncherLog.debug("Setting DESHADER_IGNORE_PROCESS to {s}", .{this_path});
         }
     }
@@ -135,9 +145,9 @@ pub fn main() !u8 {
 
             const new_env_path = try std.mem.concat(common.allocator, u8, &.{ previous_env_path, ";", specified_libs_dir orelse OriginalLibDir });
             defer common.allocator.free(new_env_path);
-            common.setenv("PATH", new_env_path);
+            common.env.set("PATH", new_env_path);
 
-            break :fallback dlopenAbsolute(try path.join(common.allocator, &[_]String{ specified_libs_dir orelse OriginalLibDir, deshader_lib_name })) catch {
+            break :fallback dlopenAbsolute(try path.join(common.allocator, &[_]String{ specified_libs_dir orelse OriginalLibDir, options.deshaderLibName })) catch {
                 if (specified_libs_dir) |s| {
                     LauncherLog.err("Failed to open deshader at {s} (DESHADER_LIB_ROOT): {s}", .{ s, dlerror() });
                 } else {
@@ -171,6 +181,15 @@ pub fn main() !u8 {
     };
     defer deshader_lib.close();
 
+    if (version) {
+        const deshaderVersion = deshader_lib.lookup(*const fn () [*:0]const u8, "deshaderVersion") orelse {
+            LauncherLog.err("Could not find deshaderVersion symbol in the Deshader Library.", .{});
+            return 2;
+        };
+        try std.io.getStdOut().writer().print("{s}\n", .{deshaderVersion()});
+        return 0;
+    }
+
     if (gui) {
         return runWithGUI();
     } else {
@@ -181,19 +200,19 @@ pub fn main() !u8 {
             if (old_whitelist_processes != null) {
                 const merged = try std.fmt.allocPrint(common.allocator, "{s},{s}", .{ old_whitelist_processes.?, process_name });
                 defer common.allocator.free(merged);
-                common.setenv(common.env_prefix ++ "PROCESS", merged);
+                common.env.set(common.env_prefix ++ "PROCESS", merged);
                 LauncherLog.debug("Setting DESHADER_PROCESS to {s}", .{merged});
             } else {
-                common.setenv(common.env_prefix ++ "PROCESS", process_name);
+                common.env.set(common.env_prefix ++ "PROCESS", process_name);
                 LauncherLog.debug("Setting DESHADER_PROCESS to {s}", .{process_name});
             }
         }
-        try run(args[next_arg..], target_cwd, null);
+        try run(args[next_arg..], target_cwd, null, yes);
     }
     return 0;
 }
 
-fn symlinkLibToLib(cwd: std.fs.Dir, target_path: String, symlink_dir: String, dll_name: String) !void {
+fn symlinkLibToLib(cwd: std.fs.Dir, target_path: String, symlink_dir: String, dll_name: String, yes: bool) !void {
     var buffer: [std.fs.MAX_PATH_BYTES]u8 = undefined;
     const symlink_path = try path.join(common.allocator, &[_]String{ symlink_dir, dll_name });
     defer common.allocator.free(symlink_path);
@@ -271,7 +290,7 @@ fn dlopenAbsolute(p: String) !std.DynLib {
 }
 
 /// `target_argv` includes program name as the first element
-fn run(target_argv: []const String, working_dir: ?String, env: ?std.StringHashMapUnmanaged(String)) anyerror!void {
+fn run(target_argv: []const String, working_dir: ?String, env: ?std.StringHashMapUnmanaged(String), yes: bool) anyerror!void {
     var deshader_path_buffer = try common.allocator.alloc(if (builtin.os.tag == .windows) u16 else u8, std.fs.MAX_NAME_BYTES);
     var deshader_or_dir_name: String = undefined;
     defer common.allocator.free(deshader_path_buffer);
@@ -331,26 +350,26 @@ fn run(target_argv: []const String, working_dir: ?String, env: ?std.StringHashMa
     if (builtin.os.tag == .windows) {
         const symlink_dir = path.dirname(target_realpath) orelse ".";
         // Symlink deshader to this directory
-        try symlinkLibToLib(cwd, deshader_path, symlink_dir, options.deshaderLibName);
+        try symlinkLibToLib(cwd, deshader_path, symlink_dir, options.deshaderLibName, yes);
         const local_deshader = try path.join(common.allocator, &[_]String{ symlink_dir, options.deshaderLibName });
         defer common.allocator.free(local_deshader);
 
         // DLL replacement: symlink opengl32.dll and vulkan-1.dll to the symlinked Deshader
         inline for (DefaultDllNames) |lib| {
-            try symlinkLibToLib(cwd, local_deshader, symlink_dir, lib);
+            try symlinkLibToLib(cwd, local_deshader, symlink_dir, lib, yes);
         }
         const extra_lib_names = common.env.get(common.env_prefix ++ "HOOK_LIBS");
         if (extra_lib_names) |eln| {
             var extra_lib_it = std.mem.splitScalar(u8, eln, ',');
             while (extra_lib_it.next()) |lib| {
-                try symlinkLibToLib(cwd, local_deshader, symlink_dir, lib);
+                try symlinkLibToLib(cwd, local_deshader, symlink_dir, lib, yes);
             }
         }
         const deshader_dir = path.dirname(deshader_path) orelse ".";
         inline for (options.dependencies) |lib| {
             const target_path = try path.join(common.allocator, &.{ deshader_dir, lib });
             defer common.allocator.free(target_path);
-            try symlinkLibToLib(cwd, target_path, symlink_dir, lib);
+            try symlinkLibToLib(cwd, target_path, symlink_dir, lib, yes);
         }
     } else {
         const insert_libraries_var = switch (builtin.os.tag) {

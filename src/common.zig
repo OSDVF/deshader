@@ -1,10 +1,24 @@
+// Copyright (C) 2024  Ondřej Sabela
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 const std = @import("std");
 const builtin = @import("builtin");
 const options = @import("options");
+pub const env = @import("common/env.zig");
 const commands = @import("commands.zig");
 const c = @cImport({
-    @cInclude("stdlib.h"); //setenv or _putenv_s
-    @cInclude("string.h"); //strerror
     if (builtin.os.tag == .windows) {
         @cInclude("windows.h");
         @cInclude("libloaderapi.h");
@@ -23,7 +37,6 @@ pub var gpa = std.heap.GeneralPurposeAllocator(.{
     .stack_trace_frames = options.memoryFrames,
 }){};
 pub var allocator: std.mem.Allocator = undefined;
-pub var env: std.process.EnvMap = undefined;
 pub var initialized = false;
 pub const env_prefix = "DESHADER_";
 pub const default_http_port = "8081";
@@ -39,7 +52,7 @@ pub const null_trace = std.builtin.StackTrace{
 pub fn init() !void {
     if (!initialized) {
         allocator = gpa.allocator();
-        env = try std.process.getEnvMap(allocator);
+        try env.init(allocator);
         initialized = true;
     }
 }
@@ -50,33 +63,6 @@ pub fn deinit() void {
         _ = gpa.deinit();
         initialized = false;
     }
-}
-
-pub fn setenv(name: String, value: String) void {
-    const with_sentinel_name = std.mem.concatWithSentinel(allocator, u8, &.{name}, 0) catch |err| {
-        log.err("Failed to allocate memory for env {s}={s}: {any}", .{ name, value, err });
-        return;
-    };
-    defer allocator.free(with_sentinel_name);
-    const with_sentinel_value = std.mem.concatWithSentinel(allocator, u8, &.{value}, 0) catch |err| {
-        log.err("Failed to allocate memory for env {s}={s}: {any}", .{ name, value, err });
-        return;
-    };
-    defer allocator.free(with_sentinel_value);
-    if (builtin.target.os.tag == .windows) {
-        const result = c._putenv_s(with_sentinel_name, with_sentinel_value);
-        if (result != 0) {
-            log.err("Failed to set env {s}={s}: {d}", .{ name, value, result });
-        }
-    } else {
-        const result = c.setenv(with_sentinel_name, with_sentinel_value, 1);
-        if (result != 0) {
-            log.err("Failed to set env {s}={s}: {s}", .{ name, value, c.strerror(@intFromEnum(std.posix.errno(result))) });
-        }
-    }
-    env.put(name, value) catch |err| {
-        log.err("Failed to set env {s}={s}: {any}", .{ name, value, err });
-    };
 }
 
 pub fn joinInnerInnerZ(alloc: std.mem.Allocator, separator: []const u8, slices: [][]CString) std.mem.Allocator.Error![]u8 {
@@ -303,23 +289,6 @@ pub fn symlinkOrCopy(cwd: std.fs.Dir, target_path: String, symlink_path: String)
             return err;
         }
     };
-}
-
-pub fn dupeSliceOfSlices(alloc: std.mem.Allocator, comptime t: type, input: []const []const t) ![]const []const t {
-    var result = try alloc.alloc([]const t, input.len);
-    for (0..input.len) |i| {
-        result[i] = try alloc.dupe(t, input[i]);
-    }
-    return result;
-}
-
-pub fn dupeHashMap(comptime H: type, alloc: std.mem.Allocator, input: H) !H {
-    var result = H.init(alloc);
-    var iter = input.iterator();
-    while (iter.next()) |item| {
-        try result.put(item.key_ptr.*, item.value_ptr.*);
-    }
-    return result;
 }
 
 pub fn oneStartsWithOtherNotEqual(a: String, b: String) bool {

@@ -1,3 +1,18 @@
+// Copyright (C) 2024  Ondřej Sabela
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 //! This module provides the editor server and the editor window
 //! Injects current Deshader settings into the editor extension
 
@@ -237,9 +252,9 @@ pub fn editorShow(command_listener: ?*const commands.CommandListener) !void {
         // Duplicate the current process and set env vars to indicate that the child should act as the Editor Window
         gui_process = std.process.Child.init(&.{ exe_or_dll_path, "editor" }, common.allocator); // the "editor" parameter is really ignored but it is here for reference to be found easily
 
-        try common.env.put(DESHADER_GUI_URL, base);
+        common.env.set(DESHADER_GUI_URL, base);
 
-        gui_process.?.env_map = &common.env;
+        gui_process.?.env_map = common.env.getMap();
         gui_process.?.stdout_behavior = .Inherit;
         gui_process.?.stderr_behavior = .Inherit;
         gui_process.?.stdin_behavior = .Close;
@@ -283,9 +298,9 @@ pub fn launcherGUI(run: *const fn (target_argv: []const String, working_dir: ?St
     if (old_ignore_processes != null) {
         const merged = try std.fmt.allocPrint(common.allocator, "{s},zenity", .{old_ignore_processes.?});
         defer common.allocator.free(merged);
-        common.setenv(common.env_prefix ++ "IGNORE_PROCESS", merged);
+        common.env.set(common.env_prefix ++ "IGNORE_PROCESS", merged);
     } else {
-        common.setenv(common.env_prefix ++ "IGNORE_PROCESS", "zenity");
+        common.env.set(common.env_prefix ++ "IGNORE_PROCESS", "zenity");
     }
     try guiProcess(result, "Deshader Launcher");
 }

@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const memory = @import("../src/common/memory.zig");
 const String = []const u8;
 
 /// `make`s opengl definitions, installs node.js dependencies for the editor and editor extension, and builds VCPKG dependencies for Windows
@@ -8,7 +9,7 @@ pub const DependenciesStep = struct {
     target: std.Target,
     sub_steps: std.ArrayList(SubStep),
     no_fail: bool = false,
-    env_map: std.process.EnvMap,
+    env_map: *std.process.EnvMap,
 
     const SubStep = struct {
         name: String,
@@ -32,9 +33,9 @@ pub const DependenciesStep = struct {
         }
     };
 
-    pub fn init(b: *std.Build, name: String, target: std.Target) DependenciesStep {
+    pub fn init(b: *std.Build, name: String, target: std.Target, env: *std.process.EnvMap) DependenciesStep {
         return DependenciesStep{
-            .env_map = std.process.getEnvMap(b.allocator) catch @panic("OOM"),
+            .env_map = env,
             .target = target,
             .step = std.Build.Step.init(
                 .{
@@ -54,7 +55,7 @@ pub const DependenciesStep = struct {
             .allocator = self.step.owner.allocator,
             .argv = argv,
             .cwd = cwd,
-            .env_map = &self.env_map,
+            .env_map = self.env_map,
             .thread_handle = undefined,
             .err_pipe = null,
             .term = null,
@@ -81,7 +82,6 @@ pub const DependenciesStep = struct {
     pub fn doStep(step: *std.Build.Step, progressNode: std.Progress.Node) anyerror!void {
         const self: *DependenciesStep = @fieldParentPtr("step", step);
         try self.env_map.put("ZIG_PATH", self.step.owner.graph.zig_exe);
-        defer self.env_map.deinit();
 
         defer self.sub_steps.deinit();
 
@@ -122,11 +122,11 @@ pub const DependenciesStep = struct {
         try self.sub_steps.append(.{ .name = "Installing node.js dependencies by Bun for editor", .args = try std.mem.concat(self.step.owner.allocator, String, &.{ bunInstallCmd, &.{"--production"} }), .cwd = "editor" });
     }
 
-    pub fn vcpkg(self: *DependenciesStep) !void {
+    pub fn vcpkg(self: *DependenciesStep, triplet: ?String) !void {
         // TODO overlay to empty port when system library is available
         const step = self.step;
         const debug = self.step.owner.release_mode == .off;
-        const triplet: String = try std.mem.concat(step.owner.allocator, u8, &.{ (if (self.target.cpu.arch == .x86) "x86" else "x64") ++ "-", switch (self.target.os.tag) {
+        const use_triplet: String = triplet orelse try std.mem.concat(step.owner.allocator, u8, &.{ (if (self.target.cpu.arch == .x86) "x86" else "x64") ++ "-", switch (self.target.os.tag) {
             .windows => "windows",
             .linux => "linux",
             .macos => "osx",
@@ -150,12 +150,12 @@ pub const DependenciesStep = struct {
                     try doOnEachFileIf(step2, lib_path, hasWrongSuffix, renameSuffix);
                 }
             }.create,
-            .arg = triplet,
+            .arg = use_triplet,
         }});
 
         try self.sub_steps.append(.{
             .name = "Building VCPKG dependencies",
-            .args = step.owner.dupeStrings(&.{ "vcpkg", "install", "--triplet", triplet, "--x-install-root=build/vcpkg_installed" }),
+            .args = step.owner.dupeStrings(&.{ "vcpkg", "install", "--triplet", use_triplet, "--x-install-root=build/vcpkg_installed" }),
             .after = if (self.target.os.tag == .windows) sub_sub else null,
         });
     }
