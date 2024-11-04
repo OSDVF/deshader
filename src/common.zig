@@ -261,7 +261,7 @@ pub fn getFullPath(alloc: std.mem.Allocator, path: String) !ZString {
         return try std.unicode.wtf16LeToWtf8AllocZ(alloc, buffer[0..length]);
     } else {
         var buffer: [std.fs.MAX_PATH_BYTES]u8 = undefined;
-        const out = try std.fs.realpath(path, &buffer);
+        const out = try std.fs.cwd().realpath(path, &buffer);
         return try alloc.dupeZ(u8, out);
     }
 }

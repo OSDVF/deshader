@@ -44,6 +44,8 @@ const OriginalLibDir = switch (builtin.os.tag) {
 };
 const DefaultDllNames = .{ "opengl32.dll", "vulkan-1.dll" };
 var deshader_lib: std.DynLib = undefined;
+var this_dir: String = undefined;
+var gui = false;
 
 pub fn main() !u8 {
     try common.init();
@@ -58,7 +60,7 @@ pub fn main() !u8 {
         break :blk args[0]; //To workaround wine realpath() bug
     };
     defer if (!this_path_from_args) common.allocator.free(this_path);
-    const this_dirname = path.dirname(this_path);
+    this_dir = path.dirname(this_path) orelse ".";
 
     //
     // Find Deshader
@@ -67,21 +69,12 @@ pub fn main() !u8 {
     if (specified_libs_dir) |s| { //convert to realpath
         specified_libs_dir = try cwd.realpathAlloc(common.allocator, s);
     }
-    const deshader_lib_name = common.env.get(common.env_prefix ++ "LIB") orelse try std.fs.path.join(common.allocator, &.{ this_dirname orelse ".", options.deshaderRelativeRoot, options.deshaderLibName });
-
-    const previous_env_path = common.env.get("PATH") orelse "";
-    if (builtin.os.tag == .windows) {
-        const deshader_env_path = path.dirname(deshader_lib_name) orelse ".";
-        const new_env_path = try std.mem.concat(common.allocator, u8, &.{ previous_env_path, ";", deshader_env_path });
-        common.env.set("PATH", new_env_path);
-        common.allocator.free(new_env_path);
-    }
 
     //
     // Parse args
     //
     var yes = false;
-    var gui = args.len <= 1;
+    gui = args.len <= 1;
     var version = false;
 
     var target_cwd: ?String = null;
@@ -133,53 +126,27 @@ pub fn main() !u8 {
         }
     }
 
-    deshader_lib = dlopenAbsolute(deshader_lib_name) catch fallback: {
-        const lib_name_in_dir = try path.join(common.allocator, &.{ common.env.get(common.env_prefix ++ "LIB") orelse options.deshaderRelativeRoot, options.deshaderLibName });
-        defer common.allocator.free(lib_name_in_dir);
-        break :fallback dlopenAbsolute(lib_name_in_dir);
-    } catch
-        fallback: {
-        LauncherLog.debug("Failed to open global deshader: {s}", .{dlerror()});
-        const at_cwd = cwd.realpathAlloc(common.allocator, deshader_lib_name) catch {
-            LauncherLog.debug("Failed to find deshader at CWD: {s}", .{deshader_lib_name});
-
-            const new_env_path = try std.mem.concat(common.allocator, u8, &.{ previous_env_path, ";", specified_libs_dir orelse OriginalLibDir });
-            defer common.allocator.free(new_env_path);
-            common.env.set("PATH", new_env_path);
-
-            break :fallback dlopenAbsolute(try path.join(common.allocator, &[_]String{ specified_libs_dir orelse OriginalLibDir, options.deshaderLibName })) catch {
-                if (specified_libs_dir) |s| {
-                    LauncherLog.err("Failed to open deshader at {s} (DESHADER_LIB_ROOT): {s}", .{ s, dlerror() });
-                } else {
-                    LauncherLog.err("Failed to open deshader at dir {s} (set DESHADER_LIB_ROOT to specify the location): {s}", .{ OriginalLibDir, dlerror() });
-                }
-                break :fallback error.DeshaderNotFound;
-            };
+    var search = SearchPaths{};
+    const deshader_lib_name = while (try search.next()) |lib_name| {
+        deshader_lib = dlopenAbsolute(lib_name) catch {
+            LauncherLog.info("Deshader not found at {s}: {s}", .{ lib_name, dlerror() });
+            continue;
         };
-
-        break :fallback dlopenAbsolute(at_cwd) catch {
-            LauncherLog.err("Failed to load deshader: {s}. Specify its location in evironment variable " ++ common.env_prefix ++ "LIB.", .{dlerror()});
-            break :fallback error.DeshaderNotFound;
-        };
-    } catch fallback: {
-        if (gui) {
-            const err = "Failed to load Deshader library. Specify its location in environment variable DESHADER_LIB. Would you like to find it now?";
-            if (builtin.os.tag == .windows) {
-                const result = c.MessageBoxA(null, err, "Deshader Error", c.MB_OK | c.MB_ICONERROR);
-                if (result == c.IDOK) {
-                    if (browseFile()) |selected| {
-                        break :fallback dlopenAbsolute(selected) catch return error.DeshaderNotFound;
-                    }
-                }
-            } else if (builtin.os.tag == .linux) {
-                // TODO show open file dialog
-                _ = c.gtk_init_check(null, null);
-                _ = c.gtk_message_dialog_new(null, c.GTK_DIALOG_MODAL, c.GTK_MESSAGE_ERROR, c.GTK_BUTTONS_OK, err);
-            }
-        }
+        break lib_name;
+    } else {
+        LauncherLog.err("Failed to find deshader library", .{});
         return error.DeshaderNotFound;
     };
+
     defer deshader_lib.close();
+
+    const previous_env_path = common.env.get("PATH") orelse "";
+    if (builtin.os.tag == .windows) {
+        const deshader_env_path = path.dirname(deshader_lib_name) orelse ".";
+        const new_env_path = try std.mem.concat(common.allocator, u8, &.{ previous_env_path, ";", deshader_env_path });
+        common.env.set("PATH", new_env_path);
+        common.allocator.free(new_env_path);
+    }
 
     if (version) {
         const deshaderVersion = deshader_lib.lookup(*const fn () [*:0]const u8, "deshaderVersion") orelse {
@@ -435,3 +402,44 @@ fn runWithGUI() !u8 {
     deshaderLauncherGUI(@ptrCast(&run));
     return 0;
 }
+
+const SearchPaths = struct {
+    i: usize = 0,
+
+    pub fn next(self: *@This()) !?String {
+        self.i += 1;
+        switch (self.i) {
+            0 => return common.env.get(common.env_prefix ++ "LIB") orelse return self.next(), // DESHADER_LIB as absolute path
+            1 => return try std.fs.path.join(common.allocator, &.{ common.env.get(common.env_prefix ++ "LIB") orelse return self.next(), options.deshaderLibName }), // DESHADER_LIB as directory
+            2 => { // libdeshader.so in cwd
+                if (std.fs.cwd().access(options.deshaderLibName, .{})) {
+                    return try common.getFullPath(common.allocator, options.deshaderLibName);
+                } else |_| {
+                    return self.next();
+                }
+            },
+            3 => return try std.fs.path.join(common.allocator, &.{ this_dir, options.deshaderRelativeRoot, options.deshaderLibName }), // RPATH-like relative path
+            4 => return options.deshaderLibName, // Just the library name
+            5 => { // Pick from system directories
+                if (gui) {
+                    const err = "Failed to load Deshader library. Specify its location in environment variable DESHADER_LIB. Would you like to find it now?";
+                    if (builtin.os.tag == .windows) {
+                        const result = c.MessageBoxA(null, err, "Deshader Error", c.MB_OK | c.MB_ICONERROR);
+                        if (result == c.IDOK) {
+                            if (browseFile()) |selected| {
+                                return selected orelse self.next();
+                            }
+                        }
+                    } else if (builtin.os.tag == .linux) {
+                        // TODO show open file dialog
+                        _ = c.gtk_init_check(null, null);
+                        _ = c.gtk_message_dialog_new(null, c.GTK_DIALOG_MODAL, c.GTK_MESSAGE_ERROR, c.GTK_BUTTONS_OK, err);
+                    }
+                }
+                // orelse next
+                return self.next();
+            },
+            else => return null,
+        }
+    }
+};

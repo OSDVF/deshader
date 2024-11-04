@@ -1709,13 +1709,13 @@ fn deleteContext(c: *const anyopaque, api: anytype, arg: anytype) void {
     const prev_context = api.get_current.?();
     if (shaders.services.getPtr(c)) |s| {
         deinit: {
-            if (@call(.auto, api.make_current[0], api.last_params ++ .{c}) != 0) break :deinit;
+            if (@call(.auto, api.make_current[0], api.last_params ++ .{c}) == 0) break :deinit;
             makeCurrent(api, c);
             s.deinit();
             if (state.getPtr(s)) |c_state| {
                 c_state.deinit();
             }
-            if (@call(.auto, api.make_current[0], api.last_params ++ .{prev_context}) != 0) break :deinit;
+            if (@call(.auto, api.make_current[0], api.last_params ++ .{prev_context}) == 0) break :deinit;
             makeCurrent(api, prev_context);
         }
         _ = state.remove(s);
@@ -1726,7 +1726,7 @@ fn deleteContext(c: *const anyopaque, api: anytype, arg: anytype) void {
 
 pub fn deinit() void {
     for (shaders.services.values()) |*val| {
-        val.deinit();
+        val.deinit(); // there shouldn't be any services left if the host app has called deleteContext for all contexts, but to make sure...
     }
     shaders.services.deinit(common.allocator);
     var per_context_it = state.valueIterator();
