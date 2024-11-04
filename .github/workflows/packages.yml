@@ -1,0 +1,77 @@
+name: packages
+on: push
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+            repository: 'osdvf/deshader-build'
+
+      - uses: mlugg/setup-zig@v1
+        with:
+            version: 0.13.0
+
+
+      - uses: oven-sh/setup-bun@v1
+        with:
+            bun-version: latest
+
+      - name: Build for Arch
+        id: build-arch
+        run: docker run -e EXPORT_PKG=true -e CHECKSUM_SRC=true -e PGPKEY="$PGP_KEY" -v "$(pwd):/pkg" ghcr.io/zaggash/arch-makepkg:latest
+        continue-on-error: true
+
+      - name: Remove cloned source # as it is incompatible between makepkg and makedeb
+        run: rm -rf deshader
+
+      - name: Install Makedeb
+        run: bash -c "$(wget -qO - 'https://shlink.makedeb.org/install')"
+        env: 
+            TERM: xterm-256color
+            MAKEDEB_RELEASE: makedeb
+
+      - name: Build for Ubuntu
+        id: build-ubuntu
+        run: bash makedeb.bash
+        continue-on-error: true
+
+      - name: Install Wine
+        run: sudo dpkg --add-architecture i386 && sudo apt-get update && sudo apt-get install -y wine32 wine64 wine-binfmt
+
+      - name: Uninstall Mono
+        run: sudo apt-get remove -y mono-devel mono-complete mono-runtime
+        continue-on-error: true
+
+      - name: Fix permissions
+        run: sudo chmod -R 777 src/deshader
+
+      - name: Cross-compile for Windows
+        if: success()
+        run: for a in 1 2; do zig build deshader launcher -fwine -Dtarget=x86_64-windows-gnu --release=safe; done || bash fix_c_import.sh && zig build deshader launcher generate_headers generate_stubs -fwine -Dtarget=x86_64-windows-gnu --release=safe
+        shell: bash
+        working-directory: src/deshader
+        continue-on-error: true
+
+      - name: Create windows ZIP
+        id: windows-zip
+        if: success()
+        run: zip -r deshader-git-windows-${{ github.action_ref }}.zip bin/deshader.dll bin/deshader-run.exe bin/libwolfssl.dll bin/WebView2Loader.dll lib/deshader.ico include
+        working-directory: src/deshader/zig-out
+        continue-on-error: true
+
+      - name: Create a Release
+        if: ${{ steps.build-ubuntu.conclusion == 'success' || steps.build-arch.conclusion == 'success' || steps.windows-zip.conclusion == 'success' }}
+        uses: softprops/action-gh-release@v2
+        with:
+            prerelease: true
+            body: ${{ github.event.head_commit.message }}
+            files: |
+                ${{ steps.build-ubuntu.conclusion == 'success' && 'deshader-git_*.deb'}} 
+                ${{ steps.build-arch.conclusion == 'success' && 'deshader-git-*.tar.zst'}}
+                ${{ steps.build-arch.conclusion == 'success' && format('src/deshader/deshader-git-windows-{0}.zip', github.action_ref) }}

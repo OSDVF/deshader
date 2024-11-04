@@ -45,6 +45,7 @@ pub fn build(b: *std.Build) !void {
         .small => .ReleaseSmall,
         .off => .Debug,
     };
+
     const targetTarget = target.result.os.tag;
     const GlLibNames: []const String = switch (targetTarget) {
         .windows => &[_]String{"opengl32.dll"},
@@ -808,7 +809,7 @@ fn installVcpkgLibrary(i: *std.Build.Step.InstallArtifact, name: String, triplet
                 name_with_ext;
 
             // Copy the library to the install directory
-            i.step.dependOn(&(if (i.artifact.kind == .lib)
+            i.step.dependOn(&(if (i.artifact.kind == .lib and os != .windows) // on windows, DLLS are inside bin
                 b.addInstallLibFile(b.path(dll_path), dest_path)
             else
                 b.addInstallBinFile(b.path(dll_path), dest_path)).step);

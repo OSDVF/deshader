@@ -426,9 +426,7 @@ const SearchPaths = struct {
                     if (builtin.os.tag == .windows) {
                         const result = c.MessageBoxA(null, err, "Deshader Error", c.MB_OK | c.MB_ICONERROR);
                         if (result == c.IDOK) {
-                            if (browseFile()) |selected| {
-                                return selected orelse self.next();
-                            }
+                            return browseFile() orelse self.next();
                         }
                     } else if (builtin.os.tag == .linux) {
                         // TODO show open file dialog
