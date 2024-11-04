@@ -90,7 +90,6 @@ pub fn initStatic(allocator: std.mem.Allocator) !void {
         return error.GLSLang;
     }
     inited_static = true;
-    log.debug("Shaders service initialized", .{});
 }
 
 pub fn deinitStatic() void {

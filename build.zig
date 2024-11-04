@@ -67,8 +67,9 @@ pub fn build(b: *std.Build) !void {
         else => "libvulkan.so",
     };
     const ObjectFormat = enum { Default, c, IR, BC };
-    const optionOfmt = b.option(ObjectFormat, "ofmt", "Compile into object format") orelse .Default;
-    if (optionOfmt == .c) {
+    const Level = enum { err, warn, info, debug, default }; //cannot use std.log.Level because it gets corrupted in options generated file
+    const option_ofmt = b.option(ObjectFormat, "ofmt", "Compile into object format") orelse .Default;
+    if (option_ofmt == .c) {
         target.result.ofmt = .c;
     }
 
@@ -87,6 +88,7 @@ pub fn build(b: *std.Build) !void {
     const option_ignore_missing = b.option(bool, "ignoreMissing", "Ignore missing VK and GL libraries. GLX, EGL and VK will be required by default") orelse false;
     const option_include = b.option(String, "include", "Path to directory with additional headers to include");
     const option_lib_dir = b.option(String, "lib", "Path to directory with additional libraries to link");
+    const option_log_level = b.option(Level, "logLevel", "Set log level for the build") orelse .default;
     const option_linkage = b.option(Linkage, "linkage", "Select linkage type for deshader library. Cannot be combined with -Dofmt.") orelse Linkage.Dynamic;
     const option_log_intercept = b.option(bool, "logIntercept", "Log intercepted GL and VK procedure list to stdout") orelse false;
     const option_memory_frames = b.option(u32, "memoryFrames", "Number of frames in memory leak backtrace (default 7)") orelse 7;
@@ -94,8 +96,8 @@ pub fn build(b: *std.Build) !void {
     orelse (targetTarget != .windows or builtin.os.tag == .windows) and (optimize == .Debug or optimize == .ReleaseSafe);
     const options_unwind = b.option(bool, "unwind", "Enable unwind tables (implicit for debug mode)") orelse options_traces;
     const options_sanitize = b.option(bool, "sanitize", "Enable sanitizers (implicit for debug mode)") orelse options_traces;
-    const option_stack_check = b.option(bool, "stackCheck", "Enable stack checking (implicit for debug mode)") orelse options_traces;
-    const option_stack_protector = b.option(bool, "stackProtector", "Enable stack protector (implicit for debug mode)") orelse options_traces;
+    const option_stack_check = b.option(bool, "stackCheck", "Enable stack checking (implicit for debug mode)") orelse (optimize == .Debug);
+    const option_stack_protector = b.option(bool, "stackProtector", "Enable stack protector (implicit for debug mode)") orelse option_stack_check;
     const option_valgrind = b.option(bool, "valgrind", "Enable valgrind support (implicit for debug mode)") orelse options_traces;
     const option_strip = b.option(bool, "strip", "Strip debug symbols from the library (implicit for release fast and minimal mode)") orelse (optimize != .Debug and optimize != .ReleaseSafe);
     const option_triplet = b.option(String, "triplet", "VCPKG triplet to use for dependencies");
@@ -137,7 +139,7 @@ pub fn build(b: *std.Build) !void {
 
     const deshader_lib_name = try std.mem.concat(b.allocator, u8, &.{ if (targetTarget == .windows) "" else "lib", deshader_lib.name, targetTarget.dynamicLibSuffix() });
     const deshader_lib_cmd = b.step("deshader", "Install deshader library");
-    switch (optionOfmt) {
+    switch (option_ofmt) {
         .BC => {
             deshader_lib.generated_llvm_ir = try b.allocator.create(std.Build.GeneratedFile);
             deshader_lib.generated_llvm_ir.?.* = .{ .step = &deshader_lib.step, .path = try b.cache_root.join(b.allocator, &.{ "llvm", "deshader.ll" }) };
@@ -257,7 +259,8 @@ pub fn build(b: *std.Build) !void {
     options.addOption(?String, "vkAddInstanceLoader", optionvkAddInstanceLoader);
     options.addOption(bool, "logIntercept", option_log_intercept);
     options.addOption(String, "deshaderLibName", deshader_lib_name);
-    options.addOption(ObjectFormat, "ofmt", optionOfmt);
+    options.addOption(Level, "log_level", option_log_level);
+    options.addOption(ObjectFormat, "ofmt", option_ofmt);
     options.addOption(u32, "memoryFrames", option_memory_frames);
     const version_result = try exec(.{ .allocator = b.allocator, .argv = &.{ "git", "describe", "--tags", "--always" } });
     options.addOption([:0]const u8, "version", try b.allocator.dupeZ(u8, std.mem.trim(u8, version_result.stdout, " \n\t")));
@@ -294,7 +297,6 @@ pub fn build(b: *std.Build) !void {
         }
     }
 
-    run_symbol_enum.addArg(std.fmt.allocPrint(b.allocator, "{s}{s}", .{ host_libs_location, VulkanLibName }) catch unreachable);
     run_symbol_enum.expectExitCode(0);
     if (!b.enable_wine) { // wine can add weird fixme messages, or "fsync: up and running" to the stderr
         run_symbol_enum.expectStdErrEqual("");

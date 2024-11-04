@@ -368,29 +368,32 @@ fn runOnLoad() !void {
     }
 }
 
+/// Will be called upon Deshader library unload
 fn finalize() callconv(.C) void {
-    DeshaderLog.debug("Unloading Deshader library", .{});
-    defer common.deinit();
+    // Inlining is disabled because Zig would otherwise optimize out all the conditions in release mode (compiler bug?)
+    @call(.never_inline, DeshaderLog.debug, .{ "Unloading Deshader library", .{} });
+    defer @call(.never_inline, common.deinit, .{});
     if (common.command_listener != null) {
-        common.command_listener.?.stop();
-        common.allocator.destroy(common.command_listener.?);
+        @call(.never_inline, commands.CommandListener.stop, .{common.command_listener.?});
+        @call(.never_inline, std.mem.Allocator.destroy, .{ common.allocator, common.command_listener.? });
     }
     if (options.editor) {
         if (gui.gui_process != null) {
-            gui.editorTerminate() catch |err| {
-                DeshaderLog.err("{any}", .{err});
+            @call(.never_inline, gui.editorTerminate, .{}) catch |err| {
+                @call(.never_inline, DeshaderLog.err, .{ "{any}", .{err} });
             };
         }
         if (gui.global_provider != null) {
-            gui.serverStop() catch |err| {
-                DeshaderLog.err("{any}", .{err});
+            @call(.never_inline, gui.serverStop, .{}) catch |err| {
+                @call(.never_inline, DeshaderLog.err, .{ "{any}", .{err} });
             };
         }
     }
-    if (shaders.inited_static) {
-        shaders.deinitStatic();
+    if (!loaders.ignored) {
+        @call(.never_inline, shaders.deinitStatic, .{});
     }
-    loaders.deinit(); // also deinits gl_shaders
+    @call(.never_inline, loaders.deinit, .{}); // also deinits gl_shaders
+
 }
 
 /// Will be called upon Deshader library load and BEFORE the host application's main()

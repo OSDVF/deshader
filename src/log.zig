@@ -15,6 +15,7 @@
 
 const std = @import("std");
 const common = @import("common.zig");
+const options = @import("options");
 
 pub const DeshaderLog = std.log.scoped(.Deshader);
 pub var log_listener: ?*const fn (level: std.log.Level, scope: []const u8, message: []const u8) void = null;
@@ -31,4 +32,11 @@ pub fn logFn(comptime level: std.log.Level, comptime scope: @TypeOf(.EnumLiteral
 }
 pub const std_options = std.Options{
     .logFn = logFn,
+    .log_level = switch (options.log_level) {
+        .err => .err,
+        .warn => .warn,
+        .info => .info,
+        .debug => .debug,
+        .default => std.log.default_level,
+    },
 };
