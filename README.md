@@ -85,7 +85,7 @@ Deshader consists of several (mostly third party; mostly forked) components that
 ## How to
 After you install all the required frameworks, clone this repository with submodules, open terminal in its folder and create a debug build by
 ```sh
-git clone --recurse-submmodules https://github.com/OSDVF/deshader
+git clone --recurse-submodules https://github.com/OSDVF/deshader
 cd deshader
 zig build deshader
 ```

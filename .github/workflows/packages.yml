@@ -8,6 +8,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    if: startsWith(github.ref, 'refs/tags/')
     steps:
       - uses: actions/checkout@v4
         with:
@@ -17,42 +18,52 @@ jobs:
         with:
             version: 0.13.0
 
-
       - uses: oven-sh/setup-bun@v1
         with:
             bun-version: latest
 
       - name: Build for Arch
+        if: ${{ !contains(github.event.head_commit.message, 'skip linux') }}
         id: build-arch
         run: docker run -e EXPORT_PKG=true -e CHECKSUM_SRC=true -e PGPKEY="$PGP_KEY" -v "$(pwd):/pkg" ghcr.io/zaggash/arch-makepkg:latest
         continue-on-error: true
 
       - name: Remove cloned source # as it is incompatible between makepkg and makedeb
+        if: ${{ !contains(github.event.head_commit.message, 'skip linux') }}
         run: rm -rf deshader
 
       - name: Install Makedeb
+        if: ${{ !contains(github.event.head_commit.message, 'skip linux') }}
         run: bash -c "$(wget -qO - 'https://shlink.makedeb.org/install')"
         env: 
             TERM: xterm-256color
             MAKEDEB_RELEASE: makedeb
 
       - name: Build for Ubuntu
+        if: ${{ !contains(github.event.head_commit.message, 'skip linux') }}
         id: build-ubuntu
         run: bash makedeb.bash
         continue-on-error: true
 
       - name: Install Wine
+        if: ${{ !contains(github.event.head_commit.message, 'skip windows') }}
         run: sudo dpkg --add-architecture i386 && sudo apt-get update && sudo apt-get install -y wine32 wine64 wine-binfmt
 
       - name: Uninstall Mono
+        if: ${{ !contains(github.event.head_commit.message, 'skip windows') }}
         run: sudo apt-get remove -y mono-devel mono-complete mono-runtime
         continue-on-error: true
 
       - name: Fix permissions
         run: sudo chmod -R 777 src/deshader
+        continue-on-error: true
+
+      - name: Make src/deshader exist
+        run: mkdir src && git clone --recurse-submodules https://github.com/OSDVF/deshader src/deshader
+        continue-on-error: true
 
       - name: Cross-compile for Windows
-        if: success()
+        if: ${{ success() && !contains(github.event.head_commit.message, 'skip windows') }}
         run: for a in 1 2; do zig build deshader launcher -fwine -Dtarget=x86_64-windows-gnu --release=safe; done || bash fix_c_import.sh && zig build deshader launcher generate_headers generate_stubs -fwine -Dtarget=x86_64-windows-gnu --release=safe
         shell: bash
         working-directory: src/deshader
@@ -60,8 +71,8 @@ jobs:
 
       - name: Create windows ZIP
         id: windows-zip
-        if: success()
-        run: zip -r deshader-git-windows-${{ github.action_ref }}.zip bin/deshader.dll bin/deshader-run.exe bin/libwolfssl.dll bin/WebView2Loader.dll lib/deshader.ico include
+        if: ${{ success() && !contains(github.event.head_commit.message, 'skip windows') }}
+        run: zip -r deshader-git-windows-${{ github.ref_name }}.zip bin/deshader.dll bin/deshader-run.exe bin/libwolfssl.dll bin/WebView2Loader.dll lib/deshader.ico include
         working-directory: src/deshader/zig-out
         continue-on-error: true
 
@@ -74,4 +85,4 @@ jobs:
             files: |
                 ${{ steps.build-ubuntu.conclusion == 'success' && 'deshader-git_*.deb'}} 
                 ${{ steps.build-arch.conclusion == 'success' && 'deshader-git-*.tar.zst'}}
-                ${{ steps.build-arch.conclusion == 'success' && format('src/deshader/deshader-git-windows-{0}.zip', github.action_ref) }}
+                ${{ steps.windows-zip.conclusion == 'success' && format('src/deshader/zig-out/deshader-git-windows-{0}.zip', github.ref_name) }}
