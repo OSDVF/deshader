@@ -97,7 +97,7 @@ pub fn build(b: *std.Build) !void {
     orelse (targetTarget != .windows or builtin.os.tag == .windows) and (optimize == .Debug or optimize == .ReleaseSafe);
     const options_unwind = b.option(bool, "unwind", "Enable unwind tables (implicit for debug mode)") orelse options_traces;
     const options_sanitize = b.option(bool, "sanitize", "Enable sanitizers (implicit for debug mode)") orelse options_traces;
-    const option_stack_check = b.option(bool, "stackCheck", "Enable stack checking (implicit for debug mode)") orelse (optimize == .Debug);
+    const option_stack_check = (b.option(bool, "stackCheck", "Enable stack checking (implicit for debug mode, not supported for Windows)") orelse (optimize == .Debug)) and (targetTarget != .windows);
     const option_stack_protector = b.option(bool, "stackProtector", "Enable stack protector (implicit for debug mode)") orelse option_stack_check;
     const option_valgrind = b.option(bool, "valgrind", "Enable valgrind support (implicit for debug mode)") orelse options_traces;
     const option_strip = b.option(bool, "strip", "Strip debug symbols from the library (implicit for release fast and minimal mode)") orelse (optimize != .Debug and optimize != .ReleaseSafe);
@@ -165,10 +165,9 @@ pub fn build(b: *std.Build) !void {
         deshader_lib.addLibraryPath(b.path(libDir));
     }
 
-    const extension = if (targetTarget == .windows) "ico" else "png";
-    const icon = b.addInstallFile(b.path("src/deshader." ++ extension), "lib/deshader." ++ extension);
-    deshader_lib_install.step.dependOn(&icon.step);
     if (targetTarget == .windows) {
+        const icon = b.addInstallBinFile(b.path("src/deshader.ico"), "deshader.ico");
+        deshader_lib_install.step.dependOn(&icon.step);
         deshader_lib.addWin32ResourceFile(.{ .file = b.path(b.pathJoin(&.{ "src", "resources.rc" })) });
     }
 

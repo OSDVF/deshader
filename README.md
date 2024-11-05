@@ -35,6 +35,27 @@ You can also:
 
 Feel free to fork and add your own goals or even better, break the non-goals!
 
+# Installation
+### Prebuilt packages
+[Packages for Debian-like, Arch Linux and Windows are in the releases section.](https://github.com/OSDVF/deshader/releases)
+
+### Arch Linux (AUR)
+[Build scripts reside in a separate repository](https://github.com/OSDVF/deshader-build) and in AUR as `deshader-git`.
+```bash
+yay -S deshader-git
+```
+or
+```bash
+pamac build deshader-git
+```
+
+## Usage
+Display the Launcher GUI
+```bash
+deshader-run
+```
+[Deshader Manual](./guide/README.md)
+
 # Build
 ## Components
 
@@ -105,7 +126,7 @@ If that does not output any errors, it will autmatically
 for you. If there weren't any errors, then you can then
 ```sh
 # Build
-zig build **launcher**
+zig build launcher
 
 # Use Launcher tool
 ./zig-out/bin/deshader-run your_application
@@ -116,12 +137,12 @@ zig build **launcher**
 # Or run & build all the provided examples one-by-one
 zig build examples-run
 ```
-If the Launcher is not able to find Deshader library, you can specify it
+If the Launcher is not able to find Deshader library, you can specify it in env
 ```sh
-DESHADER_LIB=zig-out/lib/libdeshader.so
+DESHADER_LIB=zig-out/lib/libdeshader.so deshader-run
 ```
 
-`zig build` will only download Zig-managed dependencies (specified in `build.zig.zon`).
+`zig build` without a target will only download Zig-managed dependencies (specified in `build.zig.zon`).
 
 Output files will be placed at `./zig-out/`:
 - `bin/`

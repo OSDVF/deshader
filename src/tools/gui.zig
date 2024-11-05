@@ -44,7 +44,7 @@ pub fn getProductJson(allocator: std.mem.Allocator, https: bool, port: u16) !Str
             .nameLong = "Deshader Integrated Editor",
             .applicationName = "deshader-editor",
             .dataFolderName = ".deshader-editor",
-            .version = "1.82.0",
+            .version = "1.91.1",
             .extensionsGallery = .{
                 .serviceUrl = "https://open-vsx.org/vscode/gallery",
                 .itemUrl = "https://open-vsx.org/vscode/item",
@@ -129,7 +129,7 @@ pub fn createEditorProvider(command_listener: ?*const commands.CommandListener) 
         const f_address = file[options.editorDir.len..];
         // assume all paths start with `options.editorDir`
         const compressed_or_content = if (builtin.mode != .Debug) @embedFile(file);
-        if (comptime std.mem.eql(u8, f_address, "/deshader-vscode/dist/web/extension.js")) {
+        if (comptime std.mem.eql(u8, f_address, "/deshader-vscode/dist/extension.js")) {
             // Inject editor config into Deshader extension
             // Construct editor base url and config JSON
             var editor_config: ?String = null;
