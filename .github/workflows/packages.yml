@@ -18,7 +18,7 @@
 # The tag description will be used as the body, concatenated with the commit message.
 # If tag description contains the text "Release", the release will be marked as a stable release.
 # The release will contain the following files:
-# - deshader-git_*.deb
+# - deshader-git-*.deb
 # - deshader-git-*.tar.zst
 # - deshader-git-windows-*.zip
 
@@ -65,7 +65,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: deshader-${{ matrix.os }}
-          path: deshader-git_*.deb
+          path: deshader-git-*.deb
 
   ubuntu-arch-win:
     runs-on: ubuntu-24.04
@@ -121,7 +121,7 @@ jobs:
         if: steps.build-ubuntu.conclusion == 'success'
         with:
           name: deshader-ubuntu-24.04
-          path: deshader-git_*.deb
+          path: deshader-git-*.deb
 
       - name: Install Wine
         id: install-wine
@@ -132,6 +132,12 @@ jobs:
       - name: Uninstall Mono
         if: steps.install-wine.conclusion == 'success'
         run: sudo apt-get remove -y mono-devel mono-complete mono-runtime
+        continue-on-error: true
+
+
+      - name: Alias wine64 to wine
+        if: steps.install-wine.conclusion == 'success'
+        run: sudo ln -s /usr/bin/wine /usr/bin/wine64
         continue-on-error: true
 
       - name: Fix permissions
