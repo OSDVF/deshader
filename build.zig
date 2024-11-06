@@ -529,7 +529,7 @@ pub fn build(b: *std.Build) !void {
     launcher_options.addOption(String, "deshaderLibName", deshader_lib_name);
     launcher_options.addOption(u32, "memoryFrames", option_memory_frames);
     launcher_options.addOption([]const String, "dependencies", deshader_dependent_dlls.items);
-    launcher_options.addOption(String, "deshaderRelativeRoot", try std.fs.path.relative(b.allocator, b.exe_dir, b.lib_dir));
+    launcher_options.addOption(String, "deshaderRelativeRoot", if (targetTarget == .windows) "." else try std.fs.path.relative(b.allocator, b.exe_dir, b.lib_dir));
     launcher_exe.root_module.addOptions("options", launcher_options);
     launcher_exe.defineCMacro("_GNU_SOURCE", null); // To access dlinfo
     if (targetTarget == .windows) {
