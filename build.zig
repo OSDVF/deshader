@@ -138,6 +138,9 @@ pub fn build(b: *std.Build) !void {
         try env.put(flags, new_flags);
     }
 
+    deshader_lib.linkLibC();
+    deshader_lib.linkLibCpp();
+
     const deshader_lib_name = try std.mem.concat(b.allocator, u8, &.{ if (targetTarget == .windows) "" else "lib", deshader_lib.name, targetTarget.dynamicLibSuffix() });
     const deshader_lib_cmd = b.step("deshader", "Install deshader library");
     switch (option_ofmt) {
@@ -262,7 +265,7 @@ pub fn build(b: *std.Build) !void {
     options.addOption(Level, "log_level", option_log_level);
     options.addOption(ObjectFormat, "ofmt", option_ofmt);
     options.addOption(u32, "memoryFrames", option_memory_frames);
-    const version_result = try exec(.{ .allocator = b.allocator, .argv = &.{ "git", "describe", "--tags", "--always" } });
+    const version_result = try exec(.{ .allocator = b.allocator, .argv = &.{ "git", "describe", "--tags", "--always", "--abbrev=0" } });
     options.addOption([:0]const u8, "version", try b.allocator.dupeZ(u8, std.mem.trim(u8, version_result.stdout, " \n\t")));
     if (targetTarget == .windows) {
         options.addOption([]const String, "dependencies", deshader_dependent_dlls.items);
@@ -333,7 +336,7 @@ pub fn build(b: *std.Build) !void {
         try deshader_dependent_dlls.append(lib_name);
     }
 
-    serve.linkSystemLibrary("wolfssl", .{ .needed = true });
+    serve.linkSystemLibrary("wolfssl", .{});
 
     //
     // Steps for building generated and embedded files
@@ -826,11 +829,11 @@ fn linkGlew(i: *std.Build.Step.InstallArtifact, target: std.Target.Os.Tag, tripl
     if (target == .windows) {
         try addVcpkgInstalledPaths(i.step.owner, i.artifact, triplet, debug_lib);
         const glew = if (builtin.os.tag == .windows) if (i.artifact.root_module.optimize orelse .Debug == .Debug) "glew32d" else "glew32" else "libglew32";
-        i.artifact.linkSystemLibrary2(glew, .{ .needed = true }); // VCPKG on x64-wndows-cross generates bin/glew32.dll but lib/libglew32.dll.a
+        i.artifact.linkSystemLibrary2(glew, .{}); // VCPKG on x64-wndows-cross generates bin/glew32.dll but lib/libglew32.dll.a
         _ = try installVcpkgLibrary(i, "glew32", triplet, debug_lib);
         i.artifact.linkSystemLibrary2("opengl32", .{ .needed = true });
     } else {
-        i.artifact.linkSystemLibrary2("glew", .{ .needed = true });
+        i.artifact.linkSystemLibrary2("glew", .{});
     }
 }
 
