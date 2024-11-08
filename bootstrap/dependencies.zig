@@ -94,32 +94,31 @@ pub const DependenciesStep = struct {
 
     pub fn editor(self: *DependenciesStep) !void {
         // Check for Bun
-        const bun_cmd: []const String = if (builtin.os.tag == .windows) blk: {
-            var bun_out: u8 = undefined;
-            if (self.step.owner.runAllowFail(&.{ "bun", "--version" }, &bun_out, .Inherit)) |output| {
-                const version = std.SemanticVersion.parse(output) catch std.SemanticVersion{ .major = 0, .minor = 0, .patch = 0 };
-                if (version.major >= 1) {
-                    break :blk &[_]String{ "cmd", "/c" };
-                }
-            } else |err| {
-                std.log.info("Will attempt to use Bun from WSL (check error {})", .{err});
+        var bun_out: u8 = undefined;
+        if (self.step.owner.runAllowFail(&.{ "bun", "--version" }, &bun_out, .Inherit)) |output| check: {
+            const version = std.SemanticVersion.parse(std.mem.trim(u8, output, " \t\n")) catch |err| {
+                std.log.err("Could not parse Bun version: {}", .{err});
+                break :check;
+            };
+            if (!(version.major >= 1 and version.minor >= 1 and version.patch >= 34)) {
+                std.log.err("Bun is older than 1.1.34, please update it by running 'bun upgrade'", .{});
             }
-            break :blk &[_]String{ "wsl", "--exec", "bash", "-ic" };
-        } else &[_]String{"bun"};
+        } else |err| {
+            std.log.info("Error when checking Bun version {})", .{err});
+        }
 
         // Init
-        const bunInstallCmd = try std.mem.concat(self.step.owner.allocator, String, &.{ bun_cmd, if (builtin.os.tag == .windows) &.{"bun install --frozen-lockfile"} else &[_]String{ "install", "--frozen-lockfile" } });
         const deshaderVsCodeExt = "editor/deshader-vscode";
         const compile_verb = if (self.step.owner.release_mode == .off) "compile-prod" else "compile-dev";
         try self.sub_steps.append(.{
             .name = "Installing node.js dependencies by Bun for deshader-vscode",
-            .args = bunInstallCmd,
+            .args = try self.step.owner.allocator.dupe(String, &.{ "bun", "install", "--frozen-lockfile" }),
             .cwd = deshaderVsCodeExt,
             .after = try self.step.owner.allocator.dupe(SubStep, &[_]SubStep{
-                .{ .name = "Compiling deshader-vscode extension", .args = try std.mem.concat(self.step.owner.allocator, String, &.{ bun_cmd, if (builtin.os.tag == .windows) &.{"bun " ++ compile_verb} else &.{compile_verb} }), .cwd = deshaderVsCodeExt },
+                .{ .name = "Compiling deshader-vscode extension", .args = try self.step.owner.allocator.dupe(String, &.{ "bun", compile_verb }), .cwd = deshaderVsCodeExt },
             }),
         });
-        try self.sub_steps.append(.{ .name = "Installing node.js dependencies by Bun for editor", .args = try std.mem.concat(self.step.owner.allocator, String, &.{ bunInstallCmd, &.{"--production"} }), .cwd = "editor" });
+        try self.sub_steps.append(.{ .name = "Installing node.js dependencies by Bun for editor", .args = try self.step.owner.allocator.dupe(String, &.{ "bun", "install", "--frozen-lockfile", "--production" }), .cwd = "editor" });
     }
 
     pub fn vcpkg(self: *DependenciesStep, triplet: ?String) !void {
@@ -131,7 +130,7 @@ pub const DependenciesStep = struct {
             .linux => "linux",
             .macos => "osx",
             else => @panic("Unsupported OS"),
-        }, if (self.target.os.tag != builtin.os.tag or self.target.os.tag == .windows) (if (debug) "-cross-dbg" else "-cross-rel") else "" });
+        }, if (self.target.os.tag == .windows and self.target.abi != .msvc) (if (debug) "-zig-dbg" else "-zig-rel") else "" });
 
         const sub_sub = try self.step.owner.allocator.dupe(SubStep, &[_]SubStep{SubStep{
             .name = "Rename VCPKG artifacts",

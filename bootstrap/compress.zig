@@ -43,8 +43,8 @@ pub const CompressStep = struct {
         // implementation is modified in a non-backwards-compatible way.
         man.hash.add(@as(u32, 0xad95e922));
         man.hash.addBytes(read);
-        const dest = try step.owner.cache_root.join(step.owner.allocator, &.{ "c", "compressed", &man.hash.final(), std.fs.path.basename(source) });
-        self.generatedFile.path = dest;
+        const dest = step.owner.pathJoin(&.{ "c", "compressed", &man.hash.final(), std.fs.path.basename(source) });
+        self.generatedFile.path = try step.owner.cache_root.join(self.step.owner.allocator, &.{dest});
         if (try step.cacheHit(&man)) {
             // This is the hot path, success.
             return;

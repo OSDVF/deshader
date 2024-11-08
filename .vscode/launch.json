@@ -2,31 +2,31 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "GDB - Runner",
+            "name": "GDB - Launcher",
             "type": "gdb",
             "request": "launch",
             "cwd": "${workspaceRoot}",
             "target": "./zig-out/bin/deshader-run",
-            "preLaunchTask": "Build Runner",
+            "preLaunchTask": "Build Launcher",
             "arguments": "-y zig-out/bin/deshader-examples/glfw",
             "env": {
                 "DESHADER_LIB": "zig-out/lib",
             },
         },
         {
-            "name": "GDB - Runner GUI",
+            "name": "GDB - Launcher GUI",
             "type": "gdb",
             "request": "launch",
             "cwd": "${workspaceRoot}",
             "target": "./zig-out/bin/deshader-run",
-            "preLaunchTask": "Build Runner",
+            "preLaunchTask": "Build Launcher",
             "env": {
                 "DESHADER_LIB": "zig-out/lib",
                 "DESHADER_IGNORE_PROCESS": "gdb,zsh,llvm-symbolizer,code",
             },
         },
         {
-            "name": "CPPDBG - Runner",
+            "name": "CPPDBG - Launcher",
             "request": "launch",
             "type": "cppvsdbg",
             "program": "${workspaceRoot}/zig-out/bin/deshader-run",
@@ -34,17 +34,32 @@
                 "-y",
                 "zig-out/bin/deshader-examples/glfw.exe"
             ],
-            "preLaunchTask": "Build Runner",
+            "environment": [
+                {
+                    "name": "DESHADER_LIB",
+                    "value": "${workspaceRoot}/zig-out/bin/deshader.dll"
+                }
+            ],
+            "preLaunchTask": "Build Launcher",
             "cwd": "${workspaceRoot}"
         },
         {
-            "name": "CPPDBG - Runner GUI",
+            "name": "CPPDBG - Launcher GUI",
             "request": "launch",
             "type": "cppvsdbg",
             "program": "${workspaceRoot}/zig-out/bin/deshader-run",
     
-            "preLaunchTask": "Build Runner",
+            "preLaunchTask": "Build Launcher",
             "cwd": "${workspaceRoot}"
+        },
+        {
+            "name": "CPPDBG - Examples-All",
+            "request": "launch",
+            "type": "cppvsdbg",
+            "program": "${workspaceRoot}/zig-out/bin/deshader-examples-all",
+    
+            "preLaunchTask": "Build Examples",
+            "cwd": "${workspaceRoot}/zig-out/bin/"
         },
         {
             "name": "GDB - Generate Stubs",

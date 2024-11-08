@@ -82,7 +82,6 @@ Deshader consists of several (mostly third party; mostly forked) components that
 ## Requirements
 - [Zig 0.13](https://ziglang.org/) (MIT)
 - Bun 1.1.34 [Install](https://github.com/oven-sh/bun#install) (MIT)
-- GNU Make and .NET Core for generating OpenGL bindings
 - [VCPKG](https://vcpkg.io) (MIT)
 - C libraries
     - Linux
@@ -90,16 +89,15 @@ Deshader consists of several (mostly third party; mostly forked) components that
     - Windows
         - [Edge Dev Channel](https://www.microsoftedgeinsider.com/download)
         - WebView2 runtime
-        - Bun under WSL
     - *Cross-compilation* under Linux
         - for Windows
             - add VCPKG path to `~/.local/share/vcpkg/vcpkg.path.txt` (e.g. `echo $(which vcpkg) > ~/.local/share/vcpkg/vcpkg.path.txt`)
             - [Edge Dev Channel](https://www.microsoftedgeinsider.com/download) installed by offline installer
             - WebView2 runtime must be installed by [standalone installer](https://developer.microsoft.com/en-us/microsoft-edge/webview2#download) (not bootstraper) under Wine
             - **NOTES**
-                - Cross compiled Launcher is not compatible with Deshader compiled on Windows because there are inconsistencies between library names (`[lib]wolfssl`) 
                 - DLL interception does not work for OpenGL under Wine. Intercept on host side instead (however this does not really work for now)
-- For using CMake to compile C++ examples
+- Building __examples__ requires [Vulkan SDK](https://vulkan.lunarg.com/sdk/home) ([mixed licenses...](https://vulkan.lunarg.com/license/)) (for GLFW)
+- On Linux: for using CMake to compile C++ examples
     - `pkg-config`
     - `ld` from `binutils` package
 
@@ -155,7 +153,7 @@ Output files will be placed at `./zig-out/`:
         - `glfw`
         - `editor`
     - `examples`
-- `lib/`
+- `lib/` (also `bin/` for Windows)
     - (lib)deshader.[a|so|dll|lib|dylib]
     - (dependencies)
     - `wolfssl.dll`

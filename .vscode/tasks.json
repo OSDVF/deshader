@@ -81,11 +81,11 @@
             }
         },
         {
-            "label": "Build Runner",
+            "label": "Build Launcher",
             "command": "zig",
             "args": [
                 "build",
-                "runner",
+                "launcher",
                 "-freference-trace"
             ],
             "problemMatcher": "$zig",
@@ -185,11 +185,11 @@
             }
         },
         {
-            "label": "Cross-compile Runner",
+            "label": "Cross-compile Launcher",
             "command": "zig",
             "args": [
                 "build",
-                "runner",
+                "launcher",
                 "-fwine",
                 "-Dtarget=x86_64-windows-gnu",
                 "-freference-trace"

@@ -4,7 +4,7 @@
 #include <cstring>
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
-#ifdef WIN32
+#if defined(__MINGW32__) || defined(WIN32)
 #include <windows.h>
 #include "resources.h"
 
@@ -110,7 +110,7 @@ int main(int argc, char** argv) {
         -1, 1,
         1,  1,
     };
-    #ifdef WIN32
+    #if defined(__MINGW32__) || defined(WIN32)
     DWORD vert_size = 0;
     DWORD frag_size = 0;
     const char* vertex_vert_start = NULL;

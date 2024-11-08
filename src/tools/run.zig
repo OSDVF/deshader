@@ -127,12 +127,13 @@ pub fn main() !u8 {
     }
 
     var search = SearchPaths{};
-    const deshader_lib_name = while (try search.next()) |lib_name| {
-        deshader_lib = dlopenAbsolute(lib_name) catch {
-            LauncherLog.info("Deshader not found at {s}: {s}", .{ lib_name, dlerror() });
+    const deshader_lib_path = while (try search.next()) |lib_path| {
+        LauncherLog.debug("Trying {s}", .{lib_path});
+        deshader_lib = dlopenAbsolute(lib_path) catch {
+            LauncherLog.info("Deshader not found at {s}: {s}", .{ lib_path, dlerror() });
             continue;
         };
-        break lib_name;
+        break lib_path;
     } else {
         LauncherLog.err("Failed to find deshader library", .{});
         return error.DeshaderNotFound;
@@ -142,7 +143,7 @@ pub fn main() !u8 {
 
     const previous_env_path = common.env.get("PATH") orelse "";
     if (builtin.os.tag == .windows) {
-        const deshader_env_path = path.dirname(deshader_lib_name) orelse ".";
+        const deshader_env_path = path.dirname(deshader_lib_path) orelse ".";
         const new_env_path = try std.mem.concat(common.allocator, u8, &.{ previous_env_path, ";", deshader_env_path });
         common.env.set("PATH", new_env_path);
         common.allocator.free(new_env_path);
@@ -206,7 +207,7 @@ fn symlinkLibToLib(cwd: std.fs.Dir, target_path: String, symlink_dir: String, dl
             err catch {};
 
             while (!yes and blk: {
-                try stdout.print("Do you want to replace file {s} by a symlink to Deshader [y/N]?\n", .{symlink_path});
+                try stdout.print("Do you want to replace file {s} by a symlink to {s} [y/N]?\n", .{ symlink_path, target_path });
                 const input = try stdin.readUntilDelimiterOrEofAlloc(common.allocator, '\n', 10);
                 if (input == null) break :blk true; //repeat
                 defer common.allocator.free(input.?);
@@ -317,7 +318,22 @@ fn run(target_argv: []const String, working_dir: ?String, env: ?std.StringHashMa
     if (builtin.os.tag == .windows) {
         const symlink_dir = path.dirname(target_realpath) orelse ".";
         // Symlink deshader to this directory
-        try symlinkLibToLib(cwd, deshader_path, symlink_dir, options.deshaderLibName, yes);
+        const deshader_dir = path.dirname(deshader_path) orelse ".";
+        {
+            const full_dir = try common.getFullPath(common.allocator, deshader_dir);
+            defer common.allocator.free(full_dir);
+            const full_symlinkdir = try common.getFullPath(common.allocator, symlink_dir);
+            defer common.allocator.free(full_symlinkdir);
+            if (!std.ascii.eqlIgnoreCase(full_dir, full_symlinkdir)) {
+                try symlinkLibToLib(cwd, deshader_path, symlink_dir, options.deshaderLibName, yes);
+
+                inline for (options.dependencies) |lib| {
+                    const target_path = try path.join(common.allocator, &.{ deshader_dir, lib });
+                    defer common.allocator.free(target_path);
+                    try symlinkLibToLib(cwd, target_path, symlink_dir, lib, yes);
+                }
+            }
+        }
         const local_deshader = try path.join(common.allocator, &[_]String{ symlink_dir, options.deshaderLibName });
         defer common.allocator.free(local_deshader);
 
@@ -325,18 +341,12 @@ fn run(target_argv: []const String, working_dir: ?String, env: ?std.StringHashMa
         inline for (DefaultDllNames) |lib| {
             try symlinkLibToLib(cwd, local_deshader, symlink_dir, lib, yes);
         }
-        const extra_lib_names = common.env.get(common.env_prefix ++ "HOOK_LIBS");
-        if (extra_lib_names) |eln| {
+        const extra_lib_paths = common.env.get(common.env_prefix ++ "HOOK_LIBS");
+        if (extra_lib_paths) |eln| {
             var extra_lib_it = std.mem.splitScalar(u8, eln, ',');
             while (extra_lib_it.next()) |lib| {
                 try symlinkLibToLib(cwd, local_deshader, symlink_dir, lib, yes);
             }
-        }
-        const deshader_dir = path.dirname(deshader_path) orelse ".";
-        inline for (options.dependencies) |lib| {
-            const target_path = try path.join(common.allocator, &.{ deshader_dir, lib });
-            defer common.allocator.free(target_path);
-            try symlinkLibToLib(cwd, target_path, symlink_dir, lib, yes);
         }
     } else {
         const insert_libraries_var = switch (builtin.os.tag) {
@@ -408,7 +418,7 @@ const SearchPaths = struct {
 
     pub fn next(self: *@This()) !?String {
         self.i += 1;
-        switch (self.i) {
+        switch (self.i - 1) {
             0 => return common.env.get(common.env_prefix ++ "LIB") orelse return self.next(), // DESHADER_LIB as absolute path
             1 => return try std.fs.path.join(common.allocator, &.{ common.env.get(common.env_prefix ++ "LIB") orelse return self.next(), options.deshaderLibName }), // DESHADER_LIB as directory
             2 => { // libdeshader.so in cwd

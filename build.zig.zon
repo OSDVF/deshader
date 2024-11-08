@@ -14,8 +14,8 @@
             .hash = "1220852e3e3bf07492d465a2f61146613e5be82f9cc26b3889af98b76b0e18d29aa7",
         },
         .vulkan_zig = .{
-            .url = "https://github.com/Snektron/vulkan-zig/archive/66b7b773bb61e2102025f2d5ff0ae8c5f53e19cc.tar.gz",
-            .hash = "12208958f173b8b81bfac797955f0416ab38b21d1f69d4ebf6c7ca460a828a41cd45",
+            .url = "https://github.com/Snektron/vulkan-zig/archive/84b9622f92284fd8d90bc29097da5e58ce51a27f.tar.gz",
+            .hash = "1220ed8dbf35b9391f2d11c984493f80ecef1287bf07c9e29fba967c6912e54bb9b3",
         },
         .zigglgen = .{
             .url = "git+https://github.com/castholm/zigglgen#701f41808086411f14d3bc2d87fc0b14bd09ceba",
