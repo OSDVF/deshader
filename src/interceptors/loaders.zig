@@ -57,7 +57,7 @@ pub const APIs = struct {
                 *const fn (hdc: *const anyopaque, share: *const anyopaque, attribs: ?[*]c_int) ?*const anyopaque,
             } = .{ undefined, undefined };
             const destroy_name = "wglDeleteContext";
-            pub var destroy: ?*const fn (hdc: *const anyopaque) void = null;
+            pub var destroy: ?*const fn (hdc: *const anyopaque) bool = null;
             const get_current_name = "wglGetCurrentContext";
             pub var get_current: ?*const fn () ?*const anyopaque = null;
             pub var late_loaded = false;
@@ -73,7 +73,7 @@ pub const APIs = struct {
             pub var create_names = [_]ZString{""};
             pub var create: struct { *const fn (hdc: *const anyopaque) ?*const anyopaque } = .{undefined};
             var destroy_name = "";
-            pub var destroy: ?*const fn (hdc: *const anyopaque) void = null;
+            pub var destroy: ?*const fn (hdc: *const anyopaque) bool = null;
             var get_current_name: ZString = "";
             pub var get_current: ?*const fn () ?*const anyopaque = null;
             pub var last_params: struct { *const anyopaque } = undefined;
@@ -98,7 +98,7 @@ pub const APIs = struct {
                 *const fn (display: *const anyopaque, vis: *const anyopaque, share: *const anyopaque, direct: c_int, attribs: ?[*]const c_int) ?*const anyopaque,
             } = .{ undefined, undefined, undefined };
             const destroy_name = "glXDestroyContext";
-            pub var destroy: ?*const fn (display: *const anyopaque, context: *const anyopaque) void = null;
+            pub var destroy: ?*const fn (display: *const anyopaque, context: *const anyopaque) bool = null;
             const get_current_name = "glXGetCurrentContext";
             pub var get_current: ?*const fn () ?*const anyopaque = null;
             pub var last_params: struct { *const anyopaque, c_ulong } = undefined;
@@ -117,7 +117,7 @@ pub const APIs = struct {
                 *const fn (display: *const anyopaque, config: *const anyopaque, share: *const anyopaque, attribs: ?[*]const c_int) ?*const anyopaque,
             } = .{undefined};
             const destroy_name = "eglDestroyContext";
-            pub var destroy: ?*const fn (display: *const anyopaque, context: *const anyopaque) void = null;
+            pub var destroy: ?*const fn (display: *const anyopaque, context: *const anyopaque) bool = null;
             const get_current_name = "eglGetCurrentContext";
             pub var get_current: ?*const fn () ?*const anyopaque = null;
             pub var late_loaded = false;
@@ -133,7 +133,7 @@ pub const APIs = struct {
             var create_names: []const ZString = &.{""};
             var create: struct { *const fn (display: *const anyopaque, vis: *const anyopaque, share: *const anyopaque, direct: c_int) ?*const anyopaque } = .{undefined};
             var destroy_name = "";
-            pub var destroy: ?*const fn (display: *const anyopaque, context: *const anyopaque) void = null;
+            pub var destroy: ?*const fn (display: *const anyopaque, context: *const anyopaque) bool = null;
             var get_current_name: ZString = "";
             pub var get_current: ?*const fn () ?*const anyopaque = null;
             pub var late_loaded = false;
@@ -245,7 +245,7 @@ comptime {
 
 const _known_gl_loaders =
     (if (builtin.os.tag == .windows)
-    APIs.gl.wgl.default_loaders ++ APIs.gl.wgl.make_current_names ++ APIs.gl.wgl.create_names ++ .{ APIs.gl.wgl.destroy_name, APIs.gl.wgl.get_current_name }
+    APIs.gl.wgl.default_loaders ++ APIs.gl.wgl.make_current_names ++ APIs.gl.wgl.create_names ++ .{APIs.gl.wgl.destroy_name}
 else
     APIs.gl.glX.default_loaders ++ APIs.gl.glX.make_current_names ++ APIs.gl.glX.create_names ++ APIs.gl.egl.default_loaders ++ APIs.gl.egl.make_current_names ++ APIs.gl.egl.create_names ++ .{
         APIs.gl.egl.destroy_name,

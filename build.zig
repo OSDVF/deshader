@@ -725,7 +725,7 @@ const SubExampleStep = struct {
         const b = compile.step.owner;
         const is_zig = std.mem.endsWith(u8, path, "zig");
         const subExe = step.owner.addExecutable(.{
-            .name = "deshader-" ++ name,
+            .name = name,
             .root_source_file = if (is_zig) b.path(path) else null,
             .target = step.owner.resolveTargetQuery(std.Target.Query.fromTarget(compile.rootModuleTarget())),
             .optimize = compile.root_module.optimize orelse .ReleaseSafe,
@@ -752,10 +752,14 @@ const SubExampleStep = struct {
         if (target == .windows) {
             subExe.linkSystemLibrary("opengl32");
         }
+        const examples_dirname = "deshader-examples";
         const sep = std.fs.path.sep_str;
         const install = step.owner.addInstallArtifact(
             subExe,
-            .{ .dest_sub_path = try std.mem.concat(step.owner.allocator, u8, &.{ "deshader-examples", sep, name, if (target == .windows) ".exe" else "" }) },
+            .{
+                .dest_sub_path = try std.mem.concat(step.owner.allocator, u8, &.{ examples_dirname, sep, name, if (target == .windows) ".exe" else "" }),
+                .pdb_dir = .{ .override = .{ .custom = b.pathJoin(&.{ "bin", examples_dirname }) } },
+            },
         );
         step.dependOn(&install.step);
         return @This(){

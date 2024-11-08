@@ -1541,8 +1541,8 @@ pub const context_procs = if (builtin.os.tag == .windows)
             return result;
         }
 
-        pub export fn wglDeleteContext(context: *const anyopaque) void {
-            deleteContext(context, loaders.APIs.gl.wgl, .{});
+        pub export fn wglDeleteContext(context: *const anyopaque) bool {
+            return deleteContext(context, loaders.APIs.gl.wgl, .{});
         }
     }
 else
@@ -1591,12 +1591,12 @@ else
         //#endregion
 
         //#region Context destroy functions
-        pub export fn glXDestroyContext(display: *const anyopaque, context: *const anyopaque) void {
-            deleteContext(context, loaders.APIs.gl.glX, .{display});
+        pub export fn glXDestroyContext(display: *const anyopaque, context: *const anyopaque) bool {
+            return deleteContext(context, loaders.APIs.gl.glX, .{display});
         }
 
-        pub export fn eglDestroyContext(display: *const anyopaque, context: *const anyopaque) void {
-            deleteContext(context, loaders.APIs.gl.glX, .{display});
+        pub export fn eglDestroyContext(display: *const anyopaque, context: *const anyopaque) bool {
+            return deleteContext(context, loaders.APIs.gl.glX, .{display});
         }
         //#endregion
     };
@@ -1705,23 +1705,24 @@ pub fn makeCurrent(comptime api: anytype, c: ?*const anyopaque) void {
     }
 }
 
-fn deleteContext(c: *const anyopaque, api: anytype, arg: anytype) void {
+fn deleteContext(c: *const anyopaque, api: anytype, arg: anytype) bool {
     const prev_context = api.get_current.?();
     if (shaders.services.getPtr(c)) |s| {
         deinit: {
-            if (@call(.auto, api.make_current[0], api.last_params ++ .{c}) == 0) break :deinit;
+            // makeCurrent on Windows is illegal here
+            if (builtin.os.tag != .windows and @call(.auto, api.make_current[0], api.last_params ++ .{c}) == 0) break :deinit;
             makeCurrent(api, c);
             s.deinit();
             if (state.getPtr(s)) |c_state| {
                 c_state.deinit();
             }
-            if (@call(.auto, api.make_current[0], api.last_params ++ .{prev_context}) == 0) break :deinit;
+            if (builtin.os.tag != .windows and @call(.auto, api.make_current[0], api.last_params ++ .{prev_context}) == 0) break :deinit;
             makeCurrent(api, prev_context);
         }
         _ = state.remove(s);
         _ = shaders.services.swapRemove(c);
     }
-    @call(.auto, api.destroy.?, arg ++ .{c});
+    return @call(.auto, api.destroy.?, arg ++ .{c});
 }
 
 pub fn deinit() void {
