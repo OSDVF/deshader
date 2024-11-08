@@ -105,6 +105,9 @@
         "xtree": "cpp",
         "xutility": "cpp"
     },
+    "C_Cpp.files.exclude": {
+        "build/": true,
+    },
     "C_Cpp.dimInactiveRegions": false,
     "cmake.configureSettings": {
         "VCPKG_TARGET_TRIPLET": "x64-windows-cross",

@@ -143,7 +143,13 @@
             "request": "launch",
             "program": "${workspaceRoot}/zig-out/bin/deshader-examples/glfw.exe",
             "name": "CPPDBG - GLFW",
-            "cwd": "${workspaceRoot}/zig-out/bin/deshader-examples/",
+            "cwd": "${workspaceRoot}/zig-out/bin/",
+            "environment": [
+                {
+                    "name": "DESHADER_GUI",
+                    "value": "1"
+                }
+            ]
         },
         {
             "type": "cppvsdbg",

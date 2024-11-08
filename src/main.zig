@@ -301,10 +301,8 @@ fn runOnLoad() !void {
             }
         }
         common.env.set("LD_PRELOAD", replaced.items);
-        const urlZ = try common.allocator.dupeZ(u8, url.?);
-        defer common.allocator.free(urlZ);
 
-        try gui.guiProcess(urlZ, "Deshader Editor");
+        try gui.guiProcess(url.?, "Deshader Editor");
         replaced.deinit();
         std.process.exit(0xde); // Do not continue to original program main()
     }

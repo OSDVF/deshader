@@ -108,7 +108,8 @@ pub fn createEditorProvider(command_listener: ?*const commands.CommandListener) 
         defer provider.allocator.free(concatOrigin);
         try provider.allowed_origins.?.insert(concatOrigin);
     }
-    const dll_path = if (builtin.mode == .Debug) try common.selfDllPathAlloc(provider.allocator, "");
+    const dll_path = if (builtin.mode == .Debug) try resolveSelfDllTarget(provider.allocator);
+
     defer if (builtin.mode == .Debug) provider.allocator.free(dll_path);
     var dll_dir: ?std.fs.Dir = if (builtin.mode == .Debug) if (std.fs.path.dirname(dll_path)) |d| try std.fs.cwd().openDir(d, .{}) else null else null;
     defer if (dll_dir) |*d| d.close();
@@ -184,6 +185,7 @@ pub fn createEditorProvider(command_listener: ?*const commands.CommandListener) 
 pub const EditorProviderError = error{ AlreadyRunning, NotRunning };
 
 pub var global_provider: ?*positron.Provider = null;
+var base_url: ZString = undefined;
 pub fn serverStart(command_listener: ?*const commands.CommandListener) !void {
     if (global_provider != null) {
         for (global_provider.?.server.bindings.items) |binding| {
@@ -238,12 +240,11 @@ pub fn editorShow(command_listener: ?*const commands.CommandListener) !void {
         return error.AlreadyRunning;
     }
 
-    const base = (try global_provider.?.getUriAlloc("/index.html")).?;
-    defer global_provider.?.allocator.free(base);
-    DeshaderLog.info("GUI URL: {s}", .{base});
+    base_url = (try global_provider.?.getUriAlloc("/index.html")).?;
+    DeshaderLog.info("GUI URL: {s}", .{base_url});
 
     if (builtin.os.tag == .windows) {
-        gui_process = try std.Thread.spawn(.{ .allocator = common.allocator }, guiProcess, .{ base, "Deshader Editor" });
+        gui_process = try std.Thread.spawn(.{ .allocator = common.allocator }, guiProcess, .{ base_url, "Deshader Editor" });
         try gui_process.?.setName("GUI");
         gui_process.?.detach();
     } else {
@@ -252,7 +253,7 @@ pub fn editorShow(command_listener: ?*const commands.CommandListener) !void {
         // Duplicate the current process and set env vars to indicate that the child should act as the Editor Window
         gui_process = std.process.Child.init(&.{ exe_or_dll_path, "editor" }, common.allocator); // the "editor" parameter is really ignored but it is here for reference to be found easily
 
-        common.env.set(DESHADER_GUI_URL, base);
+        common.env.set(DESHADER_GUI_URL, base_url);
 
         gui_process.?.env_map = common.env.getMap();
         gui_process.?.stdout_behavior = .Inherit;
@@ -287,7 +288,7 @@ pub fn launcherGUI(run: *const fn (target_argv: []const String, working_dir: ?St
     const content = @embedFile("../tools/run.html");
     const result_len = std.base64.standard.Encoder.calcSize(content.len);
     const preamble = "data:text/html;base64,";
-    const result = try common.allocator.allocSentinel(u8, result_len + preamble.len, 0);
+    const result = try common.allocator.alloc(u8, result_len + preamble.len);
     defer common.allocator.free(result);
 
     @memcpy(result[0..preamble.len], preamble);
@@ -311,6 +312,9 @@ pub fn editorTerminate() !void {
             state.view.terminate();
         } else {
             try std.posix.kill(p.id, std.posix.SIG.TERM);
+        }
+        if (global_provider) |pr| {
+            pr.allocator.free(base_url);
         }
         DeshaderLog.debug("Editor terminated", .{});
     } else {
@@ -339,7 +343,7 @@ fn dummyRun(_: []const String, _: ?String, _: ?std.StringHashMapUnmanaged(String
 //
 // The following code should exist only in the GUI subprocess
 //
-pub fn guiProcess(url: ZString, title: ZString) !void {
+pub fn guiProcess(url: String, title: ZString) !void {
     const deshader = "deshader";
     const window = if (builtin.os.tag == .linux) create: {
         _ = C.gtk_init_check(null, null);
@@ -359,16 +363,14 @@ pub fn guiProcess(url: ZString, title: ZString) !void {
     defer common.allocator.free(titleZ);
     state.view.setTitle(titleZ);
     state.view.setSize(600, 400, .none);
-    const exe = try common.selfDllPathAlloc(common.allocator, "");
+    const exe = try resolveSelfDllTarget(common.allocator);
     defer common.allocator.free(exe);
 
     if (builtin.os.tag != .linux) {
-        const icon = try std.fs.path.joinZ(common.allocator, &.{ std.fs.path.dirname(exe) orelse ".", deshader ++ "." ++ (if (builtin.os.tag == .windows) "ico" else "png") });
+        const icon = try std.fs.path.joinZ(common.allocator, &.{ std.fs.path.dirname(exe) orelse ".", deshader ++ ".ico" });
         defer common.allocator.free(icon);
         if (std.fs.cwd().access(icon, .{})) {
-            const full = try common.getFullPath(common.allocator, icon);
-            defer common.allocator.free(full);
-            state.view.setIcon(full);
+            state.view.setIcon(icon);
         } else |_| {}
     }
 
@@ -385,4 +387,18 @@ pub fn guiProcess(url: ZString, title: ZString) !void {
         gui_process = null;
     }
     gui_mutex.unlock();
+    if (global_provider) |gp| {
+        gp.allocator.free(base_url);
+    }
+}
+
+fn resolveSelfDllTarget(allocator: std.mem.Allocator) !String {
+    const self = try common.selfDllPathAlloc(allocator, "");
+    if (builtin.os.tag == .windows) { // On windows, deshader may be symlinked
+        defer common.allocator.free(self);
+        const f = try std.fs.cwd().openFile(self, .{});
+        defer f.close();
+        return common.readLinkAbsolute(common.allocator, self) catch try common.allocator.dupe(u8, self);
+    }
+    return self;
 }

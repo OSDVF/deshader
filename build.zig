@@ -697,7 +697,7 @@ pub fn build(b: *std.Build) !void {
     // Clean step
     const clean_step = b.step("clean", "Remove zig-out and zig-cache folders");
     const clean_run = b.addSystemCommand(switch (builtin.os.tag) {
-        .windows => &[_]String{ "del", "/s", "/q" },
+        .windows => &[_]String{ "cmd", "/c", "del", "/s", "/q" },
         .linux, .macos => &[_]String{ "rm", "-rf" },
         else => unreachable,
     } ++ &[_]String{ "zig-out", ".zig-cache" });

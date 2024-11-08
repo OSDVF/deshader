@@ -266,6 +266,11 @@ pub fn getFullPath(alloc: std.mem.Allocator, path: String) !ZString {
     }
 }
 
+pub fn readLinkAbsolute(alloc: std.mem.Allocator, path: String) !String {
+    var buffer: [std.fs.max_path_bytes]u8 = undefined;
+    return alloc.dupe(u8, try std.fs.readLinkAbsolute(path, &buffer));
+}
+
 /// Handles WINE workaround
 pub fn symlinkOrCopy(cwd: std.fs.Dir, target_path: String, symlink_path: String) !void {
     (blk: {
