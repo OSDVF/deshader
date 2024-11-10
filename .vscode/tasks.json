@@ -41,15 +41,10 @@
         },
         {
             "label": "Build Library",
-            "command": "zig",
+            "command": "sh",
             "args": [
-                "build",
-                "deshader",
-                "-DlogIntercept",
-                "-DmemoryFrames=15",
-                "-freference-trace",
-                "--summary",
-                "none"
+                "-c",
+                "zig build deshader -DmemoryFrames=15 -freference-trace --summary none || ./fix_c_import.sh && zig build deshader"
             ],
             "problemMatcher": "$zig",
             "group": "build",

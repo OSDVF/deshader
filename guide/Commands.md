@@ -1,7 +1,9 @@
 # Commands
+Deshader can be controlled from the host application code using the [API](API.md) or remotely.
+
+## Remote control
 When Deshader is injected into an application it exposes a side-channel for remote control. The commands can be sent over HTTP or WebSocket protocols.
 
-## Usage
 `curl` and `websocat` utilities can be used to test the command servers.
 
 ### HTTP Command Server
@@ -9,7 +11,7 @@ Default port is `8081`.
 ```sh
 curl http://127.0.0.1:8081/version
 ```
-Should reply with `dev`
+Should reply with the currently checked out commit or tag.
 
 ### Websocket Command Server
 Default port is `8082`.
@@ -23,7 +25,7 @@ version
 Should reply with
 ```
 202: Accepted
-dev
+[current commit]
 ```
 
 All commands are passed URL-encoded with arguments as query parameters (`?query=strig&after=the&url=path`).
@@ -37,6 +39,8 @@ All commands are passed URL-encoded with arguments as query parameters (`?query=
 - `false` the parameter is not present or has `false` value
 - `true` the parameter is present or has `true` value
 - `string` the parameter is present and has any value
+
+# Commands List
 
 Command               | Parameters                                                   | Returns/Description
 ----------------------|--------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------

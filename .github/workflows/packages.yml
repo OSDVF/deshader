@@ -18,8 +18,8 @@
 # The tag description will be used as the body, concatenated with the commit message.
 # If tag description contains the text "Release", the release will be marked as a stable release.
 # The release will contain the following files:
-# - deshader-git-*.deb
-# - deshader-git-*.tar.zst
+# - deshader-git-*.deb for each Ubuntu version
+# - deshader-git-*.tar.zst for Arch
 # - deshader-git-windows-*.zip
 
 # To skip building for a specific platform, add "skip linux" or "skip windows" to the commit message.
@@ -34,9 +34,9 @@ jobs:
   ubuntu-mutli:
     strategy:
         matrix:
-            os: [ubuntu-20.04, ubuntu-22.04]
+            os: [ubuntu-20.04, ubuntu-24.04]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 15 # Usually runs for 6.5 minutes
     if: startsWith(github.ref, 'refs/tags/') && !contains(github.event.head_commit.message, 'skip linux')
     steps:
       - uses: actions/checkout@v4
@@ -68,8 +68,8 @@ jobs:
           path: deshader-git-*.deb
 
   ubuntu-arch-win:
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
+    runs-on: ubuntu-22.04 # Wine works weird on 24.04
+    timeout-minutes: 25 # Usually runs for 20 minutes
     if: startsWith(github.ref, 'refs/tags/')
     steps:
       - uses: actions/checkout@v4
@@ -120,7 +120,7 @@ jobs:
         continue-on-error: true
         if: steps.build-ubuntu.conclusion == 'success'
         with:
-          name: deshader-ubuntu-latest
+          name: deshader-ubuntu-22.04
           path: deshader-git-*.deb
 
       - name: Install Wine
@@ -175,7 +175,7 @@ jobs:
 
       - name: Add headers to ZIP
         if: ${{ steps.windows-zip.conclusion == 'success' }}
-        run: zip -r deshader-git-windows-${{ github.ref_name }}.zip include lib
+        run: zip -r deshader-git-windows-${{ github.ref_name }}.zip include
         working-directory: src/deshader/zig-out
         continue-on-error: true
 
@@ -185,7 +185,7 @@ jobs:
         if: steps.windows-zip.conclusion == 'success'
         with:
           name: deshader-windows
-          path: deshader-git-windows*.zip
+          path: src/deshader/zig-out/deshader-git-windows*.zip
 
   create-release:
     runs-on: ubuntu-latest

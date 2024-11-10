@@ -1,12 +1,15 @@
 # Deshader Manual
 
-Deshader exposes several basic user interfaces for controlling its behavior without any change to the host code:
+Installation and build process are [covered in the main README](../README.md).
+
+Deshader exposes several basic user interfaces for using it, without any modifications to host application code:
 - [GUI](GUI.md) - VSCode with Deshader extension
-- [`#pragma` clauses in shaders](Shaders.md)
 - [Remote commands server](Commands.md)
 
-Additionally, Deshader can be controlled from the host code by:
-- [Unobtrusive commands](C-API.md#unobtrusive-commands) using `glObjectLabel` and `glDebugMessageInsert`
-- [C API](C-API.md#c-api) for more advanced control
+Additionally, Deshader can be controlled from the host application code by:
+- [`#pragma` clauses in shaders](Shaders.md)
+- [Unobtrusive commands](API.md#unobtrusive-commands) using `glObjectLabel` and `glDebugMessageInsert`
+- [C API](API.md#c-api) for more advanced control
+- [Zig API](API.md#zig-api)
 
 Generally more than one interface can be used at the same time and they can control the same features.
