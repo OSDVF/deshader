@@ -21,6 +21,8 @@ void LoadFileInResource(int name, int type, DWORD& size, const char*& data)
 #elif defined(__GNUC__)
 #include <execinfo.h>
 #include <unistd.h>
+#elif defined(__APPLE__)
+#include <mach-o/getsect.h.h>
 #endif
 
 void GLAPIENTRY
@@ -119,13 +121,15 @@ int main(int argc, char** argv) {
     LoadFileInResource(FRAGMENT_FRAG, TEXTFILE, frag_size, fragment_frag_start);
     const GLint vert_size_int = static_cast<GLint>(vert_size);
     const GLint frag_size_int = static_cast<GLint>(frag_size);
-    #else
+    #elif __linux__
     extern const char vertex_vert_start[] asm("_binary_vertex_vert_start");//created by LD --relocatable --format=binary --output=vertex.vert.o vertex.vert
     extern const char vertex_vert_end[]   asm("_binary_vertex_vert_end");
     extern const char fragment_frag_start[] asm("_binary_fragment_frag_start");
     extern const char fragment_frag_end[]   asm("_binary_fragment_frag_end");
     const GLint vert_size_int = static_cast<GLint>(vertex_vert_end - vertex_vert_start);
     const GLint frag_size_int = static_cast<GLint>(fragment_frag_end - fragment_frag_start);
+    #else
+    const struct section_64 * sect = getsectbyname("binary", "vertex.vert");
     #endif
 
     GLuint vertex_shader = glCreateShader(GL_VERTEX_SHADER);

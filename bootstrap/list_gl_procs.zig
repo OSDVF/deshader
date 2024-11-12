@@ -33,7 +33,11 @@ pub const ListGlProcsStep = struct {
         const node = progressNode.start("List GL procs", 1);
         defer node.end();
         const self: *@This() = @fieldParentPtr("step", step);
-        const symbolsFile = try std.fs.cwd().openFile(self.symbolsOutput.generated.file.getPath(), .{});
+        const path = self.symbolsOutput.getPath(step.owner);
+        const symbolsFile = std.fs.cwd().openFile(path, .{}) catch |e| {
+            std.log.err("{} {s}", .{ e, path });
+            return e;
+        };
         const reader = symbolsFile.reader();
         var glProcs = std.StringArrayHashMap(void).init(step.owner.allocator);
         defer glProcs.deinit();

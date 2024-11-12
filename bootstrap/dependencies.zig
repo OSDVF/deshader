@@ -131,7 +131,7 @@ pub const DependenciesStep = struct {
         const use_triplet: String = triplet orelse try std.mem.concat(step.owner.allocator, u8, &.{ (if (self.target.cpu.arch == .x86) "x86" else "x64") ++ "-", switch (self.target.os.tag) {
             .windows => "windows",
             .linux => "linux",
-            .macos => "osx",
+            .macos => if (builtin.os.tag == .macos) "osx" else "osx-zig",
             else => @panic("Unsupported OS"),
         }, if (self.target.os.tag == .windows and self.target.abi != .msvc) (if (debug) "-zig-dbg" else "-zig-rel") else "" });
 

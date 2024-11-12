@@ -107,7 +107,7 @@ pub fn build(b: *std.Build) !void {
     const options_sanitize = b.option(bool, "sanitize", "Enable sanitizers (implicit for debug mode)") orelse options_traces;
     const option_stack_check = (b.option(bool, "stackCheck", "Enable stack checking (implicit for debug mode, not supported for Windows)") orelse (optimize == .Debug)) and (targetTarget != .windows);
     const option_stack_protector = b.option(bool, "stackProtector", "Enable stack protector (implicit for debug mode)") orelse option_stack_check;
-    const option_valgrind = b.option(bool, "valgrind", "Enable valgrind support (implicit for debug mode, not supported for msvc target)") orelse options_traces;
+    const option_valgrind = b.option(bool, "valgrind", "Enable valgrind support (implicit for debug mode, not supported for macos and msvc target)") orelse options_traces;
     const option_strip = b.option(bool, "strip", "Strip debug symbols from the library (implicit for release fast and minimal mode)") orelse (optimize != .Debug and optimize != .ReleaseSafe);
     const option_triplet = b.option(String, "triplet", "VCPKG triplet to use for dependencies");
     const option_lib_debug = b.option(bool, "libDebug", "Include debug information in VCPKG libraries") orelse (optimize == .Debug);
@@ -122,7 +122,7 @@ pub fn build(b: *std.Build) !void {
     deshader_lib.root_module.sanitize_c = options_sanitize;
     deshader_lib.root_module.stack_check = option_stack_check;
     deshader_lib.root_module.stack_protector = option_stack_protector;
-    deshader_lib.root_module.valgrind = option_valgrind and (target.result.abi != .msvc);
+    deshader_lib.root_module.valgrind = option_valgrind and (target.result.abi != .msvc) and targetTarget != .macos;
     deshader_lib.each_lib_rpath = false;
     deshader_lib.install_name = "OpenGL";
 
@@ -337,7 +337,7 @@ pub fn build(b: *std.Build) !void {
     }
     // Parse symbol enumerator output
     var addGlProcsStep = ListGlProcsStep.init(b, targetTarget, "add_gl_procs", allLibraries.items, GlSymbolPrefixes, if (builtin.os.tag == .macos)
-        b.path("libs/gl-fallback.txt")
+        b.path("libs/mac-fallback.txt")
     else
         run_symbol_enum_cmd.captureStdOut());
     if (builtin.os.tag != .macos) {
@@ -651,7 +651,19 @@ pub fn build(b: *std.Build) !void {
                     b.cache_root.handle.access("shaders", .{}) catch try std.fs.makeDirAbsolute(std.fs.path.dirname(output).?);
                     var dir = try b.build_root.handle.openDir("examples", .{});
                     defer dir.close();
-                    const result = try exec(.{
+                    const result = if (builtin.os.tag == .macos) embed: { // TODO do not run on every configure
+                        const stub = try std.fs.path.join(b.allocator, &.{ b.cache_root.path.?, "shaders", "stub.o" });
+                        _ = try exec(.{
+                            .allocator = b.allocator,
+                            .cwd_dir = dir,
+                            .argv = &.{ "gcc", "-o", stub, "-c", "../bootstrap/stub.c" },
+                        });
+                        break :embed try exec(.{
+                            .allocator = b.allocator,
+                            .cwd_dir = dir,
+                            .argv = &.{ "ld", "-r", "-o", output, "-sectcreate", "binary", shader, shader, stub },
+                        });
+                    } else try exec(.{
                         .allocator = b.allocator,
                         .argv = &.{ "ld", "--relocatable", "--format", "binary", "--output", output, shader },
                         .cwd_dir = dir,

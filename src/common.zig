@@ -22,9 +22,9 @@ const c = @cImport({
     if (builtin.os.tag == .windows) {
         @cInclude("windows.h");
         @cInclude("libloaderapi.h");
-    } else {
+    } else if (builtin.os.tag == .linux) {
         @cInclude("link.h");
-    }
+    } else @cInclude("dlfcn.h");
 });
 
 const log = @import("log.zig").DeshaderLog;
@@ -209,11 +209,20 @@ pub fn selfDllPathAlloc(a: std.mem.Allocator, concat_with: String) !String {
         } else {
             return std.os.windows.unexpectedError(std.os.windows.kernel32.GetLastError());
         }
-    } else {
+    } else if (builtin.os.tag == .linux) {
         _ = c.dl_iterate_phdr(callback, null);
+    } else {
+        var info: c.Dl_info = undefined;
+        if (c.dladdr(&dummy, &info) == 0) {
+            return error.DlAddr;
+        } else {
+            return a.dupe(u8, std.mem.span(info.dli_fname));
+        }
     }
     return a.dupe(u8, so_path);
 }
+
+export fn dummy() void {}
 
 /// Wraps std.fs.selfExePathAlloc or gets argv[0] on Windows to workaround Wine bug
 pub fn selfExePathAlloc(alloc: std.mem.Allocator) !String {

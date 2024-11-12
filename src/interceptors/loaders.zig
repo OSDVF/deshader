@@ -250,6 +250,7 @@ comptime {
         };
         if (builtin.os.tag == .macos) {
             @export(interpose, .{
+                .name = "_interpose_dlopen",
                 .section = "__DATA,__interpose",
             });
         }

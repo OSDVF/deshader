@@ -106,9 +106,10 @@ Deshader consists of several (mostly third party; mostly forked) components that
             - `zig build deshader -fdarling -Dtarget=x86_64-macos`
 
 - Building __examples__ requires [Vulkan SDK](https://vulkan.lunarg.com/sdk/home) ([mixed licenses...](https://vulkan.lunarg.com/license/)) (for GLFW)
-- On Linux: for using CMake to compile C++ examples
+- Linux and macOS:
     - `pkg-config`
     - `ld` from `binutils` package
+- Examples on macOS require `gcc`
 
 ## Building from source
 After you install all the required frameworks, clone this repository with submodules, open terminal in its folder and create a debug build by
