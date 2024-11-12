@@ -49,11 +49,16 @@ pub fn build(b: *std.Build) !void {
     const targetTarget = target.result.os.tag;
     const GlLibNames: []const String = switch (targetTarget) {
         .windows => &[_]String{"opengl32.dll"},
+        .macos => &.{"System/Library/Frameworks/OpenGL.framework/Libraries/libGL.dylib"},
         else => &[_]String{ "libGLX.so.0", "libEGL.so" },
     };
     const system32 = "C:/Windows/System32/";
+    // translate zig flags to cflags and cxxflags (will be used when building VCPKG dependencies)
+    var env = try std.process.getEnvMap(b.allocator);
+    // do not deinit env, because it will be used in DependeciesStep in make phase
     const host_libs_location = switch (targetTarget) {
         .windows => if (builtin.os.tag == .windows) system32 else try winepath(b.allocator, system32, false),
+        .macos => if (builtin.os.tag == .macos) "/" else "/usr/libexec/darling/",
         else => getLdConfigPath(b),
     };
 
@@ -129,9 +134,6 @@ pub fn build(b: *std.Build) !void {
     if (!option_lib_assert) {
         deshader_lib.defineCMacro("NDEBUG", null);
     }
-    // translate zig flags to cflags and cxxflags (will be used when building VCPKG dependencies)
-    var env = try std.process.getEnvMap(b.allocator);
-    // do not deinit env, because it will be used in DependeciesStep in make phase
     inline for (.{ "CFLAGS", "CXXFLAGS" }) |flags| {
         const old = env.get(flags);
         const new_flags = try std.mem.concat(b.allocator, u8, &.{
@@ -277,31 +279,39 @@ pub fn build(b: *std.Build) !void {
     }
 
     // Symbol Enumeration
-    const run_symbol_enum = b.addSystemCommand(if (targetTarget == .windows) &.{
-        "bootstrap/tools/dumpbin.exe",
-        "/exports",
-    } else &.{ "nm", "--format=posix", "--defined-only", "-DAp" });
+    const run_symbol_enum = b.addSystemCommand(switch (targetTarget) {
+        .windows => &.{
+            "bootstrap/tools/dumpbin.exe",
+            "/exports",
+        },
+        .macos => &.{ "nm", "--format=posix", "--defined-only" },
+        else => &.{ "nm", "--format=posix", "--defined-only", "-DAp" },
+    });
     if (b.enable_wine) {
         run_symbol_enum.setEnvironmentVariable("WINEDEBUG", "-all"); //otherwise expectStdErrEqual("") will not ignore fixme messages
     }
     for (GlLibNames) |libName| {
         if (try fileWithPrefixExists(b.allocator, host_libs_location, libName)) |real_name| {
-            run_symbol_enum.addArg(std.fmt.allocPrint(b.allocator, "{s}{s}", .{ host_libs_location, real_name }) catch unreachable);
+            run_symbol_enum.addArg(b.pathJoin(&.{ host_libs_location, real_name }));
         } else {
             if (option_ignore_missing) {
                 log.warn("Missing library {s}", .{libName});
             } else {
+                log.err("Missing library {s}", .{libName});
                 return deshader_lib.step.fail("Missing library {s}", .{libName});
             }
         }
     }
-    if (try fileWithPrefixExists(b.allocator, host_libs_location, VulkanLibName)) |real_name| {
-        run_symbol_enum.addArg(std.fmt.allocPrint(b.allocator, "{s}{s}", .{ host_libs_location, real_name }) catch unreachable);
-    } else {
-        if (option_ignore_missing) {
-            log.warn("Missing library {s}", .{VulkanLibName});
+    if (!b.enable_darling) {
+        if (try fileWithPrefixExists(b.allocator, host_libs_location, VulkanLibName)) |real_name| {
+            run_symbol_enum.addArg(std.fmt.allocPrint(b.allocator, "{s}{s}", .{ host_libs_location, real_name }) catch unreachable);
         } else {
-            return deshader_lib.step.fail("Missing library {s}", .{VulkanLibName});
+            if (option_ignore_missing) {
+                log.warn("Missing library {s}", .{VulkanLibName});
+            } else {
+                log.err("Missing library {s}", .{VulkanLibName});
+                return deshader_lib.step.fail("Missing library {s}", .{VulkanLibName});
+            }
         }
     }
 
@@ -376,16 +386,10 @@ pub fn build(b: *std.Build) !void {
         // Set execution permissions
         if (builtin.os.tag != .windows) {
             const full_path = try std.fs.path.joinZ(b.allocator, &.{ b.build_root.path.?, ar_name });
-            var stat: std.posix.Stat = undefined;
-            var result = std.os.linux.stat(full_path, &stat);
-            if (result == 0) {
-                result = std.os.linux.chmod(full_path, stat.mode | 0o111);
-                if (result != 0) { //add execute permission
-                    log.err("could not chmod {s}: {}", .{ ar_name, std.posix.errno(result) });
-                }
-            } else {
-                log.err("could not stat {s}: {}", .{ ar_name, std.posix.errno(result) });
-            }
+            const f = try std.fs.cwd().openFile(full_path, .{});
+            defer f.close();
+            const stat = try f.stat();
+            try f.chmod(stat.mode | 0o111);
         }
 
         // Build dependencies
@@ -460,7 +464,7 @@ pub fn build(b: *std.Build) !void {
             .optimize = optimize,
         });
         const heade_gen_opts = b.addOptions();
-        heade_gen_opts.addOption(String, "h_dir", b.pathJoin(&.{ b.h_dir, "deshader" }));
+        heade_gen_opts.addOption(String, "h_dir", try getTargetPath(b.allocator, targetTarget, b.pathJoin(&.{ b.h_dir, "deshader" })));
         header_gen.root_module.addOptions("options", heade_gen_opts);
         header_gen.root_module.addAnonymousImport("header_gen", .{
             .root_source_file = b.path("libs/zig-header-gen/src/header_gen.zig"),
@@ -770,12 +774,14 @@ const SubExampleStep = struct {
 };
 
 fn fileWithPrefixExists(allocator: std.mem.Allocator, dirname: String, basename: String) !?String {
-    var dir = openIterableDir(dirname) catch return null;
+    const full_dirname = try std.fs.path.join(allocator, &.{ dirname, std.fs.path.dirname(basename) orelse "" });
+    defer allocator.free(full_dirname);
+    var dir = openIterableDir(full_dirname) catch return null;
     defer dir.close();
     var it = dir.iterate();
     while (try it.next()) |current| {
         if (current.kind == .file) {
-            if (std.mem.startsWith(u8, current.name, basename)) {
+            if (std.mem.startsWith(u8, current.name, std.fs.path.basename(basename))) {
                 return try allocator.dupe(u8, current.name);
             }
         }
@@ -931,4 +937,22 @@ fn getLdConfigPath(b: *std.Build) String { // searches for libGL
         }
     }
     return "/usr/lib/";
+}
+
+fn fileExists(path: String) ?String {
+    if (try std.fs.accessAbsolute(path)) {
+        return path;
+    } else |_| {
+        return null;
+    }
+}
+
+fn getTargetPath(alloc: std.mem.Allocator, target: std.Target.Os.Tag, path: String) !String {
+    if (target == builtin.os.tag) {
+        return path;
+    } else switch (target) {
+        .windows => return winepath(alloc, path, false),
+        .macos => return std.fs.path.join(alloc, &.{ "/Volumes/SystemRoot/", path }), // Darling
+        else => return path,
+    }
 }

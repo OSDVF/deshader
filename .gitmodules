@@ -25,3 +25,6 @@
 [submodule "editor/glsl-language-support"]
 	path = editor/glsl-language-support
 	url = https://github.com/filippofracascia/glsl-language-support.git
+[submodule "bootstrap/install_name_tool"]
+	path = bootstrap/install_name_tool
+	url = https://github.com/dmikushin/install_name_tool.git

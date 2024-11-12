@@ -123,6 +123,9 @@ pub const DependenciesStep = struct {
 
     pub fn vcpkg(self: *DependenciesStep, triplet: ?String) !void {
         // TODO overlay to empty port when system library is available
+        if (self.target.os.tag == .macos and builtin.os.tag != .macos) {
+            compileInstallNameTool(self.step.owner);
+        }
         const step = self.step;
         const debug = self.step.owner.release_mode == .off;
         const use_triplet: String = triplet orelse try std.mem.concat(step.owner.allocator, u8, &.{ (if (self.target.cpu.arch == .x86) "x86" else "x64") ++ "-", switch (self.target.os.tag) {
@@ -234,3 +237,8 @@ pub const DependenciesStep = struct {
         };
     }
 };
+
+fn compileInstallNameTool(b: *std.Build) void { // is used within VCPKG and CMake build process when building for macOS
+    _ = b.build_root.handle.access("build/install_name_tool", .{}) catch
+        b.run(&.{ b.graph.zig_exe, "c++", "bootstrap/install_name_tool/src/install_name_tool.cpp", "bootstrap/install_name_tool/src/patchelf.cpp", "-I", "bootstrap/install_name_tool/include", "-o", "build/install_name_tool" });
+}

@@ -93,11 +93,18 @@ Deshader consists of several (mostly third party; mostly forked) components that
         - WebView2 runtime
     - *Cross-compilation* under Linux
         - for Windows
+            - install Wine
             - add VCPKG path to `~/.local/share/vcpkg/vcpkg.path.txt` (e.g. `echo $(which vcpkg) > ~/.local/share/vcpkg/vcpkg.path.txt`)
             - [Edge Dev Channel](https://www.microsoftedgeinsider.com/download) installed by offline installer
             - WebView2 runtime must be installed by [standalone installer](https://developer.microsoft.com/en-us/microsoft-edge/webview2#download) (not bootstraper) under Wine
+            - `zig build deshader -fwine -Dtarget=x86_64-windows`
             - **NOTES**
                 - DLL interception does not work for OpenGL under Wine. Intercept on host side instead (however this does not really work for now)
+        - for MacOS
+            - install [Darling](https://docs.darlinghq.org/build-instructions.html) (master branch needed) and enter  `darling shell`
+            - install Command Line Tools `xcode-select --install`
+            - `zig build deshader -fdarling -Dtarget=x86_64-macos`
+
 - Building __examples__ requires [Vulkan SDK](https://vulkan.lunarg.com/sdk/home) ([mixed licenses...](https://vulkan.lunarg.com/license/)) (for GLFW)
 - On Linux: for using CMake to compile C++ examples
     - `pkg-config`
@@ -106,7 +113,7 @@ Deshader consists of several (mostly third party; mostly forked) components that
 ## Building from source
 After you install all the required frameworks, clone this repository with submodules, open terminal in its folder and create a debug build by
 ```sh
-git clone --recurse-submodules https://github.com/OSDVF/deshader
+git clone --recurse-submodules https://github.com/OSDVF/deshader # git submodule update --init --recursive # if you cloned non-recursively
 cd deshader
 zig build deshader
 ```

@@ -226,7 +226,7 @@ fn symlinkLibToLib(cwd: std.fs.Dir, target_path: String, symlink_dir: String, dl
 }
 
 fn dlerror() if (builtin.os.tag == .windows) String else [*:0]const u8 {
-    if (builtin.os.tag == .linux and builtin.link_libc) {
+    if (builtin.os.tag != .windows and builtin.link_libc) {
         return c.dlerror();
     } else {
         const err = std.os.windows.kernel32.GetLastError();
