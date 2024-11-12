@@ -29,11 +29,19 @@ else()
     set(TARGET_DARWIN_SDK_PATH "${DARLING_PREFIX}/${DARWIN_SDK_PATH}")
 endif()
 
+if (EXISTS /usr/libexec/darling)
+    set(DARLING_SYSTEM_PREFIX /usr/libexec/darling)
+else()
+    set(DARLING_SYSTEM_PREFIX /usr/local/libexec/darling)
+endif()
+
 set(ADDITIONAL_ARGS "-target x86_64-macos \
-    -F ${TARGET_DARWIN_SDK_PATH} \
-    -F /usr/libexec/darling/System/Library/Frameworks/ \
-    -F /System/Library/Frameworks/ \
-    -D'__OSX_AVAILABLE_BUT_DEPRECATED_MSG(_osxIntro, _osxDep, _iosIntro, _iosDep, _msg)='")
+    -F ${TARGET_DARWIN_SDK_PATH}/System/Library/Frameworks \
+    -F ${DARLING_SYSTEM_PREFIX}/System/Library/Frameworks \
+    -F /System/Library/Frameworks \
+    -D'__OSX_AVAILABLE_STARTING(_osx, _ios)=' \
+    -D' __OSX_AVAILABLE_BUT_DEPRECATED(_osxIntro, _osxDep, _iosIntro, _iosDep)=' \
+    -D'__OSX_AVAILABLE_BUT_DEPRECATED_MSG(_osxIntro, _osxDep, _iosIntro, _iosDep, _msg)='") # Zig does not somehow parse availability macros correctly
 
 set(CMAKE_C_COMPILER "${ZIG}" CACHE FILEPATH "")
 set(ENV{ZIG} "${ZIG}")
@@ -54,11 +62,10 @@ set(CMAKE_RC_COMPILER_INIT "${ZIG}")
 set(CMAKE_RC_COMPILER_ARG1 "rc")
 set(CMAKE_RC_COMPILE_OBJECT "<CMAKE_RC_COMPILER> <DEFINES> <INCLUDES> <FLAGS> -- <SOURCE> <OBJECT>")
 set(CMAKE_INSTALL_NAME_TOOL "${BUILD_DIR}/install_name_tool")
-set(OPENGL_gl_LIBRARY /usr/libexec/darling/System/Library/Frameworks/OpenGL.framework/Libraries/libGL.dylib)
-set(OPENGL_glu_LIBRARY /usr/libexec/darling/System/Library/Frameworks/OpenGL.framework/Libraries/libGLU.dylib)
-set(OPENGL_INCLUDE_DIR ~/.darling/System/Library/Frameworks/OpenGL.framework/Versions/A/Headers/)
-set(OPENGL_GLU_INCLUDE_DIR ~/.darling/System/Library/Frameworks/OpenGL.framework/Versions/A/Headers/)
-set(CMAKE_OSX_DEPLOYMENT_TARGET "10.8" CACHE STRING "" FORCE)
+set(OPENGL_gl_LIBRARY ${DARLING_SYSTEM_PREFIX}/System/Library/Frameworks/OpenGL.framework/Libraries/libGL.dylib)
+set(OPENGL_glu_LIBRARY ${DARLING_SYSTEM_PREFIX}/System/Library/Frameworks/OpenGL.framework/Libraries/libGLU.dylib)
+set(OPENGL_INCLUDE_DIR ${DARLING_PREFIX}/System/Library/Frameworks/OpenGL.framework/Versions/A/Headers/)
+set(OPENGL_GLU_INCLUDE_DIR ${DARLING_PREFIX}/System/Library/Frameworks/OpenGL.framework/Versions/A/Headers/)
 
 set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
 set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)

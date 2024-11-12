@@ -30,7 +30,6 @@ const String = []const u8;
 
 const log = std.log.scoped(.DeshaderBuild);
 const hasDylibCache = builtin.os.isAtLeast(.macos, .{ .major = 11, .minor = 0, .patch = 1 }) orelse false; // https://developer.apple.com/documentation/macos-release-notes/macos-big-sur-11_0_1-release-notes#Kernel
-const darlingSysRoot = "/usr/libexec/darling";
 
 // Shims for compatibility between Zig versions
 const exec = std.process.Child.run;
@@ -60,7 +59,7 @@ pub fn build(b: *std.Build) !void {
     // do not deinit env, because it will be used in DependeciesStep in make phase
     const host_libs_location = switch (targetTarget) {
         .windows => if (builtin.os.tag == .windows) system32 else try winepath(b.allocator, system32, false),
-        .macos => if (builtin.os.tag == .macos) "/" else darlingSysRoot ++ "/",
+        .macos => if (builtin.os.tag == .macos) "/" else pathExists("/usr/libexec/darling/") orelse pathExists("/usr/local/libexec/darling/") orelse return error.NoDarling,
         else => getLdConfigPath(b),
     };
 
@@ -297,7 +296,7 @@ pub fn build(b: *std.Build) !void {
         }
         for (GlLibNames) |libName| {
             if (try fileWithPrefixExists(b.allocator, host_libs_location, libName)) |real_name| {
-                run_symbol_enum.addArg(try hostToTargetPath(b.allocator, targetTarget, real_name));
+                run_symbol_enum.addArg(try hostToTargetPath(b.allocator, targetTarget, real_name, host_libs_location));
             } else {
                 if (option_ignore_missing) {
                     log.warn("Missing library {s}", .{libName});
@@ -309,7 +308,7 @@ pub fn build(b: *std.Build) !void {
         }
         if (!b.enable_darling) {
             if (try fileWithPrefixExists(b.allocator, host_libs_location, VulkanLibName)) |real_name| {
-                run_symbol_enum.addArg(try hostToTargetPath(b.allocator, targetTarget, real_name));
+                run_symbol_enum.addArg(try hostToTargetPath(b.allocator, targetTarget, real_name, host_libs_location));
             } else {
                 if (option_ignore_missing) {
                     log.warn("Missing library {s}", .{VulkanLibName});
@@ -478,7 +477,7 @@ pub fn build(b: *std.Build) !void {
             .optimize = optimize,
         });
         const heade_gen_opts = b.addOptions();
-        heade_gen_opts.addOption(String, "h_dir", try hostToTargetPath(b.allocator, targetTarget, b.pathJoin(&.{ b.h_dir, "deshader" })));
+        heade_gen_opts.addOption(String, "h_dir", try hostToTargetPath(b.allocator, targetTarget, b.pathJoin(&.{ b.h_dir, "deshader" }), host_libs_location));
         header_gen.root_module.addOptions("options", heade_gen_opts);
         header_gen.root_module.addAnonymousImport("header_gen", .{
             .root_source_file = b.path("libs/zig-header-gen/src/header_gen.zig"),
@@ -969,21 +968,21 @@ fn getLdConfigPath(b: *std.Build) String { // searches for libGL
     return "/usr/lib/";
 }
 
-fn fileExists(path: String) ?String {
-    if (try std.fs.accessAbsolute(path)) {
+fn pathExists(path: String) ?String {
+    if (std.fs.accessAbsolute(path, .{})) {
         return path;
     } else |_| {
         return null;
     }
 }
 
-fn hostToTargetPath(alloc: std.mem.Allocator, target: std.Target.Os.Tag, path: String) !String {
+fn hostToTargetPath(alloc: std.mem.Allocator, target: std.Target.Os.Tag, path: String, target_sysroot_in_host: String) !String {
     if (target == builtin.os.tag) {
         return path;
     } else switch (target) {
         .windows => return winepath(alloc, path, true),
-        .macos => if (std.mem.startsWith(u8, path, darlingSysRoot)) {
-            return path[darlingSysRoot.len..];
+        .macos => if (std.mem.startsWith(u8, path, target_sysroot_in_host)) {
+            return path[target_sysroot_in_host.len - 1 ..];
         } else if (try ctregex.search("/home/.*/.darling", .{}, path)) |found| {
             return path[found.slice.len..];
         } else return std.fs.path.join(alloc, &.{ "/Volumes/SystemRoot/", path }), // Darling
