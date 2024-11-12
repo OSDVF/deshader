@@ -355,7 +355,7 @@ fn run(target_argv: []const String, working_dir: ?String, env: ?std.StringHashMa
             else => unreachable,
         };
         const old_ld_preload = child_envs.get(insert_libraries_var);
-        const ld_preload = if (old_ld_preload != null) try std.fmt.allocPrint(common.allocator, "{s} {s}", .{ old_ld_preload.?, deshader_path }) else deshader_path;
+        const ld_preload = if (old_ld_preload != null) try std.fmt.allocPrint(common.allocator, "{s},{s}", .{ old_ld_preload.?, deshader_path }) else deshader_path;
         defer if (old_ld_preload != null) common.allocator.free(ld_preload);
 
         try child_envs.put(insert_libraries_var, ld_preload);

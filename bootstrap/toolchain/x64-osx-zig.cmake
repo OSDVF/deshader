@@ -15,9 +15,24 @@ else()
     set(ZIG ${ZIG_PATH})
 endif()
 
-set(ADDITIONAL_ARGS "-target x86_64-macos.10.8 \
-    -F ~/.darling/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks/ \
+if(ENV{DPREFIX})
+    set(DARLING_PREFIX $ENV{DPREFIX})
+else()
+    set(DARLING_PREFIX "~/.darling")
+endif()
+
+if(CMAKE_HOST_SYSTEM MATCHES "Darwin")
+    execute_process(COMMAND xcrun --sdk macosx --show-sdk-path OUTPUT_VARIABLE DARWIN_SDK_PATH OUTPUT_STRIP_TRAILING_WHITESPACE)
+    set(TARGET_DARWIN_SDK_PATH ${DARWIN_SDK_PATH})
+else()
+    execute_process(COMMAND darling shell xcrun --sdk macosx --show-sdk-path OUTPUT_VARIABLE DARWIN_SDK_PATH OUTPUT_STRIP_TRAILING_WHITESPACE)
+    set(TARGET_DARWIN_SDK_PATH "${DARLING_PREFIX}/${DARWIN_SDK_PATH}")
+endif()
+
+set(ADDITIONAL_ARGS "-target x86_64-macos \
+    -F ${TARGET_DARWIN_SDK_PATH} \
     -F /usr/libexec/darling/System/Library/Frameworks/ \
+    -F /System/Library/Frameworks/ \
     -D'__OSX_AVAILABLE_BUT_DEPRECATED_MSG(_osxIntro, _osxDep, _iosIntro, _iosDep, _msg)='")
 
 set(CMAKE_C_COMPILER "${ZIG}" CACHE FILEPATH "")

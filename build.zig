@@ -29,6 +29,8 @@ const Linkage = enum {
 const String = []const u8;
 
 const log = std.log.scoped(.DeshaderBuild);
+const hasDylibCache = builtin.os.isAtLeast(.macos, .{ .major = 11, .minor = 0, .patch = 1 }) orelse false; // https://developer.apple.com/documentation/macos-release-notes/macos-big-sur-11_0_1-release-notes#Kernel
+const darlingSysRoot = "/usr/libexec/darling";
 
 // Shims for compatibility between Zig versions
 const exec = std.process.Child.run;
@@ -49,7 +51,7 @@ pub fn build(b: *std.Build) !void {
     const targetTarget = target.result.os.tag;
     const GlLibNames: []const String = switch (targetTarget) {
         .windows => &[_]String{"opengl32.dll"},
-        .macos => &.{"System/Library/Frameworks/OpenGL.framework/Libraries/libGL.dylib"},
+        .macos => &.{ "System/Library/Frameworks/OpenGL.framework/OpenGL", "System/Library/Frameworks/OpenGL.framework/Libraries/libGL.dylib" },
         else => &[_]String{ "libGLX.so.0", "libEGL.so" },
     };
     const system32 = "C:/Windows/System32/";
@@ -58,14 +60,15 @@ pub fn build(b: *std.Build) !void {
     // do not deinit env, because it will be used in DependeciesStep in make phase
     const host_libs_location = switch (targetTarget) {
         .windows => if (builtin.os.tag == .windows) system32 else try winepath(b.allocator, system32, false),
-        .macos => if (builtin.os.tag == .macos) "/" else "/usr/libexec/darling/",
+        .macos => if (builtin.os.tag == .macos) "/" else darlingSysRoot ++ "/",
         else => getLdConfigPath(b),
     };
 
     const GlSymbolPrefixes: []const String = switch (targetTarget) {
-        .windows => &[_]String{ "wgl", "gl" },
-        .linux => &[_]String{ "glX", "egl", "gl" },
-        else => &[_]String{"gl"},
+        .windows => &.{ "wgl", "gl" },
+        .linux => &.{ "glX", "egl", "gl" },
+        .macos => &.{ "CGL", "gl" },
+        else => &.{"gl"},
     };
     const VulkanLibName = switch (targetTarget) {
         .windows => "vulkan-1.dll",
@@ -121,6 +124,7 @@ pub fn build(b: *std.Build) !void {
     deshader_lib.root_module.stack_protector = option_stack_protector;
     deshader_lib.root_module.valgrind = option_valgrind and (target.result.abi != .msvc);
     deshader_lib.each_lib_rpath = false;
+    deshader_lib.install_name = "OpenGL";
 
     if (target.result.abi == .msvc) {
         deshader_lib.linkSystemLibrary("shell32");
@@ -279,56 +283,66 @@ pub fn build(b: *std.Build) !void {
     }
 
     // Symbol Enumeration
-    const run_symbol_enum = b.addSystemCommand(switch (targetTarget) {
-        .windows => &.{
-            "bootstrap/tools/dumpbin.exe",
-            "/exports",
-        },
-        .macos => &.{ "nm", "--format=posix", "--defined-only" },
-        else => &.{ "nm", "--format=posix", "--defined-only", "-DAp" },
-    });
-    if (b.enable_wine) {
-        run_symbol_enum.setEnvironmentVariable("WINEDEBUG", "-all"); //otherwise expectStdErrEqual("") will not ignore fixme messages
-    }
-    for (GlLibNames) |libName| {
-        if (try fileWithPrefixExists(b.allocator, host_libs_location, libName)) |real_name| {
-            run_symbol_enum.addArg(b.pathJoin(&.{ host_libs_location, real_name }));
-        } else {
-            if (option_ignore_missing) {
-                log.warn("Missing library {s}", .{libName});
+    const run_symbol_enum_cmd = if (!hasDylibCache) configure: { // OpenGL is not directly available in the form of dynamic library on macOS >= 11.x
+        const run_symbol_enum = b.addSystemCommand(switch (targetTarget) {
+            .windows => &.{
+                "bootstrap/tools/dumpbin.exe",
+                "/exports",
+            },
+            .macos => if (b.enable_darling) &.{ "darling", "shell", "nm", "--format=posix", "--defined-only", "-ap" } else &.{ "nm", "--format=posix", "--defined-only", "-ap" },
+            else => &.{ "nm", "--format=posix", "--defined-only", "-DAp" },
+        });
+        if (b.enable_wine) {
+            run_symbol_enum.setEnvironmentVariable("WINEDEBUG", "-all"); //otherwise expectStdErrEqual("") will not ignore fixme messages
+        }
+        for (GlLibNames) |libName| {
+            if (try fileWithPrefixExists(b.allocator, host_libs_location, libName)) |real_name| {
+                run_symbol_enum.addArg(try hostToTargetPath(b.allocator, targetTarget, real_name));
             } else {
-                log.err("Missing library {s}", .{libName});
-                return deshader_lib.step.fail("Missing library {s}", .{libName});
+                if (option_ignore_missing) {
+                    log.warn("Missing library {s}", .{libName});
+                } else {
+                    log.err("Missing library {s}", .{libName});
+                    return deshader_lib.step.fail("Missing library {s}", .{libName});
+                }
             }
         }
-    }
-    if (!b.enable_darling) {
-        if (try fileWithPrefixExists(b.allocator, host_libs_location, VulkanLibName)) |real_name| {
-            run_symbol_enum.addArg(std.fmt.allocPrint(b.allocator, "{s}{s}", .{ host_libs_location, real_name }) catch unreachable);
-        } else {
-            if (option_ignore_missing) {
-                log.warn("Missing library {s}", .{VulkanLibName});
+        if (!b.enable_darling) {
+            if (try fileWithPrefixExists(b.allocator, host_libs_location, VulkanLibName)) |real_name| {
+                run_symbol_enum.addArg(try hostToTargetPath(b.allocator, targetTarget, real_name));
             } else {
-                log.err("Missing library {s}", .{VulkanLibName});
-                return deshader_lib.step.fail("Missing library {s}", .{VulkanLibName});
+                if (option_ignore_missing) {
+                    log.warn("Missing library {s}", .{VulkanLibName});
+                } else {
+                    log.err("Missing library {s}", .{VulkanLibName});
+                    return deshader_lib.step.fail("Missing library {s}", .{VulkanLibName});
+                }
             }
         }
-    }
 
-    run_symbol_enum.expectExitCode(0);
-    if (!b.enable_wine) { // wine can add weird fixme messages, or "fsync: up and running" to the stderr
-        run_symbol_enum.expectStdErrEqual("");
-    }
+        run_symbol_enum.expectExitCode(0);
+        if (!b.enable_wine) { // wine can add weird fixme messages, or "fsync: up and running" to the stderr
+            run_symbol_enum.expectStdErrEqual("");
+        }
+        break :configure run_symbol_enum;
+    };
     var allLibraries = std.ArrayList(String).init(b.allocator);
-    allLibraries.appendSlice(GlLibNames) catch unreachable;
-    allLibraries.append(VulkanLibName) catch unreachable;
+    try allLibraries.appendSlice(GlLibNames);
+    try allLibraries.append(VulkanLibName);
     if (option_custom_library != null) {
-        run_symbol_enum.addArgs(option_custom_library.?);
-        allLibraries.appendSlice(option_custom_library.?) catch unreachable;
+        if (builtin.os.tag != .macos) {
+            run_symbol_enum_cmd.addArgs(option_custom_library.?);
+        }
+        try allLibraries.appendSlice(option_custom_library.?);
     }
     // Parse symbol enumerator output
-    var addGlProcsStep = ListGlProcsStep.init(b, targetTarget, "add_gl_procs", allLibraries.items, GlSymbolPrefixes, run_symbol_enum.captureStdOut());
-    addGlProcsStep.step.dependOn(&run_symbol_enum.step);
+    var addGlProcsStep = ListGlProcsStep.init(b, targetTarget, "add_gl_procs", allLibraries.items, GlSymbolPrefixes, if (builtin.os.tag == .macos)
+        b.path("libs/gl-fallback.txt")
+    else
+        run_symbol_enum_cmd.captureStdOut());
+    if (builtin.os.tag != .macos) {
+        addGlProcsStep.step.dependOn(&run_symbol_enum_cmd.step);
+    }
     deshader_lib.step.dependOn(&addGlProcsStep.step);
     const transitive_exports = b.createModule(.{ .root_source_file = .{ .generated = .{ .file = &addGlProcsStep.generated_file } } });
     deshader_lib.root_module.addImport("transitive_exports", transitive_exports);
@@ -464,7 +478,7 @@ pub fn build(b: *std.Build) !void {
             .optimize = optimize,
         });
         const heade_gen_opts = b.addOptions();
-        heade_gen_opts.addOption(String, "h_dir", try getTargetPath(b.allocator, targetTarget, b.pathJoin(&.{ b.h_dir, "deshader" })));
+        heade_gen_opts.addOption(String, "h_dir", try hostToTargetPath(b.allocator, targetTarget, b.pathJoin(&.{ b.h_dir, "deshader" })));
         header_gen.root_module.addOptions("options", heade_gen_opts);
         header_gen.root_module.addAnonymousImport("header_gen", .{
             .root_source_file = b.path("libs/zig-header-gen/src/header_gen.zig"),
@@ -779,10 +793,14 @@ fn fileWithPrefixExists(allocator: std.mem.Allocator, dirname: String, basename:
     var dir = openIterableDir(full_dirname) catch return null;
     defer dir.close();
     var it = dir.iterate();
+    var buffer: [std.fs.max_path_bytes]u8 = undefined;
     while (try it.next()) |current| {
-        if (current.kind == .file) {
+        if (current.kind == .file or (current.kind == .sym_link and resolve: {
+            const target = try dir.readLink(current.name, &buffer);
+            break :resolve (dir.statFile(target) catch break :resolve false).kind == .file;
+        })) {
             if (std.mem.startsWith(u8, current.name, std.fs.path.basename(basename))) {
-                return try allocator.dupe(u8, current.name);
+                return try std.fs.path.join(allocator, &.{ full_dirname, current.name });
             }
         }
     }
@@ -899,7 +917,7 @@ fn systemHasLib(c: *std.Build.Step.Compile, native_libs_location: String, lib: S
         for (c.root_module.lib_paths.items) |lib_dir| {
             const path = lib_dir.getPath(b);
             if (try fileWithPrefixExists(b.allocator, path, libname)) |full_name| {
-                log.info("Found library {s} in {s}", .{ full_name, path });
+                log.info("Found library {s}", .{full_name});
                 b.allocator.free(full_name);
                 return true;
             }
@@ -907,7 +925,7 @@ fn systemHasLib(c: *std.Build.Step.Compile, native_libs_location: String, lib: S
     }
 
     if (try fileWithPrefixExists(b.allocator, native_libs_location, libname)) |full_name| {
-        log.info("Found system library {s} in {s}", .{ full_name, native_libs_location });
+        log.info("Found system library {s}", .{full_name});
         b.allocator.free(full_name);
         return true;
     } else return false;
@@ -947,12 +965,16 @@ fn fileExists(path: String) ?String {
     }
 }
 
-fn getTargetPath(alloc: std.mem.Allocator, target: std.Target.Os.Tag, path: String) !String {
+fn hostToTargetPath(alloc: std.mem.Allocator, target: std.Target.Os.Tag, path: String) !String {
     if (target == builtin.os.tag) {
         return path;
     } else switch (target) {
-        .windows => return winepath(alloc, path, false),
-        .macos => return std.fs.path.join(alloc, &.{ "/Volumes/SystemRoot/", path }), // Darling
+        .windows => return winepath(alloc, path, true),
+        .macos => if (std.mem.startsWith(u8, path, darlingSysRoot)) {
+            return path[darlingSysRoot.len..];
+        } else if (try ctregex.search("/home/.*/.darling", .{}, path)) |found| {
+            return path[found.slice.len..];
+        } else return std.fs.path.join(alloc, &.{ "/Volumes/SystemRoot/", path }), // Darling
         else => return path,
     }
 }

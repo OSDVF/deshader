@@ -197,7 +197,10 @@ pub fn checkIgnoredProcess() void {
 // Intercept dlopen on POSIX systems
 comptime {
     if (builtin.os.tag != .windows) {
-        @export(struct {
+        const INTERPOSE = struct {
+            replacement: ?*const anyopaque,
+            replacee: ?*const anyopaque,
+
             fn dlopen(name: ?[*:0]u8, mode: c_int) callconv(.C) ?*const anyopaque {
                 // Check for initialization
                 if (APIs.originalDlopen == null) {
@@ -239,7 +242,18 @@ comptime {
                 }
                 return result;
             }
-        }.dlopen, .{ .name = "dlopen" });
+        };
+
+        const interpose = INTERPOSE{
+            .replacement = &INTERPOSE.dlopen,
+            .replacee = &c.dlopen,
+        };
+        if (builtin.os.tag == .macos) {
+            @export(interpose, .{
+                .section = "__DATA,__interpose",
+            });
+        }
+        @export(INTERPOSE.dlopen, .{ .name = "dlopen" });
     }
 }
 

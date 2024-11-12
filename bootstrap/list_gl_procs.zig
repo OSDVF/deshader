@@ -41,14 +41,14 @@ pub const ListGlProcsStep = struct {
             defer self.step.owner.allocator.free(symbolsLine);
             var tokens = std.mem.tokenizeScalar(u8, symbolsLine, ' ');
             const libName = tokens.next();
-            const symbolNameLinux = tokens.next();
+            const symbolNameUnix = tokens.next();
             if (self.target == .windows) {
                 const offset = tokens.next();
                 if (offset == null) { //one more not needed token for windows
                     continue;
                 }
             }
-            if (libName == null or symbolNameLinux == null) {
+            if (libName == null or symbolNameUnix == null) {
                 continue;
             }
             if (self.target == .windows) {
@@ -63,9 +63,9 @@ pub const ListGlProcsStep = struct {
                 }
             } else for (self.libNames) |selfLibName| {
                 if (std.mem.indexOf(u8, libName.?, selfLibName) != null) {
-                    for (self.symbolPrefixes) |prefix| {
-                        if (std.mem.startsWith(u8, symbolNameLinux.?, prefix)) {
-                            try glProcs.put(self.step.owner.fmt("pub var {s}", .{symbolNameLinux.?}), {});
+                    for (self.symbolPrefixes) |prefix| { // macOS symbols are prefixed with underscore
+                        if (std.mem.startsWith(u8, if (self.target == .macos) symbolNameUnix.?[1..] else symbolNameUnix.?, prefix)) {
+                            try glProcs.put(self.step.owner.fmt("pub var {s}", .{symbolNameUnix.?}), {});
                         }
                     }
                 }
