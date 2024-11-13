@@ -258,15 +258,22 @@ pub fn DllMain(instance: std.os.windows.HINSTANCE, reason: std.os.windows.DWORD,
     return std.os.windows.TRUE;
 }
 comptime {
-    if (builtin.os.tag == .windows) {
-        @export(DllMain, .{
+    switch (builtin.os.tag) {
+        .windows => @export(DllMain, .{
             .name = "DllMain",
-        });
-    } else {
-        const i = &wrapErrorRunOnLoad;
-        const f = &finalize;
-        @export(i, .{ .name = "init_array", .section = ".init_array" });
-        @export(f, .{ .name = "fini_array", .section = ".fini_array" });
+        }),
+        .macos => {
+            const i = &wrapErrorRunOnLoad;
+            const f = &finalize;
+            @export(i, .{ .name = "__init", .section = "__DATA,__mod_init_func" });
+            @export(f, .{ .name = "__term", .section = "__DATA,__mod_term_func" });
+        },
+        else => {
+            const i = &wrapErrorRunOnLoad;
+            const f = &finalize;
+            @export(i, .{ .name = "init_array", .section = ".init_array" });
+            @export(f, .{ .name = "fini_array", .section = ".fini_array" });
+        },
     }
 }
 

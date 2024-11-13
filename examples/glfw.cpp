@@ -18,11 +18,12 @@ void LoadFileInResource(int name, int type, DWORD& size, const char*& data)
     size = ::SizeofResource(handle, rc);
     data = static_cast<const char*>(::LockResource(rcData));
 }
-#elif defined(__GNUC__)
+#elif __linux__
 #include <execinfo.h>
 #include <unistd.h>
-#elif defined(__APPLE__)
-#include <mach-o/getsect.h.h>
+#elif __APPLE__
+#include <mach-o/getsect.h>
+#include <mach-o/ldsyms.h>
 #endif
 
 void GLAPIENTRY
@@ -122,14 +123,21 @@ int main(int argc, char** argv) {
     const GLint vert_size_int = static_cast<GLint>(vert_size);
     const GLint frag_size_int = static_cast<GLint>(frag_size);
     #elif __linux__
-    extern const char vertex_vert_start[] asm("_binary_vertex_vert_start");//created by LD --relocatable --format=binary --output=vertex.vert.o vertex.vert
+    extern const char vertex_vert_start[] asm("_binary_vertex_vert_start");//created by ld --relocatable --format=binary --output=vertex.vert.o vertex.vert
     extern const char vertex_vert_end[]   asm("_binary_vertex_vert_end");
     extern const char fragment_frag_start[] asm("_binary_fragment_frag_start");
     extern const char fragment_frag_end[]   asm("_binary_fragment_frag_end");
     const GLint vert_size_int = static_cast<GLint>(vertex_vert_end - vertex_vert_start);
     const GLint frag_size_int = static_cast<GLint>(fragment_frag_end - fragment_frag_start);
     #else
-    const struct section_64 * sect = getsectbyname("binary", "vertex.vert");
+    size_t vert_size = 0;
+    const GLchar* vertex_vert_start = reinterpret_cast<const GLchar*>(getsectiondata(
+        &_mh_execute_header, "binary", "vertex.vert", &vert_size));
+    size_t frag_size = 0;
+    const GLchar* fragment_frag_start = reinterpret_cast<const GLchar*>(getsectiondata(
+        &_mh_execute_header, "binary", "fragment.frag", &frag_size));
+    const GLint vert_size_int = static_cast<GLint>(vert_size);
+    const GLint frag_size_int = static_cast<GLint>(frag_size);
     #endif
 
     GLuint vertex_shader = glCreateShader(GL_VERTEX_SHADER);

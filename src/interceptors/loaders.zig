@@ -197,7 +197,7 @@ pub fn checkIgnoredProcess() void {
 // Intercept dlopen on POSIX systems
 comptime {
     if (builtin.os.tag != .windows) {
-        const INTERPOSE = struct {
+        const INTERPOSE = extern struct {
             replacement: ?*const anyopaque,
             replacee: ?*const anyopaque,
 

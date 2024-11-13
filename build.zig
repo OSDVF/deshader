@@ -132,6 +132,12 @@ pub fn build(b: *std.Build) !void {
         deshader_lib.linkSystemLibrary("libcpmtd");
     } else {
         deshader_lib.linkLibCpp();
+
+        if (targetTarget == .macos) {
+            deshader_lib.linkFramework("CoreFoundation");
+            deshader_lib.linkFramework("Cocoa");
+            deshader_lib.linkFramework("Security");
+        }
     }
 
     if (!option_lib_assert) {
@@ -625,6 +631,9 @@ pub fn build(b: *std.Build) !void {
             const example_editor = try SubExampleStep.create(example_bootstraper, sub_examples.editor, "examples/" ++ sub_examples.editor ++ ".zig", exampleModules);
             example_editor.compile.linkLibrary(deshader_lib);
 
+            const system_framwork_path = std.Build.LazyPath{ .cwd_relative = "/System/Library/Frameworks/" };
+            const framework_path = std.Build.LazyPath{ .cwd_relative = b.pathJoin(&.{ std.mem.trim(u8, b.run(&.{ "xcrun", "--sdk", "macosx", "--show-sdk-path" }), "\n \t"), system_framwork_path.cwd_relative }) };
+
             // GLFW in C++
             const glfw_dep = zig_glfw_dep.builder.dependency("glfw", .{
                 .target = target,
@@ -636,6 +645,11 @@ pub fn build(b: *std.Build) !void {
             example_glfw_cpp.compile.addIncludePath(.{ .cwd_relative = b.h_dir });
             example_glfw_cpp.compile.linkLibCpp();
             example_glfw_cpp.compile.linkLibrary(glfw_lib);
+            if (targetTarget == .macos) {
+                example_glfw_cpp.compile.linkFramework("OpenGL");
+                example_glfw_cpp.compile.addFrameworkPath(framework_path);
+                example_glfw_cpp.compile.addFrameworkPath(system_framwork_path);
+            }
 
             try addVcpkgInstalledPaths(b, example_glfw_cpp.compile, option_triplet, option_lib_debug);
             try linkGlew(example_glfw_cpp.install, option_triplet, option_lib_debug);
@@ -651,6 +665,7 @@ pub fn build(b: *std.Build) !void {
                     var dir = try b.build_root.handle.openDir("examples", .{});
                     defer dir.close();
                     const result = if (builtin.os.tag == .macos) embed: { // TODO do not run on every configure
+                        // https://stackoverflow.com/questions/8923097/compile-a-binary-file-for-linking-osx
                         const stub = try std.fs.path.join(b.allocator, &.{ b.cache_root.path.?, "shaders", "stub.o" });
                         _ = try exec(.{
                             .allocator = b.allocator,
@@ -684,6 +699,8 @@ pub fn build(b: *std.Build) !void {
             example_debug_commands.compile.addIncludePath(.{ .cwd_relative = b.h_dir });
             example_debug_commands.compile.linkLibCpp();
             example_debug_commands.compile.linkLibrary(glfw_lib);
+            example_debug_commands.compile.addFrameworkPath(framework_path);
+            example_debug_commands.compile.addFrameworkPath(system_framwork_path);
             try linkGlew(example_debug_commands.install, option_triplet, option_lib_debug);
         }
         examples_cmd.dependOn(stub_gen_cmd);
@@ -787,7 +804,7 @@ const SubExampleStep = struct {
             subExe,
             .{
                 .dest_sub_path = try std.mem.concat(step.owner.allocator, u8, &.{ examples_dirname, sep, name, if (target == .windows) ".exe" else "" }),
-                .pdb_dir = .{ .override = .{ .custom = b.pathJoin(&.{ "bin", examples_dirname }) } },
+                .pdb_dir = if (target == .windows) .{ .override = .{ .custom = b.pathJoin(&.{ "bin", examples_dirname }) } } else .default,
             },
         );
         step.dependOn(&install.step);
