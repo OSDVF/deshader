@@ -112,6 +112,7 @@ pub fn build(b: *std.Build) !void {
     const option_lib_debug = b.option(bool, "libDebug", "Include debug information in VCPKG libraries") orelse (optimize == .Debug);
     const option_lib_assert = b.option(bool, "libAssert", "Include assertions in VCPKG libraries (implicit for debug and release safe)") orelse (optimize == .Debug or optimize == .ReleaseSafe);
     var option_system_glslang = b.option(bool, "sGLSLang", "Search for GLSLang library in system (default true, or use VCPKG otherwise)") orelse true;
+    const option_sdk = b.option(String, "sdk", "SDK path (macOS only, defaults to the one selected by xcode-select)");
 
     const deshader_lib: *std.Build.Step.Compile = if (option_linkage == .Static) b.addStaticLibrary(deshaderCompileOptions) else b.addSharedLibrary(deshaderCompileOptions);
     deshader_lib.defineCMacro("_GNU_SOURCE", null); // To access dl_iterate_phdr
@@ -124,6 +125,9 @@ pub fn build(b: *std.Build) !void {
     deshader_lib.root_module.valgrind = option_valgrind and (target.result.abi != .msvc) and targetTarget != .macos;
     deshader_lib.each_lib_rpath = false;
     deshader_lib.install_name = "OpenGL";
+
+    const system_framwork_path = std.Build.LazyPath{ .cwd_relative = "/System/Library/Frameworks/" };
+    const framework_path = std.Build.LazyPath{ .cwd_relative = if (targetTarget == .macos) option_sdk orelse b.pathJoin(&.{ std.mem.trim(u8, b.run(&.{ "xcrun", "--sdk", "macosx", "--show-sdk-path" }), "\n \t"), system_framwork_path.cwd_relative }) else "" };
 
     if (target.result.abi == .msvc) {
         deshader_lib.linkSystemLibrary("shell32");
@@ -155,6 +159,9 @@ pub fn build(b: *std.Build) !void {
         });
         //defer b.allocator.free(new_flags);
         try env.put(flags, new_flags);
+    }
+    if (option_sdk) |sdk| {
+        try env.put("MACOSSDK", sdk);
     }
 
     const deshader_lib_name = try std.mem.concat(b.allocator, u8, &.{ if (targetTarget == .windows) "" else "lib", deshader_lib.name, targetTarget.dynamicLibSuffix() });
@@ -630,9 +637,6 @@ pub fn build(b: *std.Build) !void {
             // Editor
             const example_editor = try SubExampleStep.create(example_bootstraper, sub_examples.editor, "examples/" ++ sub_examples.editor ++ ".zig", exampleModules);
             example_editor.compile.linkLibrary(deshader_lib);
-
-            const system_framwork_path = std.Build.LazyPath{ .cwd_relative = "/System/Library/Frameworks/" };
-            const framework_path = std.Build.LazyPath{ .cwd_relative = b.pathJoin(&.{ std.mem.trim(u8, b.run(&.{ "xcrun", "--sdk", "macosx", "--show-sdk-path" }), "\n \t"), system_framwork_path.cwd_relative }) };
 
             // GLFW in C++
             const glfw_dep = zig_glfw_dep.builder.dependency("glfw", .{

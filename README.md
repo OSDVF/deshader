@@ -26,6 +26,7 @@ You can also:
 - Assembly (ISA) or pseudo-assembly (SPIR-V) level debugging
 - Profiling
 - [Custom WebView profile data directory](https://github.com/webview/webview/issues/719)
+- Cross compilation for macOS
 
 ## Possible future goals
 - View assembly
@@ -100,10 +101,6 @@ Deshader consists of several (mostly third party; mostly forked) components that
             - `zig build deshader -fwine -Dtarget=x86_64-windows`
             - **NOTES**
                 - DLL interception does not work for OpenGL under Wine. Intercept on host side instead (however this does not really work for now)
-        - for MacOS
-            - install [Darling](https://docs.darlinghq.org/build-instructions.html) (master branch needed) and enter  `darling shell`
-            - install Command Line Tools `xcode-select --install`
-            - `zig build deshader -fdarling -Dtarget=x86_64-macos`
 
 - Building __examples__ requires [Vulkan SDK](https://vulkan.lunarg.com/sdk/home) ([mixed licenses...](https://vulkan.lunarg.com/license/)) (for GLFW)
 - Linux and macOS:

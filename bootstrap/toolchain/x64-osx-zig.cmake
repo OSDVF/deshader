@@ -15,7 +15,7 @@ else()
     set(ZIG ${ZIG_PATH})
 endif()
 
-if(ENV{DPREFIX})
+if(DEFINED ENV{DPREFIX})
     set(DARLING_PREFIX $ENV{DPREFIX})
 else()
     set(DARLING_PREFIX "~/.darling")
@@ -35,26 +35,41 @@ else()
     set(DARLING_SYSTEM_PREFIX /usr/local/libexec/darling)
 endif()
 
-set(ADDITIONAL_ARGS "-target x86_64-macos \
-    -F ${TARGET_DARWIN_SDK_PATH}/System/Library/Frameworks \
-    -F ${DARLING_SYSTEM_PREFIX}/System/Library/Frameworks \
-    -F /System/Library/Frameworks \
-    -D'__OSX_AVAILABLE_STARTING(_osx, _ios)=' \
-    -D' __OSX_AVAILABLE_BUT_DEPRECATED(_osxIntro, _osxDep, _iosIntro, _iosDep)=' \
-    -D'__OSX_AVAILABLE_BUT_DEPRECATED_MSG(_osxIntro, _osxDep, _iosIntro, _iosDep, _msg)='") # Zig does not somehow parse availability macros correctly
+set(ADDITIONAL_ARGS "-target x86_64-macos"
+    "-F ${TARGET_DARWIN_SDK_PATH}/System/Library/Frameworks"
+    "-L ${TARGET_DARWIN_SDK_PATH}/usr/lib"
+    "-F ${TARGET_DARWIN_SDK_PATH}/System/Library/PrivateFrameworks"
+    "-F ${DARLING_SYSTEM_PREFIX}/System/Library/Frameworks"
+    "-F /System/Library/Frameworks"
+    "-mmacosx-version-min=10.16"
+    "-ObjC"
+    "-fobjc-runtime=macosx"
+    "-framework AppKit"
+    "-D'__OSX_AVAILABLE_STARTING(_osx, _ios)='"
+    "-D' __OSX_AVAILABLE_BUT_DEPRECATED(_osxIntro, _osxDep, _iosIntro, _iosDep)='"
+    "-D'__OSX_AVAILABLE_BUT_DEPRECATED_MSG(_osxIntro, _osxDep, _iosIntro, _iosDep, _msg)='") # Zig does not somehow parse availability macros correctly
+
+if(DEFINED ENV{MACOSSDK})
+    list(APPEND ADDITIONAL_ARGS "-F $ENV{MACOSSDK}/System/Library/Frameworks")
+    list(APPEND ADDITIONAL_ARGS "-F $ENV{MACOSSDK}/System/Library/PrivateFrameworks")
+    list(APPEND ADDITIONAL_ARGS "-F $ENV{MACOSSDK}/System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks")
+    list(APPEND ADDITIONAL_ARGS "-F $ENV{MACOSSDK}/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks")
+endif()
+
+string (REPLACE ";" " " ADDITIONAL_ARGS_STR "${ADDITIONAL_ARGS}")
 
 set(CMAKE_C_COMPILER "${ZIG}" CACHE FILEPATH "")
 set(ENV{ZIG} "${ZIG}")
-set(ENV{CC} "${CMAKE_C_COMPILER} cc ${ADDITIONAL_ARGS}")
+set(ENV{CC} "${CMAKE_C_COMPILER} cc ${ADDITIONAL_ARGS_STR}")
 set(CMAKE_CXX_COMPILER "${ZIG}" CACHE FILEPATH "")
-set(ENV{CXX} "${CMAKE_CXX_COMPILER} c++ ${ADDITIONAL_ARGS}")
+set(ENV{CXX} "${CMAKE_CXX_COMPILER} c++ ${ADDITIONAL_ARGS_STR}")
 
 set(BUILD_DIR "${CMAKE_CURRENT_LIST_DIR}/../../build")
 
 if(NOT ALREADY_HERE EQUAL 1)
     set(ALREADY_HERE 1)
-    set(CMAKE_C_COMPILER_ARG1 "cc ${ADDITIONAL_ARGS} ${CMAKE_C_COMPILER_ARG1}" CACHE STRING "")
-    set(CMAKE_CXX_COMPILER_ARG1 "c++ ${ADDITIONAL_ARGS} ${CMAKE_CXX_COMPILER_ARG1}" CACHE STRING "")
+    set(CMAKE_C_COMPILER_ARG1 "cc ${ADDITIONAL_ARGS_STR} ${CMAKE_C_COMPILER_ARG1}" CACHE STRING "")
+    set(CMAKE_CXX_COMPILER_ARG1 "c++ ${ADDITIONAL_ARGS_STR} ${CMAKE_CXX_COMPILER_ARG1}" CACHE STRING "")
     set(CMAKE_AR "${BUILD_DIR}/ar" CACHE FILEPATH "")
 endif()
 

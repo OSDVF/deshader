@@ -1,0 +1,68 @@
+# Copyright (C) 2024  Ondřej Sabela
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+# Creates a release when a tag is pushed
+# The release will have the tag name as the title.
+# The tag description will be used as the body, concatenated with the commit message.
+# If tag description contains the text "Release", the release will be marked as a stable release.
+# The release will contain the following files:
+# - deshader-git-*.deb for each Ubuntu version
+# - deshader-git-*.tar.zst for Arch
+# - deshader-git-windows-*.zip
+# - deshader-git-macos-*.zip
+
+# Include 'skip clean' in the commit message to prevent the deletion of the built artifacts.
+
+name: release
+on:
+  workflow_run:
+    workflows: [package]
+    types: [completed]
+
+permissions:
+  contents: write
+    
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-tags: true
+          
+      - name: Get tag description
+        id: tag-desc
+        run: echo "desc=`git tag -l --format='%(contents:subject)' $(git describe --tags --abbrev=0)`" >> $GITHUB_OUTPUT
+      
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+        
+      - name: Create a Release
+        uses: softprops/action-gh-release@v2
+        with:
+          prerelease: ${{ !contains(steps.tag-desc.outputs.desc, 'Release') }}
+          body: "${{ steps.tag-desc.outputs.desc }}\n${{ github.event.workflow_run.head_commit.message }}"
+          files: deshader-git*
+          
+      - name: Remove built artifacts
+        uses: geekyeggo/delete-artifact@v5
+        if: ${{ !contains(github.event.workflow_run.head_commit.message, 'skip clean')}}
+        with:
+          name: deshader-*
+          failOnError: false
