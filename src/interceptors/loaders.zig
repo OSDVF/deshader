@@ -81,7 +81,7 @@ pub const APIs = struct {
         };
     } else struct {
         pub const glX = struct {
-            const names = [_]String{ "libGLX.so", "libGL.so" }; //TODO also "libOpenGL.so" ?
+            const names: []const String = &.{ "libGL" ++ builtin.target.dynamicLibSuffix(), "libGLX" ++ builtin.target.dynamicLibSuffix() }; //TODO also "libOpenGL.so" ?
             pub var lib: ?std.DynLib = null;
             pub var loader: ?*const GetProcAddressSignature = null;
             const default_loaders = [_]String{ "glXGetProcAddress", "glXGetProcAddressARB" };
@@ -105,7 +105,7 @@ pub const APIs = struct {
             pub var late_loaded = false;
         };
         pub const egl = struct {
-            const names = [_]String{"libEGL.so"};
+            const names: []const String = &.{"libEGL" ++ builtin.target.dynamicLibSuffix()};
             pub var lib: ?std.DynLib = null;
             pub var loader: ?*const GetProcAddressSignature = null;
             const default_loaders = [_]String{"eglGetProcAddress"};
@@ -123,8 +123,25 @@ pub const APIs = struct {
             pub var late_loaded = false;
             pub var last_params: struct { *const anyopaque, *const anyopaque, *const anyopaque } = undefined;
         };
+        pub const cgl = struct {
+            const names = &[_]String{"libGL" ++ builtin.target.dynamicLibSuffix()};
+            pub var lib: ?std.DynLib = null;
+            pub var loader: ?*const GetProcAddressSignature = null;
+            const default_loaders = [_]String{"CGLGetProcAddress"};
+            var possible_loaders: []const String = &@This().default_loaders;
+            const make_current_names: []const ZString = &.{"CGLSetCurrentContext"};
+            pub var make_current: struct { *const fn (context: *const anyopaque) c_int } = .{undefined};
+            const create_names: []const ZString = &.{"CGLCreateContext"};
+            pub var create: struct { *const fn (pix: *const anyopaque, share: *const anyopaque, ctx: *const anyopaque) c_int } = .{undefined};
+            const destroy_name = "CGLDestroyContext";
+            pub var destroy: ?*const fn (context: *const anyopaque) bool = null;
+            const get_current_name = "CGLGetCurrentContext";
+            pub var get_current: ?*const fn () ?*const anyopaque = null;
+            pub var late_loaded = false;
+            pub var last_params: struct { *const anyopaque } = undefined;
+        };
         pub const custom = struct {
-            var names: []const String = &[_]String{};
+            var names: []String = &.{};
             pub var lib: ?std.DynLib = null;
             pub var loader: ?*const GetProcAddressSignature = null;
             var make_current_names: []const ZString = &.{""};
@@ -142,8 +159,8 @@ pub const APIs = struct {
     };
     pub var originalDlopen: ?*const fn (name: ?CString, mode: c_int) callconv(.C) ?*const anyopaque = null;
 };
-
 var reported_process_name = false;
+/// used for renaming libraries on Windows
 var renamed_libs: std.ArrayList(String) = undefined;
 pub var ignored = false;
 pub fn checkIgnoredProcess() void {
@@ -228,8 +245,8 @@ comptime {
                         return result;
                     }
                     if (!ignored) inline for (_platform_gl_libs) |lib| {
-                        inline for (lib.names) |possible_name| {
-                            if (std.mem.startsWith(u8, name_span, possible_name)) {
+                        for (lib.names) |lib_name| {
+                            if (std.mem.startsWith(u8, name_span, lib_name)) {
                                 DeshaderLog.debug("Intercepting dlopen for API {s}", .{name_span});
                                 return APIs.originalDlopen.?(@ptrCast(options.deshaderLibName ++ &[_]u8{0}), mode);
                             }
@@ -269,7 +286,11 @@ else
         APIs.gl.glX.get_current_name,
     }) ++ [_]?String{options.glAddLoader};
 
-const _platform_gl_libs = if (builtin.os.tag == .windows) .{APIs.gl.wgl} else .{ APIs.gl.glX, APIs.gl.egl };
+const _platform_gl_libs = switch (builtin.os.tag) {
+    .windows => .{APIs.gl.wgl},
+    .macos => .{ APIs.gl.glX, APIs.gl.egl, APIs.gl.cgl },
+    else => .{ APIs.gl.glX, APIs.gl.egl },
+};
 const _gl_libs = _platform_gl_libs ++ .{APIs.gl.custom};
 
 /// Lists all exported declarations inside interceptors/shaders.zig and creates a map from procedure name to procedure pointer
@@ -323,24 +344,26 @@ pub fn loadGlLib() !void {
     }
 
     const customLib = common.env.get(common.env_prefix ++ "GL_LIBS");
-    if (customLib != null) {
+    {
         var names = std.ArrayList(String).init(common.allocator);
-        var split = std.mem.splitScalar(u8, customLib.?, ',');
-        while (split.next()) |name| {
-            try names.append(name);
+        if (customLib) |lib_name| {
+            var split = std.mem.splitScalar(u8, lib_name, ',');
+            while (split.next()) |name| {
+                try names.append(name);
+            }
         }
-        APIs.gl.custom.names = names.items;
+        APIs.gl.custom.names = try names.toOwnedSlice();
     }
     const customProcLoaders = common.env.get(common.env_prefix ++ "GL_PROC_LOADERS");
+    var names = std.ArrayList(String).init(common.allocator);
     if (customProcLoaders != null) {
-        var names = std.ArrayList(String).init(common.allocator);
         var it = std.mem.splitScalar(u8, customProcLoaders.?, ',');
         while (it.next()) |name| {
             names.append(name) catch |err|
                 DeshaderLog.err("Failed to allocate memory for custom GL procedure loader name: {any}", .{err});
         }
-        APIs.gl.custom.possible_loaders = names.items;
     }
+    APIs.gl.custom.possible_loaders = try names.toOwnedSlice();
 
     const substitute_name = common.env.get(common.env_prefix ++ "SUBSTITUTE_LOADER");
     if (substitute_name != null) {
@@ -362,7 +385,10 @@ pub fn loadGlLib() !void {
     inline for (_gl_libs) |gl_lib| {
         for (gl_lib.names) |lib_name| {
             // add '?' to mark this as not intercepted on POSIX systems
-            const full_lib_name = if (builtin.os.tag == .windows) lib_name else try std.mem.concat(common.allocator, u8, if (specified_library_root == null) &.{ lib_name, "?" } else &.{ withoutTrailingSlash(specified_library_root.?), std.fs.path.sep_str, lib_name, "?" });
+            const full_lib_name = if (builtin.os.tag == .windows) lib_name else try std.mem.concat(common.allocator, u8, if (specified_library_root) |root|
+                &.{ withoutTrailingSlash(root), std.fs.path.sep_str, lib_name, "?" }
+            else
+                &.{ lib_name, "?" });
             defer if (builtin.os.tag != .windows) common.allocator.free(full_lib_name);
             if (loadNotDeshaderLibrary(full_lib_name)) |lib| {
                 gl_lib.lib = lib;
@@ -379,6 +405,8 @@ pub fn loadGlLib() !void {
                     if (gl_lib.lib.?.lookup(@TypeOf(func), gl_lib.make_current_names[i])) |target| {
                         gl_lib.make_current[i] = @ptrCast(target);
                         if (options.logIntercept) DeshaderLog.debug("Found make current {s}", .{gl_lib.make_current_names[i]});
+                    } else if (options.logIntercept) {
+                        DeshaderLog.debug("Failed to find make current {s}", .{gl_lib.make_current_names[i]});
                     }
                 }
                 inline for (gl_lib.create, 0..) |func, i| {
@@ -386,6 +414,8 @@ pub fn loadGlLib() !void {
                         gl_lib.create[i] = @ptrCast(target);
 
                         if (options.logIntercept) DeshaderLog.debug("Found create {s}", .{gl_lib.create_names[i]});
+                    } else if (options.logIntercept) {
+                        DeshaderLog.debug("Failed to find create {s}", .{gl_lib.create_names[i]});
                     }
                 }
                 if (gl_lib.lib.?.lookup(@TypeOf(gl_lib.destroy), gl_lib.destroy_name)) |target| {
@@ -435,6 +465,8 @@ fn loadNotDeshaderLibrary(original_name: []const u8) !std.DynLib {
 pub fn deinit() void {
     const cwd = std.fs.cwd().fd;
     defer renamed_libs.deinit();
+    defer common.allocator.free(APIs.gl.custom.names);
+    defer common.allocator.free(APIs.gl.custom.possible_loaders);
     for (renamed_libs.items) |lib| {
         std.posix.unlinkat(cwd, lib, if (builtin.os.tag == .linux) std.posix.AT.SYMLINK_NOFOLLOW else 0) catch |err|
             DeshaderLog.err("Could not delete renamed lib {s}: {}", .{ lib, err });

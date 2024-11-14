@@ -109,7 +109,7 @@ pub const DependenciesStep = struct {
 
         // Init
         const deshaderVsCodeExt = "editor/deshader-vscode";
-        const compile_verb = if (self.step.owner.release_mode == .off) "compile-prod" else "compile-dev";
+        const compile_verb = if (self.step.owner.release_mode == .off) "compile-dev" else "compile-prod";
         try self.sub_steps.append(.{
             .name = "Installing node.js dependencies by Bun for deshader-vscode",
             .args = try self.step.owner.allocator.dupe(String, &.{ "bun", "install", "--frozen-lockfile" }),

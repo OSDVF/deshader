@@ -32,7 +32,7 @@ pub fn serverStart(port: u16) !void {
     server_thread = try std.Thread.spawn(.{
         .allocator = common.allocator,
     }, serverThread, .{port});
-    try server_thread.?.setName("LangSrv");
+    server_thread.?.setName("LangSrv") catch {};
 }
 
 pub fn serverStop() !void {

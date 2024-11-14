@@ -55,7 +55,7 @@ pub fn build(b: *std.Build) !void {
     };
     const system32 = "C:/Windows/System32/";
     // translate zig flags to cflags and cxxflags (will be used when building VCPKG dependencies)
-    var env = try std.process.getEnvMap(b.allocator);
+    var env = try std.process.getEnvMap(std.heap.page_allocator); // uses heap alloctor, because if b.allocator was used, the env would be deallocated after the config phase
     // do not deinit env, because it will be used in DependeciesStep in make phase
     const host_libs_location = switch (targetTarget) {
         .windows => if (builtin.os.tag == .windows) system32 else try winepath(b.allocator, system32, false),
@@ -157,7 +157,7 @@ pub fn build(b: *std.Build) !void {
             if (option_stack_check) " -fstack-check" else " -fno-stack-check",
             if (option_stack_protector) " -fstack-protector" else " -fno-stack-protector",
         });
-        //defer b.allocator.free(new_flags);
+        defer b.allocator.free(new_flags);
         try env.put(flags, new_flags);
     }
     if (option_sdk) |sdk| {

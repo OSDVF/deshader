@@ -178,7 +178,7 @@ pub fn createEditorProvider(command_listener: ?*const commands.CommandListener) 
     try provider.addContent("/product.json", "application/json", product_config);
 
     provide_thread = try std.Thread.spawn(.{}, positron.Provider.run, .{provider});
-    try provide_thread.?.setName("GUIServer");
+    provide_thread.?.setName("GUIServer") catch {};
     return provider;
 }
 
@@ -245,7 +245,7 @@ pub fn editorShow(command_listener: ?*const commands.CommandListener) !void {
 
     if (builtin.os.tag == .windows) {
         gui_process = try std.Thread.spawn(.{ .allocator = common.allocator }, guiProcess, .{ base_url, "Deshader Editor" });
-        try gui_process.?.setName("GUI");
+        gui_process.?.setName("GUI") catch {};
         gui_process.?.detach();
     } else {
         const exe_or_dll_path = try common.selfExePathAlloc(global_provider.?.allocator);
@@ -278,7 +278,7 @@ pub fn editorShow(command_listener: ?*const commands.CommandListener) !void {
                 gui_process = null;
             }
         }.watch, .{});
-        try watcher.setName("EditorWatch");
+        watcher.setName("EditorWatch") catch {};
         watcher.detach();
     }
 }

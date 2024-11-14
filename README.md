@@ -38,7 +38,8 @@ Feel free to fork and add your own goals or even better, break the non-goals!
 
 # Installation
 ### Prebuilt packages
-[Packages for Debian-like, Arch Linux and Windows are in the releases section.](https://github.com/OSDVF/deshader/releases)
+[![packages](https://github.com/OSDVF/deshader/actions/workflows/packages.yml/badge.svg?event=push)](https://github.com/OSDVF/deshader/actions/workflows/packages.yml)
+[Packages for macOS, Debian-like, Arch Linux and Windows are in the releases section.](https://github.com/OSDVF/deshader/releases)
 
 ### Arch Linux (AUR)
 Download and install using an AUR helper. For example, Yay:.

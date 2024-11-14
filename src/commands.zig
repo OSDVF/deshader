@@ -100,7 +100,7 @@ pub const CommandListener = struct {
                 }.listen,
                 .{ self, allocator, self.ws_config.?, &self.ws_running },
             );
-            try self.websocket_thread.?.setName("CmdListWS");
+            self.websocket_thread.?.setName("CmdListWS") catch {};
         }
 
         // HTTP Command listener
@@ -124,7 +124,7 @@ pub const CommandListener = struct {
                     };
                 }
             }.wrapper, .{self.http.?});
-            try self.provide_thread.?.setName("CmdListHTTP");
+            self.provide_thread.?.setName("CmdListHTTP") catch {};
         }
 
         // Language Server
