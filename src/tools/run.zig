@@ -260,19 +260,31 @@ fn dlopenAbsolute(p: String) !std.DynLib {
 /// `target_argv` includes program name as the first element
 fn run(target_argv: []const String, working_dir: ?String, env: ?std.StringHashMapUnmanaged(String), yes: bool) anyerror!void {
     var deshader_path_buffer = try common.allocator.alloc(if (builtin.os.tag == .windows) u16 else u8, std.fs.MAX_NAME_BYTES);
-    var deshader_or_dir_name: String = undefined;
     defer common.allocator.free(deshader_path_buffer);
-
-    if (builtin.os.tag == .windows) {
-        deshader_or_dir_name = try std.unicode.utf16leToUtf8Alloc(common.allocator, try std.os.windows.GetModuleFileNameW(deshader_lib.inner.dll, @ptrCast(deshader_path_buffer), std.fs.MAX_PATH_BYTES - 1));
-    } else {
-        if (c.dlinfo(deshader_lib.inner.handle, c.RTLD_DI_ORIGIN, @ptrCast(deshader_path_buffer)) != 0) {
-            const err = c.dlerror();
-            LauncherLog.err("Failed to get deshader library path: {s}", .{err});
-            return error.DeshaderPathResolutionFailed;
-        }
-    }
-    const deshader_path = if (builtin.target.os.tag == .windows) deshader_or_dir_name else try path.join(common.allocator, &[_]String{ deshader_path_buffer[0..std.mem.indexOfScalar(u8, deshader_path_buffer, 0).?], options.deshaderLibName });
+    const deshader_path = switch (builtin.os.tag) {
+        .windows => try std.unicode.utf16leToUtf8Alloc(common.allocator, try std.os.windows.GetModuleFileNameW(deshader_lib.inner.dll, @ptrCast(deshader_path_buffer), std.fs.max_path_bytes - 1)),
+        .linux => resolve: {
+            if (c.dlinfo(deshader_lib.inner.handle, c.RTLD_DI_ORIGIN, @ptrCast(deshader_path_buffer)) != 0) {
+                const err = c.dlerror();
+                LauncherLog.err("Failed to get deshader library path: {s}", .{err});
+                return error.DeshaderPathResolutionFailed;
+            }
+            break :resolve try path.join(common.allocator, &[_]String{ deshader_path_buffer[0..std.mem.indexOfScalar(u8, deshader_path_buffer, 0).?], options.deshaderLibName });
+        },
+        .macos => resolve: {
+            const version_symbol = deshader_lib.lookup(*const anyopaque, "deshaderVersion") orelse {
+                LauncherLog.err("Could not find deshaderVersion symbol in the Deshader Library.", .{});
+                return error.DeshaderVersionNotFound;
+            };
+            var info: c.Dl_info = undefined;
+            if (c.dladdr(version_symbol, &info) == 0) {
+                return error.DlAddr;
+            } else {
+                break :resolve try common.allocator.dupe(u8, std.mem.span(info.dli_fname));
+            }
+        },
+        else => @compileError("Unsupported OS"),
+    };
     defer common.allocator.free(deshader_path);
 
     LauncherLog.info("Using deshader at {s}", .{deshader_path});

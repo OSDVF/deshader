@@ -8,9 +8,9 @@ do
     if [ ! -f "$file" ]; then
         continue
     fi
-    if [[ "$OSTYPE" == "darwin*" ]]; then
+    if [[ "$OSTYPE" == darwin* ]]; then
         sed -i "" '/struct_XSTAT/d' "$file"
     else
         sed -i '/struct_XSTAT/d' "$file"
-    elif
+    fi
 done
