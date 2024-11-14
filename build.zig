@@ -476,6 +476,7 @@ pub fn build(b: *std.Build) !void {
             stub_gen.* = stubGenSrc.GenerateStubsStep.init(b, stubs_path, true);
         }
         stub_gen_cmd.dependOn(&stub_gen.step);
+        // automatically create zig stubs when building the library
         deshader_lib_cmd.dependOn(&stub_gen.step);
 
         //
@@ -541,7 +542,7 @@ pub fn build(b: *std.Build) !void {
     launcher_exe.root_module.sanitize_c = options_sanitize;
     launcher_exe.root_module.stack_check = option_stack_check;
     launcher_exe.root_module.stack_protector = option_stack_protector;
-    launcher_exe.root_module.valgrind = option_valgrind;
+    launcher_exe.root_module.valgrind = option_valgrind and (target.result.abi != .msvc) and targetTarget != .macos;
     launcher_exe.each_lib_rpath = false;
     launcher_exe.pie = true;
     launcher_exe.root_module.addAnonymousImport("common", .{
@@ -550,12 +551,15 @@ pub fn build(b: *std.Build) !void {
             .{ .name = "options", .module = options.createModule() },
         },
     });
-    if (targetTarget == .linux) {
-        launcher_exe.linkSystemLibrary("gtk+-3.0");
-    } else {
-        launcher_exe.linkSystemLibrary("ole32");
-        nfd(launcher_exe, system_nfd, option_lib_debug);
+    switch (targetTarget) {
+        .linux => launcher_exe.linkSystemLibrary("gtk+-3.0"),
+        .windows => {
+            launcher_exe.linkSystemLibrary("ole32");
+            nfd(launcher_exe, system_nfd, option_lib_debug);
+        },
+        else => {},
     }
+
     const laucher_install = b.addInstallArtifact(launcher_exe, .{});
     _ = b.step("launcher", "Build Deshader Launcher - a utility to run any application with Deshader").dependOn(&laucher_install.step);
 

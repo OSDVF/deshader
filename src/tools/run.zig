@@ -433,15 +433,19 @@ const SearchPaths = struct {
             5 => { // Pick from system directories
                 if (gui) {
                     const err = "Failed to load Deshader library. Specify its location in environment variable DESHADER_LIB. Would you like to find it now?";
-                    if (builtin.os.tag == .windows) {
-                        const result = c.MessageBoxA(null, err, "Deshader Error", c.MB_OK | c.MB_ICONERROR);
-                        if (result == c.IDOK) {
-                            return browseFile() orelse self.next();
-                        }
-                    } else if (builtin.os.tag == .linux) {
-                        // TODO show open file dialog
-                        _ = c.gtk_init_check(null, null);
-                        _ = c.gtk_message_dialog_new(null, c.GTK_DIALOG_MODAL, c.GTK_MESSAGE_ERROR, c.GTK_BUTTONS_OK, err);
+                    switch (builtin.os.tag) {
+                        .windows => {
+                            const result = c.MessageBoxA(null, err, "Deshader Error", c.MB_OK | c.MB_ICONERROR);
+                            if (result == c.IDOK) {
+                                return browseFile() orelse self.next();
+                            }
+                        },
+                        .linux => {
+                            // TODO show open file dialog
+                            _ = c.gtk_init_check(null, null);
+                            _ = c.gtk_message_dialog_new(null, c.GTK_DIALOG_MODAL, c.GTK_MESSAGE_ERROR, c.GTK_BUTTONS_OK, err);
+                        },
+                        else => {},
                     }
                 }
                 // orelse next
