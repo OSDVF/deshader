@@ -71,11 +71,13 @@ pub const DependenciesStep = struct {
         };
     }
 
-    fn noFail(self: *DependenciesStep, step: String, err: anytype, trace: ?*std.builtin.StackTrace) !void {
+    fn noFail(self: *DependenciesStep, step: String, err: anytype, location: ?std.builtin.SourceLocation) !void {
+        std.log.err("Dependecy build step \"{s}\" failed: {}", .{ step, err });
+        if (location) |l| {
+            std.log.err("{s}:{}:{} ({s})", .{ l.file, l.line, l.column, l.fn_name });
+        }
         if (!self.no_fail) {
-            return self.step.fail("Dependecy build step \"{s}\" failed: {} trace: {?}", .{ step, err, trace });
-        } else {
-            std.log.err("Dependecy build step \"{s}\" failed: {}", .{ step, err });
+            return self.step.fail("Dependency build \"{s}\" failed: {}", .{ step, err });
         }
     }
 
@@ -179,7 +181,7 @@ pub const DependenciesStep = struct {
                     const sub_progress_node = progressNode.start(sub_step.name, 1);
                     sub_step.process = sub_process;
                     sub_step.progress_node = sub_progress_node;
-                } else |err| try self.noFail(sub_step.name, err, @errorReturnTrace());
+                } else |err| try self.noFail(sub_step.name, err, @src());
             }
         }
 
@@ -193,7 +195,7 @@ pub const DependenciesStep = struct {
                     if (sub_step.after) |after| {
                         try self.doSubSteps(after, progressNode);
                     }
-                } else |err| try self.noFail(sub_step.name, err, @errorReturnTrace());
+                } else |err| try self.noFail(sub_step.name, err, @src());
 
                 progressNode.setCompletedItems(i + 1);
                 defer sub_step.progress_node.end();
