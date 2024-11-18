@@ -79,7 +79,7 @@
             "preLaunchTask": "Build Examples",
             "env": {
                 "LD_PRELOAD": "${workspaceRoot}/zig-out/lib/libdeshader.so",
-                "DESHADER_LIB_ROOT": "/usr/lib/",
+                "DYLD_INSERT_LIBRARIES": "${workspaceRoot}/zig-out/lib/libdeshader.dylib",
             }
         },
         {
@@ -91,7 +91,6 @@
             "valuesFormatting": "parseText",
             "preLaunchTask": "Build Examples",
             "env": {
-                "DESHADER_LIB_ROOT": "/usr/lib/",
                 "DESHADER_COMMANDS_WS": "8082",
                 "DESHADER_IGNORE_PROCESS": "gdb,zsh",
             }
@@ -109,7 +108,7 @@
             ],
             "env": {
                 "DESHADER_IGNORE_PROCESS": "gdb,zsh",
-                "DESHADER_LIB_ROOT": "/usr/lib/",
+                "DYLD_INSERT_LIBRARIES": "${workspaceRoot}/zig-out/lib/libdeshader.dylib",
                 "DESHADER_COMMANDS_WS": "8082",
                 "DESHADER_START_SERVER": "1",
                 "DESHADER_LSP": "8083",

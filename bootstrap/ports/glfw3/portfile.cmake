@@ -8,10 +8,10 @@ endif()
 
 vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
-    REPO glfw/glfw
-    REF ${VERSION}
-    SHA512 39ad7a4521267fbebc35d2ff0c389a56236ead5fa4bdff33db113bd302f70f5f2869ff4e6db1979512e1542813292dff5a482e94dfce231750f0746c301ae9ed
-    HEAD_REF master
+    REPO HinTak/glfw
+    REF 0ff9822c38e2023543efae005cf222b7f38833b1
+    SHA512 c73fab964b503af93c48d82cad0009d294ec1da11281a2be6d873f9e11e1f9c330759839fdfcfc153b07c1c034aed8b4194919e7ffcac212de717be94d440027
+    HEAD_REF apple-software-renderer-retry
 )
 
 if(VCPKG_TARGET_IS_LINUX)

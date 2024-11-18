@@ -124,7 +124,6 @@ pub fn build(b: *std.Build) !void {
     deshader_lib.root_module.stack_protector = option_stack_protector;
     deshader_lib.root_module.valgrind = option_valgrind and (target.result.abi != .msvc) and targetTarget != .macos;
     deshader_lib.each_lib_rpath = false;
-    deshader_lib.install_name = "OpenGL";
 
     const system_framwork_path = std.Build.LazyPath{ .cwd_relative = "/System/Library/Frameworks/" };
     const framework_path = std.Build.LazyPath{ .cwd_relative = if (targetTarget == .macos) option_sdk orelse b.pathJoin(&.{ std.mem.trim(u8, b.run(&.{ "xcrun", "--sdk", "macosx", "--show-sdk-path" }), "\n \t"), system_framwork_path.cwd_relative }) else "" };
@@ -141,6 +140,7 @@ pub fn build(b: *std.Build) !void {
             deshader_lib.linkFramework("CoreFoundation");
             deshader_lib.linkFramework("Cocoa");
             deshader_lib.linkFramework("Security");
+            deshader_lib.linkFramework("OpenGL");
         }
     }
 
@@ -288,8 +288,20 @@ pub fn build(b: *std.Build) !void {
     options.addOption(Level, "log_level", option_log_level);
     options.addOption(ObjectFormat, "ofmt", option_ofmt);
     options.addOption(u32, "memoryFrames", option_memory_frames);
-    const version_result = try exec(.{ .allocator = b.allocator, .argv = &.{ "git", "describe", "--tags", "--always", "--abbrev=0" } });
-    options.addOption([:0]const u8, "version", try b.allocator.dupeZ(u8, std.mem.trim(u8, version_result.stdout, " \n\t")));
+    const version = resolve: {
+        const version_result = try exec(.{ .allocator = b.allocator, .argv = &.{ "git", "describe", "--tags", "--always", "--abbrev=0", "--exact-match" } });
+        if (version_result.term == .Exited and version_result.term.Exited == 0) {
+            break :resolve version_result.stdout;
+        } else {
+            const rev_result = try exec(.{ .allocator = b.allocator, .argv = &.{ "git", "rev-parse", "--short", "HEAD" } });
+            if (rev_result.term == .Exited and rev_result.term.Exited == 0) {
+                break :resolve rev_result.stdout;
+            } else {
+                break :resolve "unknown";
+            }
+        }
+    };
+    options.addOption([:0]const u8, "version", try b.allocator.dupeZ(u8, std.mem.trim(u8, version, " \n\t")));
     if (targetTarget == .windows) {
         options.addOption([]const String, "dependencies", deshader_dependent_dlls.items);
     }

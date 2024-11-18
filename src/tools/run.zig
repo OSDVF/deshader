@@ -36,11 +36,11 @@ const common = @import("common");
 
 const LauncherLog = std.log.scoped(.Launcher);
 var specified_libs_dir: ?String = null;
-const OriginalLibDir = switch (builtin.os.tag) {
-    .macos => "/usr/lib",
+const OriginalLibDir: ?String = switch (builtin.os.tag) {
+    .macos => null,
     .linux => "/usr/lib",
     .windows => "C:\\Windows\\System32",
-    else => unreachable,
+    else => @compileError("Unsupported OS"),
 };
 const DefaultDllNames = .{ "opengl32.dll", "vulkan-1.dll" };
 var deshader_lib: std.DynLib = undefined;
@@ -323,9 +323,9 @@ fn run(target_argv: []const String, working_dir: ?String, env: ?std.StringHashMa
         }
     }
 
-    {
-        try child_envs.put(common.env_prefix ++ "LIB_ROOT", specified_libs_dir orelse OriginalLibDir);
-        LauncherLog.debug("Setting DESHADER_LIB_ROOT to {s}", .{specified_libs_dir orelse OriginalLibDir});
+    if (specified_libs_dir orelse OriginalLibDir) |dir| {
+        try child_envs.put(common.env_prefix ++ "LIB_ROOT", dir);
+        LauncherLog.debug("Setting DESHADER_LIB_ROOT to {s}", .{dir});
     }
     if (builtin.os.tag == .windows) {
         const symlink_dir = path.dirname(target_realpath) orelse ".";

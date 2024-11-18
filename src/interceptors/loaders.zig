@@ -124,7 +124,7 @@ pub const APIs = struct {
             pub var last_params: struct { *const anyopaque, *const anyopaque, *const anyopaque } = undefined;
         };
         pub const cgl = struct {
-            const names = &[_]String{"libGL" ++ builtin.target.dynamicLibSuffix()};
+            const names = &[_]String{ "/System/Library/Frameworks/OpenGL.framework/OpenGL", "/System/Library/Frameworks/OpenGL.framework/Libraries/libGL.dylib" };
             pub var lib: ?std.DynLib = null;
             pub var loader: ?*const GetProcAddressSignature = null;
             const default_loaders = [_]String{"CGLGetProcAddress"};
@@ -246,7 +246,7 @@ comptime {
                     }
                     if (!ignored) inline for (_platform_gl_libs) |lib| {
                         for (lib.names) |lib_name| {
-                            if (std.mem.startsWith(u8, name_span, lib_name)) {
+                            if (std.mem.startsWith(u8, name_span, std.fs.path.basename(lib_name))) {
                                 DeshaderLog.debug("Intercepting dlopen for API {s}", .{name_span});
                                 return APIs.originalDlopen.?(@ptrCast(options.deshaderLibName ++ &[_]u8{0}), mode);
                             }
@@ -386,7 +386,7 @@ pub fn loadGlLib() !void {
         for (gl_lib.names) |lib_name| {
             // add '?' to mark this as not intercepted on POSIX systems
             const full_lib_name = if (builtin.os.tag == .windows) lib_name else try std.mem.concat(common.allocator, u8, if (specified_library_root) |root|
-                &.{ withoutTrailingSlash(root), std.fs.path.sep_str, lib_name, "?" }
+                &.{ withoutTrailingSlash(root), std.fs.path.sep_str, std.fs.path.basename(lib_name), "?" }
             else
                 &.{ lib_name, "?" });
             defer if (builtin.os.tag != .windows) common.allocator.free(full_lib_name);

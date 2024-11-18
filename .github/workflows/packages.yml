@@ -199,12 +199,13 @@ jobs:
       - uses: lukka/get-cmake@latest
 
       - name: Download VCPKG
-        uses: lukka/run-vcpkg@v11
-        with:
-          vcpkgGitCommitId: 10b7a178346f3f0abef60cecd5130e295afd8da4
+        run: git clone https://github.com/Microsoft/vcpkg
+      
+      - name: Install VCPKG
+        run: ./vcpkg/bootstrap-vcpkg.sh
 
       - name: Build for macOS
-        run: bash makeapp.bash
+        run: PATH="./vcpkg/:$PATH" bash makeapp.bash
 
       - name: Compress the archive
         run: zip -r deshader-git-macos-${{ github.ref_name }}.zip src/deshader/zig-out/*

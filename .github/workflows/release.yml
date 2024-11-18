@@ -46,7 +46,7 @@ jobs:
           
       - name: Get tag description
         id: tag-desc
-        run: echo "desc=`git tag -l --format='%(contents:subject)' $(git describe --tags --abbrev=0)`" >> $GITHUB_OUTPUT
+        run: echo "desc=`git tag -l --format='%(contents:subject)' $(git describe --tags --abbrev=0 --exact-match)`" >> $GITHUB_OUTPUT
       
       - name: Download artifacts
         uses: actions/download-artifact@v4
