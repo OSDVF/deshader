@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const memory = @import("../src/common/memory.zig");
 const String = []const u8;
+const arch = @import("../src/common/arch.zig").archToVcpkg;
 
 /// `make`s opengl definitions, installs node.js dependencies for the editor and editor extension, and builds VCPKG dependencies for Windows
 pub const DependenciesStep = struct {
@@ -138,12 +139,14 @@ pub const DependenciesStep = struct {
         }
         const step = self.step;
         const debug = self.step.owner.release_mode == .off;
-        const use_triplet: String = triplet orelse try std.mem.concat(step.owner.allocator, u8, &.{ (if (self.target.cpu.arch == .x86) "x86" else "x64") ++ "-", switch (self.target.os.tag) {
-            .windows => "windows",
-            .linux => "linux",
-            .macos => if (builtin.os.tag == .macos) "osx" else "osx-zig",
-            else => @panic("Unsupported OS"),
-        }, if (self.target.os.tag == .windows and self.target.abi != .msvc) (if (debug) "-zig-dbg" else "-zig-rel") else "" });
+        const use_triplet: String = triplet orelse try std.mem.join(self.step.owner.allocator, "-", &.{
+            arch(self.target.cpu.arch), switch (self.target.os.tag) {
+                .windows => if (self.target.os.tag == .windows and self.target.abi != .msvc) (if (debug) "windows-zig-dbg" else "windows-zig-rel") else "windows",
+                .linux => if (builtin.os.tag == .linux and builtin.cpu.arch == self.target.cpu.arch) "linux" else "zig",
+                .macos => if (builtin.os.tag == .macos) "osx" else "osx-zig",
+                else => @panic("Unsupported OS"),
+            },
+        });
 
         const sub_sub = try self.step.owner.allocator.dupe(SubStep, &[_]SubStep{SubStep{
             .name = "Rename VCPKG artifacts",

@@ -21,6 +21,7 @@ const ctregex = @import("libs/ctregex/ctregex.zig");
 const CompressStep = @import("bootstrap/compress.zig").CompressStep;
 const DependenciesStep = @import("bootstrap/dependencies.zig").DependenciesStep;
 const ListGlProcsStep = @import("bootstrap/list_gl_procs.zig").ListGlProcsStep;
+const arch = @import("src/common/arch.zig").archToVcpkg;
 
 const Linkage = enum {
     Static,
@@ -105,9 +106,9 @@ pub fn build(b: *std.Build) !void {
     orelse (targetTarget != .windows or builtin.os.tag == .windows) and (optimize == .Debug or optimize == .ReleaseSafe);
     const options_unwind = b.option(bool, "unwind", "Enable unwind tables (implicit for debug mode)") orelse options_traces;
     const options_sanitize = b.option(bool, "sanitize", "Enable sanitizers (implicit for debug mode)") orelse options_traces;
-    const option_stack_check = (b.option(bool, "stackCheck", "Enable stack checking (implicit for debug mode, not supported for Windows)") orelse (optimize == .Debug)) and (targetTarget != .windows);
+    const option_stack_check = (b.option(bool, "stackCheck", "Enable stack checking (implicit for debug mode, not supported for Windows, ARM)") orelse (optimize == .Debug)) and (targetTarget != .windows and target.result.cpu.arch != .arm);
     const option_stack_protector = b.option(bool, "stackProtector", "Enable stack protector (implicit for debug mode)") orelse option_stack_check;
-    const option_valgrind = b.option(bool, "valgrind", "Enable valgrind support (implicit for debug mode, not supported for macos and msvc target)") orelse options_traces;
+    const option_valgrind = b.option(bool, "valgrind", "Enable valgrind support (implicit for debug mode, not supported for macos, ARM, and msvc target)") orelse (options_traces and target.result.abi != .msvc and targetTarget != .macos and target.result.cpu.arch != .arm);
     const option_strip = b.option(bool, "strip", "Strip debug symbols from the library (implicit for release fast and minimal mode)") orelse (optimize != .Debug and optimize != .ReleaseSafe);
     const option_triplet = b.option(String, "triplet", "VCPKG triplet to use for dependencies");
     const option_lib_debug = b.option(bool, "libDebug", "Include debug information in VCPKG libraries") orelse (optimize == .Debug);
@@ -123,7 +124,7 @@ pub fn build(b: *std.Build) !void {
     deshader_lib.root_module.sanitize_c = options_sanitize;
     deshader_lib.root_module.stack_check = option_stack_check;
     deshader_lib.root_module.stack_protector = option_stack_protector;
-    deshader_lib.root_module.valgrind = option_valgrind and (target.result.abi != .msvc) and targetTarget != .macos;
+    deshader_lib.root_module.valgrind = option_valgrind;
     deshader_lib.each_lib_rpath = false;
 
     const system_framwork_path = std.Build.LazyPath{ .cwd_relative = "/System/Library/Frameworks/" };
@@ -164,6 +165,9 @@ pub fn build(b: *std.Build) !void {
     if (option_sdk) |sdk| {
         try env.put("MACOSSDK", sdk);
     }
+    try env.put("ZIG_TARGET", try std.mem.join(b.allocator, "-", &.{ @tagName(target.result.cpu.arch), @tagName(targetTarget), @tagName(target.result.abi) }));
+    try env.put("ZIG_ARCH", arch(target.result.cpu.arch));
+    try env.put("ZIG_OS", @tagName(targetTarget));
 
     const deshader_lib_name = try std.mem.concat(b.allocator, u8, &.{ if (targetTarget == .windows) "" else "lib", deshader_lib.name, targetTarget.dynamicLibSuffix() });
     const deshader_lib_cmd = b.step("deshader", "Install deshader library");
@@ -496,12 +500,10 @@ pub fn build(b: *std.Build) !void {
         //
         // Emit H File
         //
-        var target_query = target.query;
-        target_query.ofmt = null;
         var header_gen = b.addExecutable(.{
             .name = "generate_headers",
             .root_source_file = b.path("bootstrap/generate_headers.zig"),
-            .target = b.resolveTargetQuery(target_query),
+            .target = b.resolveTargetQuery(std.Target.Query.fromTarget(builtin.target)),
             .optimize = optimize,
         });
         const heade_gen_opts = b.addOptions();
@@ -556,7 +558,7 @@ pub fn build(b: *std.Build) !void {
     launcher_exe.root_module.sanitize_c = options_sanitize;
     launcher_exe.root_module.stack_check = option_stack_check;
     launcher_exe.root_module.stack_protector = option_stack_protector;
-    launcher_exe.root_module.valgrind = option_valgrind and (target.result.abi != .msvc) and targetTarget != .macos;
+    launcher_exe.root_module.valgrind = option_valgrind;
     launcher_exe.each_lib_rpath = false;
     launcher_exe.pie = true;
     launcher_exe.root_module.addAnonymousImport("common", .{
@@ -595,14 +597,14 @@ pub fn build(b: *std.Build) !void {
     vcpkg_cmd.dependOn(&vcpkg_step.step);
 
     const system_libs_available = option_system_glslang and system_wolf and system_nfd;
-    if (!system_libs_available) {
+    if (system_libs_available) {
+        log.info("All required libraries are available on system, skipping installing vcpkg dependencies", .{});
+    } else {
         try addVcpkgInstalledPaths(b, deshader_lib, option_triplet, option_lib_debug);
         try addVcpkgInstalledPaths(b, launcher_exe, option_triplet, option_lib_debug);
         try addVcpkgInstalledPaths(b, serve, option_triplet, option_lib_debug); // add WolfSSL from VCPKG to serve
         deshader_lib.step.dependOn(&vcpkg_step.step);
         launcher_exe.step.dependOn(&vcpkg_step.step);
-    } else {
-        log.info("All required libraries are available on system, skipping installing vcpkg dependencies", .{});
     }
 
     //
@@ -857,13 +859,13 @@ fn fileWithPrefixExists(allocator: std.mem.Allocator, dirname: String, basename:
     return null;
 }
 
-fn vcpkgTriplet(t: std.Target, debug_lib: bool) String {
-    return switch (t.os.tag) {
-        .linux => "x64-linux",
-        .macos => "x64-osx",
-        .windows => if (t.abi == .msvc) "x64-windows" else if (debug_lib) "x64-windows-zig-dbg" else "x64-windows-zig-rel",
+fn vcpkgTriplet(a: std.mem.Allocator, t: std.Target, debug_lib: bool) !String {
+    return try std.mem.join(a, "-", &.{ arch(t.cpu.arch), switch (t.os.tag) {
+        .linux => "linux",
+        .macos => "osx",
+        .windows => if (t.abi == .msvc) "windows" else if (debug_lib) "windows-zig-dbg" else "windows-zig-rel",
         else => @panic("Unsupported target"),
-    };
+    } });
 }
 
 /// assuming vcpkg is called as by Visual Studio or `vcpkg install --triplet x64-windows-cross --x-install-root=build/vcpkg_installed` or inside DependenciesStep
@@ -871,10 +873,10 @@ fn addVcpkgInstalledPaths(b: *std.Build, c: anytype, triplet: ?String, debug_lib
     const module = if (@hasField(@TypeOf(c.*), "root_module")) c.root_module else c;
     const debug = if (debug_lib) "debug" else "";
     const target = if (module.resolved_target) |t| t.result else builtin.target;
-    c.addIncludePath(b.path(b.pathJoin(&.{ "build", "vcpkg_installed", triplet orelse vcpkgTriplet(target, debug_lib), "debug", "include" })));
-    c.addIncludePath(b.path(b.pathJoin(&.{ "build", "vcpkg_installed", triplet orelse vcpkgTriplet(target, debug_lib), "include" })));
-    c.addLibraryPath(b.path(b.pathJoin(&.{ "build", "vcpkg_installed", triplet orelse vcpkgTriplet(target, debug_lib), debug, "bin" })));
-    c.addLibraryPath(b.path(b.pathJoin(&.{ "build", "vcpkg_installed", triplet orelse vcpkgTriplet(target, debug_lib), debug, "lib" })));
+    c.addIncludePath(b.path(b.pathJoin(&.{ "build", "vcpkg_installed", triplet orelse try vcpkgTriplet(b.allocator, target, debug_lib), "debug", "include" })));
+    c.addIncludePath(b.path(b.pathJoin(&.{ "build", "vcpkg_installed", triplet orelse try vcpkgTriplet(b.allocator, target, debug_lib), "include" })));
+    c.addLibraryPath(b.path(b.pathJoin(&.{ "build", "vcpkg_installed", triplet orelse try vcpkgTriplet(b.allocator, target, debug_lib), debug, "bin" })));
+    c.addLibraryPath(b.path(b.pathJoin(&.{ "build", "vcpkg_installed", triplet orelse try vcpkgTriplet(b.allocator, target, debug_lib), debug, "lib" })));
 }
 
 fn installVcpkgLibrary(i: *std.Build.Step.InstallArtifact, name: String, triplet: ?String, debug_lib: bool) !String {
@@ -888,7 +890,7 @@ fn installVcpkgLibrary(i: *std.Build.Step.InstallArtifact, name: String, triplet
         const dll_path = b.pathJoin(&.{
             "build",
             "vcpkg_installed",
-            triplet orelse vcpkgTriplet(target, debug_lib),
+            triplet orelse try vcpkgTriplet(b.allocator, target, debug_lib),
             if (debug_lib) "debug" else "",
             "bin",
             name_with_ext,
@@ -957,6 +959,7 @@ fn linkWolfSSL(compile: *std.Build.Step.Compile, install: *std.Build.Step.Instal
 }
 
 /// Search for all lib directories
+/// TODO: different architectures than system-native
 fn systemHasLib(c: *std.Build.Step.Compile, native_libs_location: String, lib: String) !bool {
     const b: *std.Build = c.step.owner;
     const target: std.Target = c.rootModuleTarget();
@@ -992,20 +995,20 @@ fn nfd(c: *std.Build.Step.Compile, system_nfd: bool, debug: bool) void {
     c.linkSystemLibrary2(if (debug and !system_nfd) "nfd_d" else "nfd", .{ .needed = true }); //Native file dialog library from VCPKG
 }
 
-fn getLdConfigPath(b: *std.Build) String { // searches for libEGL
+fn getLdConfigPath(b: *std.Build) String { // searches for libGL
     const output = b.run(&.{ "ldconfig", "-p" });
     defer b.allocator.free(output);
     var lines = std.mem.splitScalar(u8, output, '\n');
     while (lines.next()) |line| {
-        if (std.mem.indexOf(u8, line, "libEGL") != null) {
+        if (std.mem.indexOf(u8, line, "libGL") != null) {
             if (std.mem.indexOf(u8, line, "=>")) |arrow| {
                 const gl_path = std.mem.trim(u8, line[arrow + 2 ..], " \n\t ");
-                std.log.info("Found libEGL at {s}", .{gl_path});
+                std.log.info("Found libGL at {s}", .{gl_path});
                 return b.pathJoin(&.{ std.fs.path.dirname(gl_path) orelse "", "/" });
             }
         }
     }
-    std.log.warn("Could not find libEGL path", .{});
+    std.log.warn("Could not find libGL path", .{});
     return "/usr/lib/";
 }
 
