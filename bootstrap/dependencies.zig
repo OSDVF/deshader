@@ -25,7 +25,7 @@ pub const DependenciesStep = struct {
             if (self.args) |a|
                 allocator.free(a);
             if (self.after) |a| {
-                for (a) |aa| {
+                for (a) |*aa| {
                     aa.deinit(allocator);
                 }
                 allocator.free(a);
@@ -33,9 +33,15 @@ pub const DependenciesStep = struct {
         }
     };
 
-    pub fn init(b: *std.Build, name: String, target: std.Target, env: *std.process.EnvMap) DependenciesStep {
+    pub fn init(b: *std.Build, name: String, target: std.Target, env: std.process.EnvMap) !DependenciesStep {
+        const env_copy = try b.allocator.create(std.process.EnvMap);
+        env_copy.* = std.process.EnvMap.init(b.allocator);
+        var it = env.iterator();
+        while (it.next()) |entry| {
+            try env_copy.put(entry.key_ptr.*, entry.value_ptr.*);
+        }
         return DependenciesStep{
-            .env_map = env,
+            .env_map = env_copy,
             .target = target,
             .step = std.Build.Step.init(
                 .{
@@ -84,6 +90,8 @@ pub const DependenciesStep = struct {
     pub fn doStep(step: *std.Build.Step, progressNode: std.Progress.Node) anyerror!void {
         const self: *DependenciesStep = @fieldParentPtr("step", step);
         try self.env_map.put("ZIG_PATH", self.step.owner.graph.zig_exe);
+        defer self.env_map.deinit();
+        defer self.step.owner.allocator.destroy(self.env_map);
 
         defer self.sub_steps.deinit();
 
@@ -200,7 +208,7 @@ pub const DependenciesStep = struct {
                 progressNode.setCompletedItems(i + 1);
                 defer sub_step.progress_node.end();
             }
-            //sub_step.deinit(self.step.owner.allocator);
+            defer sub_step.deinit(self.step.owner.allocator);
         }
     }
 

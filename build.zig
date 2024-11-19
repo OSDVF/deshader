@@ -56,6 +56,7 @@ pub fn build(b: *std.Build) !void {
     const system32 = "C:/Windows/System32/";
     // translate zig flags to cflags and cxxflags (will be used when building VCPKG dependencies)
     var env = try std.process.getEnvMap(std.heap.page_allocator); // uses heap alloctor, because if b.allocator was used, the env would be deallocated after the config phase
+    defer env.deinit();
     // do not deinit env, because it will be used in DependeciesStep in make phase
     const host_libs_location = switch (targetTarget) {
         .windows => if (builtin.os.tag == .windows) system32 else try winepath(b.allocator, system32, false),
@@ -317,6 +318,7 @@ pub fn build(b: *std.Build) !void {
             else => &.{ "nm", "--format=posix", "--defined-only", "-DAp" },
         });
         if (b.enable_wine) {
+            _ = try exec(.{ .allocator = b.allocator, .argv = &.{ "wineserver", "-k" } }); // To apply the new WINEDEBUG settings
             run_symbol_enum.setEnvironmentVariable("WINEDEBUG", "-all"); //otherwise expectStdErrEqual("") will not ignore fixme messages
         }
         for (GlLibNames) |libName| {
@@ -435,7 +437,7 @@ pub fn build(b: *std.Build) !void {
 
         const editor_cmd = b.step("editor", "Bootstrap building internal Deshader components and dependencies");
         var editor_step = try b.allocator.create(DependenciesStep);
-        editor_step.* = DependenciesStep.init(b, "editor", target.result, &env);
+        editor_step.* = try DependenciesStep.init(b, "editor", target.result, env);
         try editor_step.editor();
 
         editor_cmd.dependOn(&editor_step.step);
@@ -588,7 +590,7 @@ pub fn build(b: *std.Build) !void {
 
     const vcpkg_cmd = b.step("vcpkg", "Download and build dependencies managed by vcpkg");
     var vcpkg_step = try b.allocator.create(DependenciesStep);
-    vcpkg_step.* = DependenciesStep.init(b, "vcpkg", target.result, &env);
+    vcpkg_step.* = try DependenciesStep.init(b, "vcpkg", target.result, env);
     try vcpkg_step.vcpkg(option_triplet);
     vcpkg_cmd.dependOn(&vcpkg_step.step);
 
