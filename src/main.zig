@@ -231,7 +231,7 @@ pub export fn deshaderTaggedSource(payload: SourcesPayload, if_exists: ExistsBeh
 
 /// Not meant to be called externally by any other program than Deshader Launcher Tool. The launcher callback parameters are zig objects which cannot be handled in C
 pub export fn deshaderLauncherGUI(run: *const anyopaque) void {
-    gui.launcherGUI(@ptrCast(run)) catch |err| {
+    gui.launcherGUI(@alignCast(@ptrCast(run))) catch |err| {
         DeshaderLog.err("Launcher GUI Error {}", .{err});
     };
 }

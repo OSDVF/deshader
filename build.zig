@@ -992,18 +992,20 @@ fn nfd(c: *std.Build.Step.Compile, system_nfd: bool, debug: bool) void {
     c.linkSystemLibrary2(if (debug and !system_nfd) "nfd_d" else "nfd", .{ .needed = true }); //Native file dialog library from VCPKG
 }
 
-fn getLdConfigPath(b: *std.Build) String { // searches for libGL
+fn getLdConfigPath(b: *std.Build) String { // searches for libEGL
     const output = b.run(&.{ "ldconfig", "-p" });
     defer b.allocator.free(output);
     var lines = std.mem.splitScalar(u8, output, '\n');
     while (lines.next()) |line| {
-        if (std.mem.indexOf(u8, line, "libGL") != null) {
+        if (std.mem.indexOf(u8, line, "libEGL") != null) {
             if (std.mem.indexOf(u8, line, "=>")) |arrow| {
                 const gl_path = std.mem.trim(u8, line[arrow + 2 ..], " \n\t ");
+                std.log.info("Found libEGL at {s}", .{gl_path});
                 return b.pathJoin(&.{ std.fs.path.dirname(gl_path) orelse "", "/" });
             }
         }
     }
+    std.log.warn("Could not find libEGL path", .{});
     return "/usr/lib/";
 }
 

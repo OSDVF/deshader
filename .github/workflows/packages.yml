@@ -180,7 +180,10 @@ jobs:
           path: src/deshader/zig-out/deshader-git-windows*.zip
 
   mac-os:
-    runs-on: macos-latest
+    strategy:
+        matrix:
+            os: [macos-13, macos-14]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     if: ${{ (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')) && !contains(github.event.head_commit.message, 'skip macos') }}
     steps:
@@ -207,8 +210,12 @@ jobs:
       - name: Build for macOS
         run: PATH="./vcpkg/:$PATH" bash makeapp.bash
 
+      - name: Get architecture
+        run: echo "arch=$(uname -m)" >> $GITHUB_OUTPUT
+        id: arch
+
       - name: Compress the archive
-        run: zip -r deshader-git-macos-${{ github.ref_name }}.zip src/deshader/zig-out/*
+        run: zip -r deshader-git-${{ matrix.os }}-${{ steps.arch.outputs.arch }}-${{ github.ref_name }}.zip src/deshader/zig-out/*
 
       - name: Archive macOS package
         uses: actions/upload-artifact@v4

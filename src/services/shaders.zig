@@ -1180,7 +1180,7 @@ pub const Shader = struct {
             if (self.tree) |*t| {
                 t.deinit(self.allocator);
             }
-            @as(*const fn (*const anyopaque) void, @ptrCast(self.deinitImpl))(self.implementation);
+            @as(*const fn (*const anyopaque) void, @alignCast(@ptrCast(self.deinitImpl)))(self.implementation);
         }
 
         pub fn basenameAlloc(source: *const SourceInterface, allocator: std.mem.Allocator, part_index: usize) !String {
@@ -1196,7 +1196,7 @@ pub const Shader = struct {
         }
 
         pub fn getSource(self: *const @This()) ?String {
-            return @as(*const fn (*const anyopaque) ?String, @ptrCast(self.getSourceImpl))(self.implementation);
+            return @as(*const fn (*const anyopaque) ?String, @alignCast(@ptrCast(self.getSourceImpl)))(self.implementation);
         }
         /// Invalidate instrumentation and code analysis state
         pub fn invalidate(self: *@This()) void {
@@ -1258,7 +1258,7 @@ pub const Shader = struct {
 
         pub fn replaceSource(self: *@This(), source: String) std.mem.Allocator.Error!void {
             self.invalidate();
-            return @as(*const fn (*const anyopaque, String) std.mem.Allocator.Error!void, @ptrCast(self.replaceSourceImpl))(self.implementation, source);
+            return @as(*const fn (*const anyopaque, String) std.mem.Allocator.Error!void, @alignCast(@ptrCast(self.replaceSourceImpl)))(self.implementation, source);
         }
 
         /// The result will have empty path field

@@ -221,7 +221,7 @@ comptime {
             fn dlopen(name: ?[*:0]u8, mode: c_int) callconv(.C) ?*const anyopaque {
                 // Check for initialization
                 if (APIs.originalDlopen == null) {
-                    APIs.originalDlopen = @ptrCast(std.c.dlsym(c.RTLD_NEXT, "dlopen"));
+                    APIs.originalDlopen = @alignCast(@ptrCast(std.c.dlsym(c.RTLD_NEXT, "dlopen")));
                     if (APIs.originalDlopen == null) {
                         DeshaderLog.err("Failed to find original dlopen: {s}", .{c.dlerror()});
                     }

@@ -277,7 +277,7 @@ pub const CommandListener = struct {
             }
         };
         command_route.comm = command;
-        command_route.free = @ptrCast(freee);
+        command_route.free = @alignCast(@ptrCast(freee));
         route.handler = command_route.wrapper;
         errdefer route.deinit();
         return self;
@@ -418,33 +418,33 @@ pub const CommandListener = struct {
 
                 try switch (tc.r) {
                     .Void => switch (tc.a) {
-                        0 => handleInner(self, @as(*const fn () anyerror!void, @ptrCast(tc.c))(), request, @ptrCast(tc.free)),
-                        1 => handleInner(self, @as(*const fn (?ArgumentsMap) anyerror!void, @ptrCast(tc.c))(parsed_args), request, @ptrCast(tc.free)),
-                        2 => handleInner(self, @as(*const fn (?ArgumentsMap, String) anyerror!void, @ptrCast(tc.c))(parsed_args, body), request, @ptrCast(tc.free)),
+                        0 => handleInner(self, @as(*const fn () anyerror!void, @alignCast(@ptrCast(tc.c)))(), request, @alignCast(@ptrCast(tc.free))),
+                        1 => handleInner(self, @as(*const fn (?ArgumentsMap) anyerror!void, @alignCast(@ptrCast(tc.c)))(parsed_args), request, @alignCast(@ptrCast(tc.free))),
+                        2 => handleInner(self, @as(*const fn (?ArgumentsMap, String) anyerror!void, @alignCast(@ptrCast(tc.c)))(parsed_args, body), request, @alignCast(@ptrCast(tc.free))),
                         else => unreachable,
                     },
                     .String => switch (tc.a) {
-                        0 => handleInner(self, @as(*const fn () anyerror!String, @ptrCast(tc.c))(), request, @ptrCast(tc.free)),
-                        1 => handleInner(self, @as(*const fn (?ArgumentsMap) anyerror!String, @ptrCast(tc.c))(parsed_args), request, @ptrCast(tc.free)),
-                        2 => handleInner(self, @as(*const fn (?ArgumentsMap, String) anyerror!String, @ptrCast(tc.c))(parsed_args, body), request, @ptrCast(tc.free)),
+                        0 => handleInner(self, @as(*const fn () anyerror!String, @alignCast(@ptrCast(tc.c)))(), request, @alignCast(@ptrCast(tc.free))),
+                        1 => handleInner(self, @as(*const fn (?ArgumentsMap) anyerror!String, @alignCast(@ptrCast(tc.c)))(parsed_args), request, @alignCast(@ptrCast(tc.free))),
+                        2 => handleInner(self, @as(*const fn (?ArgumentsMap, String) anyerror!String, @alignCast(@ptrCast(tc.c)))(parsed_args, body), request, @alignCast(@ptrCast(tc.free))),
                         else => unreachable,
                     },
                     .CStringArray => switch (tc.a) {
-                        0 => handleInner(self, @as(*const fn () anyerror![]const CString, @ptrCast(tc.c))(), request, @ptrCast(tc.free)),
-                        1 => handleInner(self, @as(*const fn (?ArgumentsMap) anyerror![]const CString, @ptrCast(tc.c))(parsed_args), request, @ptrCast(tc.free)),
-                        2 => handleInner(self, @as(*const fn (?ArgumentsMap, String) anyerror![]const CString, @ptrCast(tc.c))(parsed_args, body), request, @ptrCast(tc.free)),
+                        0 => handleInner(self, @as(*const fn () anyerror![]const CString, @alignCast(@ptrCast(tc.c)))(), request, @alignCast(@ptrCast(tc.free))),
+                        1 => handleInner(self, @as(*const fn (?ArgumentsMap) anyerror![]const CString, @alignCast(@ptrCast(tc.c)))(parsed_args), request, @alignCast(@ptrCast(tc.free))),
+                        2 => handleInner(self, @as(*const fn (?ArgumentsMap, String) anyerror![]const CString, @alignCast(@ptrCast(tc.c)))(parsed_args, body), request, @alignCast(@ptrCast(tc.free))),
                         else => unreachable,
                     },
                     .StringArray => switch (tc.a) {
-                        0 => handleInner(self, @as(*const fn () anyerror![]const String, @ptrCast(tc.c))(), request, @ptrCast(tc.free)),
-                        1 => handleInner(self, @as(*const fn (?ArgumentsMap) anyerror![]const String, @ptrCast(tc.c))(parsed_args), request, @ptrCast(tc.free)),
-                        2 => handleInner(self, @as(*const fn (?ArgumentsMap, String) anyerror![]const String, @ptrCast(tc.c))(parsed_args, body), request, @ptrCast(tc.free)),
+                        0 => handleInner(self, @as(*const fn () anyerror![]const String, @alignCast(@ptrCast(tc.c)))(), request, @alignCast(@ptrCast(tc.free))),
+                        1 => handleInner(self, @as(*const fn (?ArgumentsMap) anyerror![]const String, @alignCast(@ptrCast(tc.c)))(parsed_args), request, @alignCast(@ptrCast(tc.free))),
+                        2 => handleInner(self, @as(*const fn (?ArgumentsMap, String) anyerror![]const String, @alignCast(@ptrCast(tc.c)))(parsed_args, body), request, @alignCast(@ptrCast(tc.free))),
                         else => unreachable,
                     },
                     .HttpStatusCode => switch (tc.a) {
-                        0 => handleInner(self, @as(*const fn () anyerror!serve.HttpStatusCode, @ptrCast(tc.c))(), request, @ptrCast(tc.free)),
-                        1 => handleInner(self, @as(*const fn (?ArgumentsMap) anyerror!serve.HttpStatusCode, @ptrCast(tc.c))(parsed_args), request, @ptrCast(tc.free)),
-                        2 => handleInner(self, @as(*const fn (?ArgumentsMap, String) anyerror!serve.HttpStatusCode, @ptrCast(tc.c))(parsed_args, body), request, @ptrCast(tc.free)),
+                        0 => handleInner(self, @as(*const fn () anyerror!serve.HttpStatusCode, @alignCast(@ptrCast(tc.c)))(), request, @alignCast(@ptrCast(tc.free))),
+                        1 => handleInner(self, @as(*const fn (?ArgumentsMap) anyerror!serve.HttpStatusCode, @alignCast(@ptrCast(tc.c)))(parsed_args), request, @alignCast(@ptrCast(tc.free))),
+                        2 => handleInner(self, @as(*const fn (?ArgumentsMap, String) anyerror!serve.HttpStatusCode, @alignCast(@ptrCast(tc.c)))(parsed_args, body), request, @alignCast(@ptrCast(tc.free))),
                         else => unreachable,
                     },
                 };
