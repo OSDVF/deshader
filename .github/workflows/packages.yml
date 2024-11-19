@@ -215,10 +215,10 @@ jobs:
         id: arch
 
       - name: Compress the archive
-        run: zip -r deshader-git-${{ matrix.os }}-${{ steps.arch.outputs.arch }}-${{ github.ref_name }}.zip src/deshader/zig-out/*
+        run: zip -r deshader-git-${{ matrix.os }}-${{ steps.arch.outputs.arch }}-${{ github.ref_name }}.zip Deshader.app
 
       - name: Archive macOS package
         uses: actions/upload-artifact@v4
         with:
-          name: deshader-macos
+          name: deshader-${{ matrix.os }}
           path: deshader-git-macos*.zip

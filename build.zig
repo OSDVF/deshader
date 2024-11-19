@@ -295,12 +295,12 @@ pub fn build(b: *std.Build) !void {
     options.addOption(u32, "memoryFrames", option_memory_frames);
     const version = resolve: {
         const version_result = try exec(.{ .allocator = b.allocator, .argv = &.{ "git", "describe", "--tags", "--always", "--abbrev=0", "--exact-match" } });
-        if (version_result.term == .Exited and version_result.term.Exited == 0) {
-            break :resolve version_result.stdout;
+        if (version_result.term == .Exited and version_result.term.Exited == 0 and std.ascii.isDigit(version_result.stdout[0])) {
+            break :resolve version_result.stdout; // tag with a digit => version number
         } else {
             const rev_result = try exec(.{ .allocator = b.allocator, .argv = &.{ "git", "rev-parse", "--short", "HEAD" } });
             if (rev_result.term == .Exited and rev_result.term.Exited == 0) {
-                break :resolve rev_result.stdout;
+                break :resolve rev_result.stdout; // else use commit hash
             } else {
                 break :resolve "unknown";
             }
@@ -384,8 +384,16 @@ pub fn build(b: *std.Build) !void {
     deshader_lib.root_module.addImport("serve", serve);
     if (option_editor) {
         PositronSdk.linkPositron(deshader_lib, null, option_linkage == .Static);
-        if (targetTarget == .windows) {
-            try deshader_dependent_dlls.append("WebView2Loader.dll");
+        switch (targetTarget) {
+            .linux => {
+                if (try systemHasLib(deshader_lib, host_libs_location, "webkit2gtk-4.1")) {
+                    deshader_lib.linkSystemLibrary("webkit2gtk-4.1");
+                } else {
+                    deshader_lib.linkSystemLibrary("webkit2gtk-4.0");
+                }
+            },
+            .windows => try deshader_dependent_dlls.append("WebView2Loader.dll"),
+            else => {},
         }
     }
 
