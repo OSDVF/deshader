@@ -81,6 +81,7 @@ pub fn build(b: *std.Build) !void {
     const option_ofmt = b.option(ObjectFormat, "ofmt", "Compile into object format") orelse .Default;
     if (option_ofmt == .c) {
         target.result.ofmt = .c;
+        target.query.ofmt = .c;
     }
 
     // Deshader library
@@ -511,7 +512,7 @@ pub fn build(b: *std.Build) !void {
         var header_gen = b.addExecutable(.{
             .name = "generate_headers",
             .root_source_file = b.path("bootstrap/generate_headers.zig"),
-            .target = b.resolveTargetQuery(std.Target.Query.fromTarget(builtin.target)),
+            .target = b.resolveTargetQuery(std.Target.Query{}),
             .optimize = optimize,
         });
         const heade_gen_opts = b.addOptions();

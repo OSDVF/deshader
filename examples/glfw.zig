@@ -11,6 +11,7 @@ const Severity = enum(usize) {
     medium = 2,
     high = 3,
 };
+const c = @cImport(@cInclude("GLFW/glfw3.h"));
 
 /// Default GLFW error handling callback
 fn errorCallback(error_code: glfw.ErrorCode, description: [:0]const u8) void {
@@ -112,6 +113,14 @@ pub fn glDebugMessageCallback(source: gl.@"enum", typ: gl.@"enum", id: gl.uint, 
 
 // Procedure table that will hold OpenGL functions loaded at runtime.
 var procs: gl.ProcTable = undefined;
+fn createWindow() ?glfw.Window {
+    return glfw.Window.create(640, 480, "zig-glfw + zig-opengl", null, null, .{
+        .opengl_profile = .opengl_core_profile,
+        .context_version_major = 4,
+        .context_version_minor = 0,
+        .context_debug = true,
+    });
+}
 
 pub fn main() !void {
     const env = try std.process.getEnvMap(std.heap.page_allocator);
@@ -126,7 +135,10 @@ pub fn main() !void {
     defer glfw.terminate();
 
     // Create our window
-    const window = glfw.Window.create(640, 480, "zig-glfw + zig-opengl", null, null, .{ .opengl_profile = .opengl_core_profile, .context_version_major = 4, .context_version_minor = 0, .context_debug = true }) orelse {
+    const window = createWindow() orelse soft: {
+        c.glfwWindowHint(c.GLFW_CONTEXT_RENDERER, c.GLFW_SOFTWARE_RENDERER);
+        break :soft createWindow();
+    } orelse {
         log.err("failed to create GLFW window: {?s}", .{glfw.getErrorString()});
         std.process.exit(1);
     };
