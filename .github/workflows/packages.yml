@@ -143,37 +143,29 @@ jobs:
       - name: Cross-compile for Windows
         id: win-compile
         if: steps.install-wine.conclusion == 'success'
-        run: for a in 1 2; do zig build deshader launcher -fwine -Dtarget=x86_64-windows-gnu --release=safe; done || bash fix_c_import.sh && zig build deshader launcher generate_headers generate_stubs -fwine -Dtarget=x86_64-windows-gnu --release=safe
+        run: for a in 1 2; do zig build deshader launcher -fwine -Dtarget=x86_64-windows-gnu --release=safe; done || bash fix_c_import.sh && zig build deshader launcher -fwine -Dtarget=x86_64-windows-gnu --release=safe
         shell: bash
         working-directory: src/deshader
-        continue-on-error: true
 
       - name: Test windows build
+        id: win-test
         if: steps.win-compile.conclusion == 'success'
         run: wine deshader-run.exe -version
         working-directory: src/deshader/zig-out/bin
-        continue-on-error: true
-
-      - name: Remove header generator binary
-        run: rm -f src/deshader/zig-out/bin/generate_headers
-        continue-on-error: true
 
       - name: Compress windows executables
         id: windows-zip
-        if: steps.win-compile.conclusion == 'success'
+        if: steps.win-test.conclusion == 'success'
         run: zip -rj deshader-git-windows-${{ github.ref_name }}.zip bin
         working-directory: src/deshader/zig-out
-        continue-on-error: true
 
       - name: Add headers to archive
         if: ${{ steps.windows-zip.conclusion == 'success' }}
         run: zip -r deshader-git-windows-${{ github.ref_name }}.zip include
         working-directory: src/deshader/zig-out
-        continue-on-error: true
 
       - name: Archive Windows package
         uses: actions/upload-artifact@v4
-        continue-on-error: true
         if: steps.windows-zip.conclusion == 'success'
         with:
           name: deshader-windows

@@ -11,6 +11,7 @@ pub const DependenciesStep = struct {
     sub_steps: std.ArrayList(SubStep),
     no_fail: bool = false,
     env_map: *std.process.EnvMap,
+    done: bool = false,
 
     const SubStep = struct {
         name: String,
@@ -47,7 +48,7 @@ pub const DependenciesStep = struct {
             .step = std.Build.Step.init(
                 .{
                     .name = name,
-                    .makeFn = DependenciesStep.doStep,
+                    .makeFn = DependenciesStep.doAll,
                     .owner = b,
                     .id = .custom,
                 },
@@ -88,19 +89,22 @@ pub const DependenciesStep = struct {
         }
     }
 
-    pub fn doStep(step: *std.Build.Step, progressNode: std.Progress.Node) anyerror!void {
+    pub fn doAll(step: *std.Build.Step, progressNode: std.Progress.Node) anyerror!void {
         const self: *DependenciesStep = @fieldParentPtr("step", step);
-        try self.env_map.put("ZIG_PATH", self.step.owner.graph.zig_exe);
-        defer self.env_map.deinit();
-        defer self.step.owner.allocator.destroy(self.env_map);
+        if (self.done) {
+            std.log.debug("Dependencies already (being) built", .{});
+        } else {
+            defer self.done = true;
+            try self.env_map.put("ZIG_PATH", self.step.owner.graph.zig_exe);
+            defer self.env_map.deinit();
+            defer self.step.owner.allocator.destroy(self.env_map);
 
-        defer self.sub_steps.deinit();
+            const node = progressNode.start("Dependencies", self.sub_steps.items.len);
+            defer node.end();
 
-        const node = progressNode.start("Dependencies", self.sub_steps.items.len);
-
-        try self.doSubSteps(self.sub_steps.items, node);
-
-        defer node.end();
+            try self.doSubSteps(self.sub_steps.items, node);
+            defer self.sub_steps.deinit();
+        }
     }
 
     pub fn editor(self: *DependenciesStep) !void {

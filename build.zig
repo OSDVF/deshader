@@ -31,6 +31,7 @@ const String = []const u8;
 
 const log = std.log.scoped(.DeshaderBuild);
 const hasDylibCache = builtin.os.isAtLeast(.macos, .{ .major = 11, .minor = 0, .patch = 1 }) orelse false; // https://developer.apple.com/documentation/macos-release-notes/macos-big-sur-11_0_1-release-notes#Kernel
+var dependencies_step: DependenciesStep = undefined;
 
 // Shims for compatibility between Zig versions
 const exec = std.process.Child.run;
@@ -58,6 +59,8 @@ pub fn build(b: *std.Build) !void {
     // translate zig flags to cflags and cxxflags (will be used when building VCPKG dependencies)
     var env = try std.process.getEnvMap(std.heap.page_allocator); // uses heap alloctor, because if b.allocator was used, the env would be deallocated after the config phase
     defer env.deinit();
+    dependencies_step = try DependenciesStep.init(b, "dependencies", target.result, env);
+
     // do not deinit env, because it will be used in DependeciesStep in make phase
     const host_libs_location = switch (targetTarget) {
         .windows => if (builtin.os.tag == .windows) system32 else try winepath(b.allocator, system32, false),
@@ -93,7 +96,7 @@ pub fn build(b: *std.Build) !void {
         .link_libc = true,
     };
 
-    // Compile options
+    // Compilation options
     const default_traces = (targetTarget != .windows or builtin.os.tag == .windows) and (optimize == .Debug or optimize == .ReleaseSafe);
 
     const option_custom_library = b.option([]const String, "customLibrary", "Names of additional libraries to intercept");
@@ -221,23 +224,6 @@ pub fn build(b: *std.Build) !void {
     deshader_lib.root_module.addImport("args", args_mod);
 
     var deshader_dependent_dlls = std.ArrayList(String).init(b.allocator);
-
-    // Native file dialogs library
-    option_system_nfd = option_system_nfd and try systemHasLib(deshader_lib, host_libs_location, "nfd");
-    try nfd(deshader_lib, option_system_nfd, option_triplet, option_lib_debug);
-
-    // GLSLang
-    inline for (.{ "glslang", "glslang-default-resource-limits", "MachineIndependent", "GenericCodeGen" }) |l| {
-        const lib_name = if (targetTarget == .windows) if (b.release_mode == .off) l ++ "d" else l else l;
-        option_system_glslang = option_system_glslang and try systemHasLib(deshader_lib, host_libs_location, lib_name);
-
-        try linkVcpkgLibrary(deshader_lib, lib_name, option_triplet, option_lib_debug);
-        if (!option_system_glslang) {
-            _ = try installVcpkgLibrary(deshader_lib_install, lib_name, option_triplet, option_lib_debug);
-        }
-    }
-
-    option_system_glfw = option_system_glfw and try systemHasLib(deshader_lib, host_libs_location, "glfw3");
 
     // Websocket
     const websocket = b.addModule("websocket", .{
@@ -406,13 +392,6 @@ pub fn build(b: *std.Build) !void {
         }
     }
 
-    // WolfSSL - a serve's dependency
-    option_system_wolfssl = option_system_wolfssl and try systemHasLib(deshader_lib, host_libs_location, "wolfssl");
-    if (try linkWolfSSL(&deshader_lib.root_module, deshader_lib_install, !option_system_wolfssl, option_triplet, option_lib_debug)) |lib_name| {
-        try deshader_dependent_dlls.append(lib_name);
-    }
-    try linkVcpkgLibrary(serve, "wolfssl", option_triplet, option_lib_debug);
-
     //
     // Steps for building generated and embedded files
     //
@@ -456,17 +435,15 @@ pub fn build(b: *std.Build) !void {
         b.top_level_steps.get("install").?.description = "Download dependencies managed by Zig";
 
         const editor_cmd = b.step("editor", "Bootstrap building internal Deshader components and dependencies");
-        var editor_step = try b.allocator.create(DependenciesStep);
-        editor_step.* = try DependenciesStep.init(b, "editor", target.result, env);
-        try editor_step.editor();
+        try dependencies_step.editor();
 
-        editor_cmd.dependOn(&editor_step.step);
+        editor_cmd.dependOn(&dependencies_step.step);
         if (option_editor) {
             if (optimize == .Debug) {
                 // permit parallel building of editor and deshader, because editor is then not embedded
-                deshader_lib_cmd.dependOn(&editor_step.step);
+                deshader_lib_cmd.dependOn(&dependencies_step.step);
             } else {
-                deshader_lib.step.dependOn(&editor_step.step);
+                deshader_lib.step.dependOn(&dependencies_step.step);
             }
         }
 
@@ -486,7 +463,7 @@ pub fn build(b: *std.Build) !void {
                 const path = try std.fmt.allocPrint(b.allocator, "{s}/{s}", .{ editor_directory, std.mem.trim(u8, line, "\n\r\t ") });
                 try files.append(path);
                 if (optimize != .Debug) { // In debug mode files are served from physical filesystem so one does not need to recompile Deshader each time
-                    try embedCompressedFile(deshader_lib, if (option_editor) &editor_step.step else null, path);
+                    try embedCompressedFile(deshader_lib, if (option_editor) &dependencies_step.step else null, path);
                 }
             }
         }
@@ -607,10 +584,8 @@ pub fn build(b: *std.Build) !void {
     }
 
     const vcpkg_cmd = b.step("vcpkg", "Download and build dependencies managed by vcpkg");
-    var vcpkg_step = try b.allocator.create(DependenciesStep);
-    vcpkg_step.* = try DependenciesStep.init(b, "vcpkg", target.result, env);
-    try vcpkg_step.vcpkg(option_triplet);
-    vcpkg_cmd.dependOn(&vcpkg_step.step);
+    try dependencies_step.vcpkg(option_triplet);
+    vcpkg_cmd.dependOn(&dependencies_step.step);
 
     const system_libs_available = option_system_glslang and option_system_wolfssl and option_system_nfd and option_system_glfw;
     if (system_libs_available) {
@@ -619,8 +594,8 @@ pub fn build(b: *std.Build) !void {
         try addVcpkgInstalledPaths(b, deshader_lib, option_triplet, option_lib_debug);
         try addVcpkgInstalledPaths(b, launcher_exe, option_triplet, option_lib_debug);
         try addVcpkgInstalledPaths(b, serve, option_triplet, option_lib_debug); // add WolfSSL from VCPKG to serve
-        deshader_lib.step.dependOn(&vcpkg_step.step);
-        launcher_exe.step.dependOn(&vcpkg_step.step);
+        deshader_lib.step.dependOn(&dependencies_step.step);
+        launcher_exe.step.dependOn(&dependencies_step.step);
     }
 
     //
@@ -671,7 +646,9 @@ pub fn build(b: *std.Build) !void {
             else
                 try linkVcpkgLibrary(example_glfw.compile, "glfw3", option_triplet, option_lib_debug);
             example_glfw.compile.linkLibC();
-            example_glfw.compile.linkSystemLibrary("x11");
+            if (targetTarget == .linux) {
+                example_glfw.compile.linkSystemLibrary("x11");
+            }
 
             const example_sdf = try SubExampleStep.create(example_bootstraper, sub_examples.sdf, "examples/" ++ sub_examples.sdf ++ ".zig", exampleModules ++ .{.{ .name = "zig_glfw", .module = zig_glfw_dep.module("zig-glfw") }});
             try addVcpkgInstalledPaths(b, example_sdf.compile, option_triplet, option_lib_debug);
@@ -679,7 +656,9 @@ pub fn build(b: *std.Build) !void {
                 example_sdf.compile.linkSystemLibrary("glfw3")
             else
                 try linkVcpkgLibrary(example_sdf.compile, "glfw3", option_triplet, option_lib_debug);
-            example_sdf.compile.linkSystemLibrary("x11");
+            if (targetTarget == .linux) {
+                example_sdf.compile.linkSystemLibrary("x11");
+            }
             example_sdf.compile.linkLibC();
 
             // Editor
@@ -694,7 +673,9 @@ pub fn build(b: *std.Build) !void {
                 example_glfw_cpp.compile.linkSystemLibrary("glfw3")
             else
                 try linkVcpkgLibrary(example_glfw_cpp.compile, "glfw3", option_triplet, option_lib_debug);
-            example_glfw_cpp.compile.linkSystemLibrary("x11");
+            if (targetTarget == .linux) {
+                example_glfw_cpp.compile.linkSystemLibrary("x11");
+            }
             try addVcpkgInstalledPaths(b, example_glfw_cpp.compile, option_triplet, option_lib_debug);
             if (targetTarget == .macos) {
                 example_glfw_cpp.compile.linkFramework("OpenGL");
@@ -755,11 +736,11 @@ pub fn build(b: *std.Build) !void {
             try linkGlew(example_debug_commands.install, option_system_glew, option_triplet, option_lib_debug);
 
             if (!system_libs_available) {
-                example_glfw_cpp.compile.step.dependOn(&vcpkg_step.step);
-                example_sdf.compile.step.dependOn(&vcpkg_step.step);
-                example_glfw.compile.step.dependOn(&vcpkg_step.step);
-                example_debug_commands.compile.step.dependOn(&vcpkg_step.step);
-                example_editor_linked_cpp.compile.step.dependOn(&vcpkg_step.step);
+                example_glfw_cpp.compile.step.dependOn(&dependencies_step.step);
+                example_sdf.compile.step.dependOn(&dependencies_step.step);
+                example_glfw.compile.step.dependOn(&dependencies_step.step);
+                example_debug_commands.compile.step.dependOn(&dependencies_step.step);
+                example_editor_linked_cpp.compile.step.dependOn(&dependencies_step.step);
                 _ = try installVcpkgLibrary(example_debug_commands.install, "glfw3", option_triplet, option_lib_debug);
                 _ = try installVcpkgLibrary(example_glfw_cpp.install, "glfw3", option_triplet, option_lib_debug);
                 _ = try installVcpkgLibrary(example_sdf.install, "glfw3", option_triplet, option_lib_debug);
@@ -781,6 +762,34 @@ pub fn build(b: *std.Build) !void {
         examples_run_cmd.dependOn(&laucher_install.step);
         examples_run_cmd.dependOn(stub_gen_cmd);
     }
+
+    //
+    // VCPKG libraries - must be at the end of configure phase, for the DependenciesStep to be correctly populated
+    //
+
+    // WolfSSL - a serve's dependency
+    option_system_wolfssl = option_system_wolfssl and try systemHasLib(deshader_lib, host_libs_location, "wolfssl");
+    if (try linkWolfSSL(&deshader_lib.root_module, deshader_lib_install, !option_system_wolfssl, option_triplet, option_lib_debug)) |lib_name| {
+        try deshader_dependent_dlls.append(lib_name);
+    }
+    try linkVcpkgLibrary(serve, "wolfssl", option_triplet, option_lib_debug);
+
+    // Native file dialogs library
+    option_system_nfd = option_system_nfd and try systemHasLib(deshader_lib, host_libs_location, "nfd");
+    try nfd(deshader_lib, option_system_nfd, option_triplet, option_lib_debug);
+
+    // GLSLang
+    inline for (.{ "glslang", "glslang-default-resource-limits", "MachineIndependent", "GenericCodeGen" }) |l| {
+        const lib_name = if (targetTarget == .windows) if (b.release_mode == .off) l ++ "d" else l else l;
+        option_system_glslang = option_system_glslang and try systemHasLib(deshader_lib, host_libs_location, lib_name);
+
+        try linkVcpkgLibrary(deshader_lib, lib_name, option_triplet, option_lib_debug);
+        if (!option_system_glslang) {
+            _ = try installVcpkgLibrary(deshader_lib_install, lib_name, option_triplet, option_lib_debug);
+        }
+    }
+
+    option_system_glfw = option_system_glfw and try systemHasLib(deshader_lib, host_libs_location, "glfw3");
 
     //
     // Tests
@@ -919,14 +928,22 @@ fn addVcpkgInstalledPaths(b: *std.Build, c: anytype, triplet: ?String, debug_lib
 fn linkVcpkgLibrary(compile: anytype, name: String, triplet: ?String, debug: bool) !void {
     const b = if (@hasField(@TypeOf(compile.*), "step")) compile.step.owner else compile.owner;
     const target = if (@hasDecl(@TypeOf(compile.*), "rootModuleTarget")) compile.rootModuleTarget() else if (compile.resolved_target) |r| r.result else builtin.target;
-    const vcpkg_dir = try b.build_root.handle.realpathAlloc(b.allocator, b.pathJoin(&.{ "build", "vcpkg_installed", triplet orelse try vcpkgTriplet(b.allocator, target, debug) }));
-    defer b.allocator.free(vcpkg_dir);
+
+    const vcpkg_dir = b.pathJoin(&.{ "build", "vcpkg_installed", triplet orelse try vcpkgTriplet(b.allocator, target, debug), if (debug) "debug" else "" });
+    b.build_root.handle.access(vcpkg_dir, .{}) catch {
+        // VCPKG libraries were not installed previously so all our check would fail. We must wait for VCpkg to install them.
+        log.debug("Starting VCPKG installation in configuration phase", .{});
+        try DependenciesStep.doAll(&dependencies_step.step, std.Progress.Node{ .index = .none });
+    };
+
+    const vcpkg_dir_real = try b.build_root.handle.realpathAlloc(b.allocator, vcpkg_dir);
+    defer b.allocator.free(vcpkg_dir_real);
 
     inline for (.{ "lib", "" }) |prefix| {
-        if (try fileWithPrefixExists(b.allocator, vcpkg_dir, try std.mem.concat(b.allocator, u8, &.{ "lib", std.fs.path.sep_str, prefix, name, target.staticLibSuffix() }))) |full_name| {
+        if (try fileWithPrefixExists(b.allocator, vcpkg_dir_real, try std.mem.concat(b.allocator, u8, &.{ "lib", std.fs.path.sep_str, prefix, name, target.staticLibSuffix() }))) |full_name| {
             compile.addObjectFile(.{ .cwd_relative = full_name });
             return;
-        } else if (try fileWithPrefixExists(b.allocator, vcpkg_dir, try std.mem.concat(b.allocator, u8, &.{ "bin", std.fs.path.sep_str, prefix, name, target.staticLibSuffix() }))) |full_name| {
+        } else if (try fileWithPrefixExists(b.allocator, vcpkg_dir_real, try std.mem.concat(b.allocator, u8, &.{ "bin", std.fs.path.sep_str, prefix, name, target.staticLibSuffix() }))) |full_name| {
             compile.addObjectFile(.{ .cwd_relative = full_name });
             return;
         }
