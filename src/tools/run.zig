@@ -163,17 +163,9 @@ pub fn main() !u8 {
     } else {
         if (whitelist) {
             // Whitelist only the target process
-            const old_whitelist_processes = common.env.get(common.env_prefix ++ "PROCESS");
             const process_name = std.fs.path.basename(args[next_arg]);
-            if (old_whitelist_processes != null) {
-                const merged = try std.fmt.allocPrint(common.allocator, "{s},{s}", .{ old_whitelist_processes.?, process_name });
-                defer common.allocator.free(merged);
-                common.env.set(common.env_prefix ++ "PROCESS", merged);
-                LauncherLog.debug("Setting DESHADER_PROCESS to {s}", .{merged});
-            } else {
-                common.env.set(common.env_prefix ++ "PROCESS", process_name);
-                LauncherLog.debug("Setting DESHADER_PROCESS to {s}", .{process_name});
-            }
+            try common.env.appendList(common.env_prefix ++ "PROCESS", process_name);
+            LauncherLog.debug("Setting DESHADER_PROCESS to {?s}", .{common.env.get(common.env_prefix ++ "PROCESS")});
         }
         try run(args[next_arg..], target_cwd, null, yes);
     }
@@ -314,17 +306,15 @@ fn run(target_argv: []const String, working_dir: ?String, env: ?std.StringHashMa
     child.cwd_dir = if (working_dir) |w| if (std.fs.path.isAbsolute(w)) if (std.fs.openDirAbsolute(w, .{ .access_sub_paths = false }) catch null) |dir| dir else null else null else null;
     defer if (child.cwd_dir) |*d| d.close();
 
-    var child_envs = try std.process.getEnvMap(common.allocator);
-    defer child_envs.deinit();
     if (env) |wanted_env| {
         var it = wanted_env.iterator();
         while (it.next()) |entry| {
-            try child_envs.put(entry.key_ptr.*, entry.value_ptr.*);
+            common.env.set(entry.key_ptr.*, entry.value_ptr.*);
         }
     }
 
     if (specified_libs_dir orelse OriginalLibDir) |dir| {
-        try child_envs.put(common.env_prefix ++ "LIB_ROOT", dir);
+        common.env.set(common.env_prefix ++ "LIB_ROOT", dir);
         LauncherLog.debug("Setting DESHADER_LIB_ROOT to {s}", .{dir});
     }
     if (builtin.os.tag == .windows) {
@@ -355,24 +345,15 @@ fn run(target_argv: []const String, working_dir: ?String, env: ?std.StringHashMa
         }
         const extra_lib_paths = common.env.get(common.env_prefix ++ "HOOK_LIBS");
         if (extra_lib_paths) |eln| {
-            var extra_lib_it = std.mem.splitScalar(u8, eln, ',');
+            var extra_lib_it = std.mem.splitScalar(u8, eln, ':');
             while (extra_lib_it.next()) |lib| {
                 try symlinkLibToLib(cwd, local_deshader, symlink_dir, lib, yes);
             }
         }
     } else {
-        const insert_libraries_var = switch (builtin.os.tag) {
-            .macos => "DYLD_INSERT_LIBRARIES",
-            .linux => "LD_PRELOAD",
-            else => unreachable,
-        };
-        const old_ld_preload = child_envs.get(insert_libraries_var);
-        const ld_preload = if (old_ld_preload != null) try std.fmt.allocPrint(common.allocator, "{s},{s}", .{ old_ld_preload.?, deshader_path }) else deshader_path;
-        defer if (old_ld_preload != null) common.allocator.free(ld_preload);
-
-        try child_envs.put(insert_libraries_var, ld_preload);
+        try common.env.appendList(common.env.library_preload, deshader_path);
     }
-    child.env_map = &child_envs;
+    child.env_map = common.env.getMap();
     child.stderr_behavior = .Inherit;
     child.stdout_behavior = .Inherit;
     child.stdin_behavior = .Inherit;

@@ -471,8 +471,8 @@ pub fn build(b: *std.Build) !void {
         // Add the file names as an option to the exe, making it available
         // as a string array at comptime in main.zig
         options.addOption([]const String, "files", files.items);
-        options.addOption(String, "editorDir", editor_directory);
-        options.addOption(String, "editorDirRelative", try std.fs.path.relative(b.allocator, b.lib_dir, b.pathFromRoot(editor_directory)));
+        options.addOption(String, "editor_dir", editor_directory);
+        options.addOption(String, "editor_dir_relative", try std.fs.path.relative(b.allocator, if (targetTarget == .windows) b.exe_dir else b.lib_dir, b.pathFromRoot(editor_directory)));
         options.addOption(bool, "editor", option_editor);
         deshader_lib.root_module.addOptions("options", options);
 
@@ -500,7 +500,7 @@ pub fn build(b: *std.Build) !void {
             .optimize = optimize,
         });
         const heade_gen_opts = b.addOptions();
-        heade_gen_opts.addOption(String, "h_dir", try hostToTargetPath(b.allocator, targetTarget, b.pathJoin(&.{ b.h_dir, "deshader" }), host_libs_location));
+        heade_gen_opts.addOption(String, "h_dir", b.pathJoin(&.{ b.h_dir, "deshader" }));
         header_gen.root_module.addOptions("options", heade_gen_opts);
         header_gen.root_module.addAnonymousImport("header_gen", .{
             .root_source_file = b.path("libs/zig-header-gen/src/header_gen.zig"),
@@ -553,7 +553,6 @@ pub fn build(b: *std.Build) !void {
     launcher_exe.root_module.stack_protector = option_stack_protector;
     launcher_exe.root_module.valgrind = option_valgrind;
     launcher_exe.each_lib_rpath = false;
-    launcher_exe.pie = true;
     launcher_exe.root_module.addAnonymousImport("common", .{
         .root_source_file = b.path("src/common.zig"),
         .imports = &.{
@@ -569,8 +568,8 @@ pub fn build(b: *std.Build) !void {
         else => {},
     }
 
-    const laucher_install = b.addInstallArtifact(launcher_exe, .{});
-    _ = b.step("launcher", "Build Deshader Launcher - a utility to run any application with Deshader").dependOn(&laucher_install.step);
+    const launcher_install = b.addInstallArtifact(launcher_exe, .{});
+    _ = b.step("launcher", "Build Deshader Launcher - a utility to run any application with Deshader").dependOn(&launcher_install.step);
 
     const launcher_options = b.addOptions();
     launcher_options.addOption(String, "deshaderLibName", deshader_lib_name);
@@ -620,7 +619,7 @@ pub fn build(b: *std.Build) !void {
             const editor_linked_cpp = "editor_linked_cpp";
         };
         const example_options = b.addOptions();
-        example_options.addOption([]const String, "exampleNames", &.{ sub_examples.glfw, sub_examples.editor, sub_examples.debug_commands, sub_examples.glfw_cpp });
+        example_options.addOption([]const String, "exampleNames", &.{ sub_examples.glfw, sub_examples.editor, sub_examples.editor_linked_cpp, sub_examples.debug_commands, sub_examples.glfw_cpp });
         example_bootstraper.root_module.addOptions("options", example_options);
         example_bootstraper.step.dependOn(header_gen_cmd);
 
@@ -694,7 +693,11 @@ pub fn build(b: *std.Build) !void {
             // Editor in C++
             const example_editor_linked_cpp = try SubExampleStep.create(example_bootstraper, sub_examples.editor_linked_cpp, "examples/editor_linked.cpp", .{});
             example_editor_linked_cpp.compile.addIncludePath(.{ .cwd_relative = b.h_dir });
-            example_editor_linked_cpp.compile.linkLibrary(deshader_lib);
+            example_editor_linked_cpp.compile.linkSystemLibrary("deshader");
+            example_editor_linked_cpp.compile.addLibraryPath(.{ .cwd_relative = if (targetTarget == .windows) b.exe_dir else b.lib_dir });
+            example_editor_linked_cpp.compile.each_lib_rpath = false;
+            example_editor_linked_cpp.compile.step.dependOn(&deshader_lib_install.step);
+            example_editor_linked_cpp.compile.linkLibCpp();
 
             const example_debug_commands = try SubExampleStep.create(example_bootstraper, sub_examples.debug_commands, "examples/debug_commands.cpp", .{});
             example_debug_commands.compile.addIncludePath(.{ .cwd_relative = b.h_dir });
@@ -735,14 +738,16 @@ pub fn build(b: *std.Build) !void {
         examples_cmd.dependOn(&example_bootstraper_install.step);
 
         // Run examples by `deshader-run`
-        const examples_launcher = b.addRunArtifact(laucher_install.artifact);
+        const examples_run = b.addRunArtifact(launcher_install.artifact);
         const examples_run_cmd = b.step("examples-run", "Run example with injected Deshader debugging");
-        examples_launcher.setEnvironmentVariable("DESHADER_LIB", try std.fs.path.join(b.allocator, &.{ if (targetTarget == .windows) b.exe_dir else b.lib_dir, deshader_lib_name }));
-        examples_launcher.addArg(b.pathJoin(&.{ b.exe_dir, try std.mem.concat(b.allocator, u8, &.{ example_bootstraper.name, target.result.exeFileExt() }) }));
-        examples_run_cmd.dependOn(&example_bootstraper_install.step);
-        examples_run_cmd.dependOn(&examples_launcher.step);
-        examples_run_cmd.dependOn(&laucher_install.step);
-        examples_run_cmd.dependOn(stub_gen_cmd);
+        examples_run.setEnvironmentVariable("DESHADER_LIB", try std.fs.path.join(b.allocator, &.{ if (targetTarget == .windows) b.exe_dir else b.lib_dir, deshader_lib_name }));
+        examples_run.setCwd(.{ .cwd_relative = b.pathJoin(&.{ b.exe_dir, "deshader-examples" }) });
+        examples_run.setEnvironmentVariable("DESHADER_PROCESS", "glfw:glfw_cpp:editor:debug_commands");
+        examples_run.setEnvironmentVariable((if (targetTarget == .macos) "DYLD_LIBRARY_PATH" else "LD_LIBRARY_PATH"), b.lib_dir);
+        examples_run.addArg("-no-whitelist");
+        examples_run.addArg(b.pathJoin(&.{ b.exe_dir, try std.mem.concat(b.allocator, u8, &.{ example_bootstraper.name, target.result.exeFileExt() }) }));
+        examples_run.step.dependOn(&example_bootstraper_install.step);
+        examples_run_cmd.dependOn(&examples_run.step);
     }
 
     //
@@ -1059,6 +1064,7 @@ fn nfd(c: *std.Build.Step.Compile, prefer_system: bool, triplet: ?String, debug:
     }
 }
 
+// TODO use zig.system.NativePaths
 fn getLdConfigPath(b: *std.Build) String { // searches for libGL
     const output = b.run(&.{ "ldconfig", "-p" });
     defer b.allocator.free(output);

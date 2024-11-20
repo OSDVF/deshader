@@ -90,3 +90,41 @@ pub fn remove(name: String) void {
 pub fn get(name: String) ?String {
     return env.get(name);
 }
+
+// Append to colon-separated list
+pub fn appendList(name: String, value: String) !void {
+    const old = env.get(name);
+    const new = if (old) |o| try std.fmt.allocPrint(allocator, "{s}:{s}", .{ o, value }) else value;
+    defer if (old != null) allocator.free(new);
+
+    set(name, new);
+}
+
+pub fn removeList(name: String, needle: String) !void {
+    if (env.get(name)) |old| {
+        var it = std.mem.splitScalar(u8, old, ':');
+        var new = std.ArrayList(u8).init(allocator);
+        defer new.deinit();
+
+        while (it.next()) |part| {
+            if (std.mem.eql(u8, part, needle)) {
+                continue;
+            }
+            if (new.items.len > 0) {
+                try new.append(':');
+            }
+            try new.appendSlice(part);
+        }
+        if (new.items.len == 0) {
+            remove(name);
+        } else {
+            set(name, new.items);
+        }
+    }
+}
+
+pub const library_preload = switch (builtin.os.tag) {
+    .macos => "DYLD_INSERT_LIBRARIES",
+    .linux => "LD_PRELOAD",
+    else => @compileError("Unsupported OS"),
+};

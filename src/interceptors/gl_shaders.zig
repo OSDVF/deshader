@@ -1473,8 +1473,26 @@ pub export fn glDebugMessageInsert(source: gl.@"enum", _type: gl.@"enum", id: gl
             else => {},
         }
     }
-    gl.DebugMessageInsert(source, _type, id, severity, length, buf);
+    callIfLoaded("DebugMessageInsert", .{ source, _type, id, severity, length, buf });
 }
+
+fn callIfLoaded(comptime proc: String, a: anytype) voidOrOptional(returnType(@field(gl, proc))) {
+    const proc_ret = returnType(@field(gl, proc));
+    return if (state.get(current)) |s| if (s.proc_table) |t| if (@intFromPtr(@field(t, proc)) != 0) @call(.auto, @field(gl, proc), a) else voidOrNull(proc_ret) else voidOrNull(proc_ret) else voidOrNull(proc_ret);
+}
+
+fn voidOrOptional(comptime t: type) type {
+    return if (t == void) void else ?t;
+}
+
+fn voidOrNull(comptime t: type) if (t == void) void else null {
+    if (t == void) {} else return null;
+}
+
+fn returnType(t: anytype) type {
+    return @typeInfo(@TypeOf(t)).Fn.return_type.?;
+}
+
 const ids_array = blk: {
     const ids_decls = @typeInfo(ids).Struct.decls;
     var command_count = 0;
