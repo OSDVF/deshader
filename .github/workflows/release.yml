@@ -17,13 +17,14 @@
 # The release will have the tag name as the title.
 # The tag description will be used as the body, concatenated with the commit message.
 # If tag description contains the text "Release", the release will be marked as a stable release.
+# Include 'skip clean' in the commit message to prevent the deletion of the built artifacts.
+
 # The release will contain the following files:
 # - deshader-git-*.deb for each Ubuntu version
 # - deshader-git-*.tar.zst for Arch
 # - deshader-git-windows-*.zip
 # - deshader-git-macos-*.zip
 
-# Include 'skip clean' in the commit message to prevent the deletion of the built artifacts.
 
 name: release
 on:
@@ -39,7 +40,7 @@ permissions:
 jobs:
   create-release:
     runs-on: ubuntu-latest
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -48,6 +49,12 @@ jobs:
       - name: Get tag description
         id: tag-desc
         run: echo "desc=`git tag -l --format='%(contents:subject)' $(git describe --tags --abbrev=0 --exact-match)`" >> $GITHUB_OUTPUT
+        continue-on-error: true
+
+      - name: Get commit message
+        id: commit-msg
+        run: echo "msg=`git log --format=%B -n 1`" >> $GITHUB_OUTPUT
+        continue-on-error: true
       
       - name: Download artifacts
         uses: actions/download-artifact@v4
@@ -58,12 +65,12 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           prerelease: ${{ !contains(steps.tag-desc.outputs.desc, 'Release') }}
-          body: "${{ steps.tag-desc.outputs.desc }}\n${{ github.event.workflow_run.head_commit.message }}"
+          body: "${{ steps.tag-desc.outputs.desc }}\n${{ steps.commit-msg.outputs.msg }}"
           files: deshader-git*
           
       - name: Remove built artifacts
         uses: geekyeggo/delete-artifact@v5
-        if: ${{ !contains(github.event.workflow_run.head_commit.message, 'skip clean')}}
+        if: ${{ !contains(steps.commit-msg.outputs.msg, 'skip clean')}}
         with:
           name: deshader-*
           failOnError: false

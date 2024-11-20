@@ -10,18 +10,18 @@
             "preLaunchTask": "Build Launcher",
             "arguments": "-y zig-out/bin/deshader-examples/glfw",
             "env": {
-                "DESHADER_LIB": "zig-out/lib",
+                "DESHADER_LIB": "zig-out/lib/libdeshader.so",
             },
         },
         {
             "name": "GDB - Launcher GUI",
             "type": "gdb",
             "request": "launch",
-            "cwd": "${workspaceRoot}",
-            "target": "./zig-out/bin/deshader-run",
-            "preLaunchTask": "Build Launcher",
+            "cwd": "${workspaceRoot}/..",
+            "target": "./deshader/zig-out/bin/deshader-run",
+            "arguments": "-version",
             "env": {
-                "DESHADER_LIB": "zig-out/lib",
+                "DESHADER_LIB": "deshader/zig-out/lib",
                 "DESHADER_IGNORE_PROCESS": "gdb,zsh,llvm-symbolizer,code",
             },
         },
@@ -33,12 +33,6 @@
             "args": [
                 "-y",
                 "zig-out/bin/deshader-examples/glfw.exe"
-            ],
-            "environment": [
-                {
-                    "name": "DESHADER_LIB",
-                    "value": "${workspaceRoot}/zig-out/bin/deshader.dll"
-                }
             ],
             "preLaunchTask": "Build Launcher",
             "cwd": "${workspaceRoot}"
@@ -73,27 +67,33 @@
             "type": "gdb",
             "request": "launch",
             "name": "GDB - Examples",
-            "target": "./zig-out/bin/examples",
+            "target": "${workspaceRoot}/zig-out/bin/deshader-examples-all",
             "cwd": "${workspaceRoot}",
             "valuesFormatting": "parseText",
             "preLaunchTask": "Build Examples",
+            "autorun": [
+                "set environment LD_PRELOAD ${workspaceRoot}/zig-out/lib/libdeshader.so",
+                "set environment DYLD_INSERT_LIBRARIES ${workspaceRoot}/zig-out/lib/libdeshader.dylib",
+            ],
             "env": {
-                "LD_PRELOAD": "${workspaceRoot}/zig-out/lib/libdeshader.so",
-                "DYLD_INSERT_LIBRARIES": "${workspaceRoot}/zig-out/lib/libdeshader.dylib",
-            }
+                "DESHADER_IGNORE_PROCESS": "gdb,zsh,deshader-examples-all",
+            },
         },
         {
             "type": "gdb",
             "request": "launch",
             "name": "GDB - Editor",
-            "target": "./zig-out/bin/deshader-examples/editor",
-            "cwd": "${workspaceRoot}",
+            "target": "../bin/deshader-examples/editor",
+            "cwd": "${workspaceRoot}/zig-out/lib",
             "valuesFormatting": "parseText",
             "preLaunchTask": "Build Examples",
             "env": {
                 "DESHADER_COMMANDS_WS": "8082",
                 "DESHADER_IGNORE_PROCESS": "gdb,zsh",
-            }
+            },
+            "autorun": [
+                "set environment LD_PRELOAD ${workspaceRoot}/zig-out/lib/libdeshader.so"
+            ],
         },
         {
             "type": "gdb",
@@ -104,21 +104,44 @@
             "valuesFormatting": "parseText",
             "preLaunchTask": "Build Examples",
             "autorun": [
-                "set environment LD_PRELOAD ${workspaceRoot}/zig-out/lib/libdeshader.so"
+                "set environment LD_PRELOAD ${workspaceRoot}/zig-out/lib/libdeshader.so",
+                "set environment DYLD_INSERT_LIBRARIES ${workspaceRoot}/zig-out/lib/libdeshader.dylib"
             ],
             "env": {
                 "DESHADER_IGNORE_PROCESS": "gdb,zsh",
-                "DYLD_INSERT_LIBRARIES": "${workspaceRoot}/zig-out/lib/libdeshader.dylib",
                 "DESHADER_COMMANDS_WS": "8082",
                 "DESHADER_START_SERVER": "1",
                 "DESHADER_LSP": "8083",
+                "DESHADER_GUI": "1",
                 "POWER_SAVE": "100",
                 "__NV_PRIME_RENDER_OFFLOAD": "0",
-                "__GLX_VENDOR_LIBRARY_NAME": "mesa"
+                "G_DEBUG_MESSAGES": "all",
+                
             }
         },
         {
             "type": "gdb",
+            "request": "launch",
+            "name": "GDB - SDF",
+            "target": "./zig-out/bin/deshader-examples/sdf",
+            "cwd": "${workspaceRoot}",
+            "valuesFormatting": "parseText",
+            "preLaunchTask": "Build Examples",
+            "autorun": [
+                "set environment LD_PRELOAD ${workspaceRoot}/zig-out/lib/libdeshader.so"
+            ],
+            "env": {
+                "DESHADER_IGNORE_PROCESS": "gdb,zsh",
+                "DESHADER_LIB_ROOT": "/usr/lib/",
+                "DESHADER_COMMANDS_WS": "8082",
+                "DESHADER_START_SERVER": "1",
+                "DESHADER_LSP": "8083",
+                "POWER_SAVE": "100",
+                
+            }
+        },
+        {
+            "type": "cppvsdbg",
             "request": "launch",
             "name": "Windows - GLFW",
             "target": "${workspaceRoot}\\zig-out\\bin\\deshader-examples\\glfw.exe",
@@ -179,6 +202,10 @@
             "cwd": "${workspaceRoot}",
             "valuesFormatting": "parseText",
             "preLaunchTask": "Build Examples",
+            "env": {
+                "LD_LIBRARY_PATH": "${workspaceRoot}/zig-out/lib",
+                "DYLD_LIBRARY_PATH": "${workspaceRoot}/zig-out/lib",
+            },
         },
         {
             "type": "gdb",
@@ -218,6 +245,10 @@
             "cwd": "${workspaceRoot}",
             "valuesFormatting": "parseText",
             "preLaunchTask": "Build Examples",
+            "autorun": [
+                "set environment LD_PRELOAD ${workspaceRoot}/zig-out/lib/libdeshader.so",
+                "set environment DYLD_INSERT_LIBRARIES ${workspaceRoot}/zig-out/lib/libdeshader.dylib"
+            ]
         },
         {
             "type": "gdb",

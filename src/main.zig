@@ -74,6 +74,30 @@ pub export fn deshaderEditorServerStop() usize {
 
 pub export fn deshaderEditorWindowShow() usize {
     DeshaderLog.debug("Show editor window", .{});
+
+    if (common.selfExePathAlloc(common.allocator)) |exe_path| {
+        const exe_basename = std.fs.path.basename(exe_path);
+        const whitelist_env = common.env_prefix ++ "PROCESS";
+        // add to whitelist
+        if (common.env.get(whitelist_env)) |whitelist| {
+            if (std.mem.indexOf(u8, whitelist, exe_basename) == null) {
+                DeshaderLog.debug("Adding {s} to process whitelist", .{exe_basename});
+                common.env.appendList(whitelist_env, exe_basename) catch {};
+            }
+        }
+
+        // remove from blacklist
+        const blacklist_env = common.env_prefix ++ "PROCESS_IGNORE";
+        if (common.env.get(blacklist_env)) |blacklist| {
+            if (std.mem.indexOf(u8, blacklist, exe_basename) != null) {
+                DeshaderLog.debug("Removing {s} from process blacklist", .{exe_basename});
+                common.env.removeList(blacklist_env, exe_basename) catch {};
+            }
+        }
+    } else |err| {
+        DeshaderLog.err("Failed to get exe path: {any}", .{err});
+    }
+
     if (options.editor) {
         gui.editorShow(common.command_listener) catch |err| {
             DeshaderLog.err(err_format, .{ @src().fn_name, err });

@@ -174,10 +174,10 @@ pub fn checkIgnoredProcess() void {
             set_reported_process_name = true;
         }
 
-        const only_process_env = common.env.get(common.env_prefix ++ "PROCESS");
-        if (only_process_env) |only| {
+        const whitelist_process_env = common.env.get(common.env_prefix ++ "PROCESS");
+        if (whitelist_process_env) |whitelist| {
             ignored_this = true;
-            var it = std.mem.splitScalar(u8, only, ',');
+            var it = std.mem.splitScalar(u8, whitelist, ':');
             while (it.next()) |p_name| {
                 if (std.mem.endsWith(u8, self_path, p_name)) {
                     if (!reported_process_name) {
@@ -188,17 +188,17 @@ pub fn checkIgnoredProcess() void {
                 }
             }
             if (ignored_this and !reported_process_name) {
-                DeshaderLog.debug("{s} not on whitelist: {s}", .{ self_path, only });
+                DeshaderLog.debug("{s} not on whitelist: {s}", .{ self_path, whitelist });
             }
         }
         // balcklist
         const ignore_process_env = common.env.get(common.env_prefix ++ "IGNORE_PROCESS");
-        if (ignore_process_env != null) {
-            var it = std.mem.splitScalar(u8, ignore_process_env.?, ',');
+        if (ignore_process_env) |blacklist| {
+            var it = std.mem.splitScalar(u8, blacklist, ':');
             while (it.next()) |p_name| {
                 if (std.mem.endsWith(u8, self_path, p_name)) {
                     if (!reported_process_name) {
-                        DeshaderLog.debug("Ignoring processes {s}", .{ignore_process_env.?});
+                        DeshaderLog.debug("Ignoring processes {s}", .{blacklist});
                     }
                     ignored_this = true;
                     break;
@@ -347,7 +347,7 @@ pub fn loadGlLib() !void {
     {
         var names = std.ArrayList(String).init(common.allocator);
         if (customLib) |lib_name| {
-            var split = std.mem.splitScalar(u8, lib_name, ',');
+            var split = std.mem.splitScalar(u8, lib_name, ':');
             while (split.next()) |name| {
                 try names.append(name);
             }
@@ -357,7 +357,7 @@ pub fn loadGlLib() !void {
     const customProcLoaders = common.env.get(common.env_prefix ++ "GL_PROC_LOADERS");
     var names = std.ArrayList(String).init(common.allocator);
     if (customProcLoaders != null) {
-        var it = std.mem.splitScalar(u8, customProcLoaders.?, ',');
+        var it = std.mem.splitScalar(u8, customProcLoaders.?, ':');
         while (it.next()) |name| {
             names.append(name) catch |err|
                 DeshaderLog.err("Failed to allocate memory for custom GL procedure loader name: {any}", .{err});

@@ -115,7 +115,7 @@ pub fn createEditorProvider(command_listener: ?*const commands.CommandListener) 
     defer if (dll_dir) |*d| d.close();
     if (builtin.mode == .Debug) {
         // Let the provider read the files at runtime in debug mode
-        const editor_dir_path = try std.fs.path.join(provider.allocator, if (std.fs.path.dirname(dll_path)) |d| &.{ d, options.editorDirRelative } else &.{options.editorDir});
+        const editor_dir_path = try std.fs.path.join(provider.allocator, if (std.fs.path.dirname(dll_path)) |d| &.{ d, options.editor_dir_relative } else &.{options.editor_dir});
         try provider.embedded.append(positron.Provider.EmbedDir{ .address = "/", .path = editor_dir_path, .resolveMime = &resolveMime });
     }
     inline for (options.files) |file| {
@@ -127,8 +127,8 @@ pub fn createEditorProvider(command_listener: ?*const commands.CommandListener) 
             comptime continue; // Do not include sourcemaps in release builds
         }
 
-        const f_address = file[options.editorDir.len..];
-        // assume all paths start with `options.editorDir`
+        const f_address = file[options.editor_dir.len..];
+        // assume all paths start with `options.editor_dir`
         const compressed_or_content = if (builtin.mode != .Debug) @embedFile(file);
         if (comptime std.mem.eql(u8, f_address, "/deshader-vscode/dist/extension.js")) {
             // Inject editor config into Deshader extension
@@ -139,7 +139,7 @@ pub fn createEditorProvider(command_listener: ?*const commands.CommandListener) 
                 var decompressed_data: String = undefined;
                 if (cl.ws_config != null or cl.http != null) {
                     if (builtin.mode == .Debug) {
-                        const handle = try if (dll_dir) |d| d.openFile(options.editorDirRelative ++ f_address, .{}) else std.fs.cwd().openFile(file, .{});
+                        const handle = try if (dll_dir) |d| d.openFile(options.editor_dir_relative ++ f_address, .{}) else std.fs.cwd().openFile(file, .{});
                         defer handle.close();
                         decompressed_data = try handle.readToEndAlloc(provider.allocator, provider.max_file_size);
                     } else {

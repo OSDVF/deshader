@@ -7,7 +7,7 @@ Name      | Default                                                   | Descript
 ----------|-----------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 LIB_ROOT  | `/usr/lib` / `C:\Windows\System32`                        | Override the default path to the folder where the original libraries are located
 LIB       | \[app work dir\]/`libdeshader.so`/`.dylib`/`deshader.dll` | Directory/complete path to Deshader library. If the laucher does not succeed in finding the library and it was started with the GUI, it will show an open dialog to select the library
-HOOK_LIBS | none                                                      | Set to comma separated list of **additional** libraries to replace with Deshader library (defaults always included)
+HOOK_LIBS | none                                                      | Set to colon-separated list of **additional** libraries to replace with Deshader library (defaults always included)
 ### Deshader library
 Name              | Default                            | Description
 ------------------|------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------
@@ -19,16 +19,17 @@ COMMANDS_HTTP     | none                               | Port for HTTP server li
 COMMANDS_WS       | 8082                               | Port for WebSocket server listening to Deshader commands (disabled by default)
 LSP               | none                               | Port for GLSL Language Server (based on [glsl_analyzer](https://github.com/nolanderc/glsl_analyzer/)) WebSocket
 GL_LIBS           | platform-specific                  | Paths to libraries from which the original GL functions will be loaded
-GL_PROC_LOADERS   | none                               | Specify additional lodader functions that will be called to retrieve GL function pointers[^1]
-SUBSTITUTE_LOADER | `false`                            | Specify `1`, `yes` or `true` for calling `DESHADER_GL_PROC_LOADERS` instead of standard GL loader functions internally[^2]
+GL_PROC_LOADERS   | none                               | Specify additional lodader functions that will be called to retrieve GL function pointers[^1][^2]
+SUBSTITUTE_LOADER | `false`                            | Specify `1`, `yes` or `true` for calling `DESHADER_GL_PROC_LOADERS` instead of standard GL loader functions internally[^3]
 HOOKED            | reserved                           | Do not set this variable. IT is used by Deshader internally as a flag of already hooked app
 EDITOR_URL        | reserved                           | Used internally as a startup URL for embedded Editor
 EDITOR_SHOWN      | reserved                           |
-IGNORE_PROCESS    | none                               | Comma separated list of process name postfixes that won't be intercepted. You may need to ignore `gdb,sh,bash,zsh,code,llvm-symbolizer`
-PROCESS           | none                               | Comma separated list of process name postfixes that will be intercepted. If set, `DESHADER_IGNORE_PROCESS` is ignored.
+IGNORE_PROCESS    | none                               | Process name postfixes that won't be intercepted. For example `gdb,sh,bash,zsh,code,llvm-symbolizer`[^1]
+PROCESS           | none                               | Process name postfixes that will be intercepted. If set, `DESHADER_IGNORE_PROCESS` is ignored.[^1]
 
-[^1]: Should be a comma separated list. The first found function will be used.
-[^2]: In this case `DESHADER_GL_PROC_LOADERS` must be a single function. Does not work on Mac OS.
+[^1]: Should be a colon-separated list.
+[^2]: The first found function will be used.
+[^3]: In this case `DESHADER_GL_PROC_LOADERS` must be a single function. Does not work on Mac OS.
 
 # Build Options
 Specify options as `-Doption=value` to `zig build` commands. See also `zig build --help`.  
