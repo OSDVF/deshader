@@ -40,6 +40,25 @@
             }
         },
         {
+            "label": "Create .zig-cache ramdisk",
+            "type": "shell",
+            "command": "sudo",
+            "args": [
+                "sh",
+                "-c",
+                "mkdir -p ${workspaceFolder}/.zig-cache && mount -t ramfs -o size=256m ramfs ${workspaceFolder}/.zig-cache && chmod 777 ${workspaceFolder}/.zig-cache"
+            ],
+            "problemMatcher": [],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": true,
+                "panel": "shared",
+                "showReuseMessage": true,
+                "clear": false
+            }
+        },
+        {
             "label": "Build Library",
             "command": "sh",
             "args": [

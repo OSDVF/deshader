@@ -274,6 +274,9 @@ pub fn editorShow(command_listener: ?*const commands.CommandListener) !void {
                         DeshaderLog.debug("Editor PID {d} watcher result {}", .{ gui_process.?.id, std.posix.errno(result) });
                         break :blk !(std.posix.W.IFEXITED(status) or std.posix.W.IFSTOPPED(status) or std.posix.W.IFSIGNALED(status));
                     }) {}
+                    if (global_provider) |gp| {
+                        gp.allocator.free(base_url);
+                    }
                 }
                 gui_process = null;
             }
@@ -387,9 +390,6 @@ pub fn guiProcess(url: String, title: ZString) !void {
         gui_process = null;
     }
     gui_mutex.unlock();
-    if (global_provider) |gp| {
-        gp.allocator.free(base_url);
-    }
 }
 
 fn resolveSelfDllTarget(allocator: std.mem.Allocator) !String {

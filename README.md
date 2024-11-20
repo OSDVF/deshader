@@ -89,7 +89,7 @@ Deshader consists of several (mostly third party; mostly forked) components that
 - [VCPKG](https://vcpkg.io) (MIT)
 - C libraries
     - Linux
-        - gtk-3 (LGPL-2.1) and webkit2gtk (BSD, LGPL-2.1)
+        - gtk-3 (LGPL-2.1) and webkit2gtk 4.0-4.1 (BSD, LGPL-2.1)
     - Windows
         - [Edge Dev Channel](https://www.microsoftedgeinsider.com/download)
         - WebView2 runtime

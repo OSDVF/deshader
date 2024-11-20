@@ -10,8 +10,8 @@
     },
     .dependencies = .{
         .zig_glfw = .{
-            .url = "https://github.com/griush/zig-glfw/archive/fd8aa407a461f02887e2f905ac1ce5e0b1ea13fe.tar.gz",
-            .hash = "1220852e3e3bf07492d465a2f61146613e5be82f9cc26b3889af98b76b0e18d29aa7",
+            .url = "https://github.com/osdvf/zig-glfw/archive/41056c8796243486ce65e210f6acfa7139382806.tar.gz",
+            .hash = "12206dfece8f7b90dfb1b0e24840a3beab027907f247aefb874b20a09052708cda92",
         },
         .vulkan_zig = .{
             .url = "https://github.com/Snektron/vulkan-zig/archive/84b9622f92284fd8d90bc29097da5e58ce51a27f.tar.gz",

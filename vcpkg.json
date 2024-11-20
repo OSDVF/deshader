@@ -8,6 +8,7 @@
       "glfw3",
       "wolfssl",
       "glslang-no-hlsl",
-      "nativefiledialog"
+      "nativefiledialog",
+      "vulkan"
     ]
   }

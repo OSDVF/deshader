@@ -28,8 +28,10 @@
 name: release
 on:
   workflow_run:
-    workflows: [package]
-    types: [completed]
+    workflows: [packages]
+    types:
+      - completed
+  workflow_dispatch:
 
 permissions:
   contents: write

@@ -1,6 +1,7 @@
 const std = @import("std");
 const glfw = @import("zig_glfw");
 const gl = @import("gl");
+const c = @cImport(@cInclude("GLFW/glfw3.h"));
 
 const log = std.log.scoped(.Engine);
 const gl_stack_trace = false;
@@ -11,7 +12,6 @@ const Severity = enum(usize) {
     medium = 2,
     high = 3,
 };
-const c = @cImport(@cInclude("GLFW/glfw3.h"));
 
 /// Default GLFW error handling callback
 fn errorCallback(error_code: glfw.ErrorCode, description: [:0]const u8) void {
