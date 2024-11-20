@@ -117,7 +117,7 @@ fn createWindow() ?glfw.Window {
     return glfw.Window.create(640, 480, "zig-glfw + zig-opengl", null, null, .{
         .opengl_profile = .opengl_core_profile,
         .context_version_major = 4,
-        .context_version_minor = 0,
+        .context_version_minor = 1,
         .context_debug = true,
     });
 }
@@ -152,7 +152,16 @@ pub fn main() !void {
     gl.makeProcTableCurrent(&procs);
     defer gl.makeProcTableCurrent(null);
 
-    gl.DebugMessageCallback(glDebugMessageCallback, null);
+    // Print renderer information
+    const renderer = gl.GetString(gl.RENDERER);
+    const version = gl.GetString(gl.VERSION);
+    log.info("Renderer: {?s} version {?s}", .{ renderer, version });
+
+    if (@intFromPtr(procs.DebugMessageCallback) != 0) {
+        gl.DebugMessageCallback(glDebugMessageCallback, null);
+        gl.Enable(gl.DEBUG_OUTPUT);
+        gl.Enable(gl.DEBUG_OUTPUT_SYNCHRONOUS);
+    }
 
     window.setFramebufferSizeCallback(onResize);
     const initial_size = window.getFramebufferSize();
@@ -171,17 +180,17 @@ pub fn main() !void {
     gl.DeleteShader(fragment);
 
     var vertex_buffer: gl.uint = undefined;
-    gl.CreateBuffers(1, &vertex_buffer);
+    gl.GenBuffers(1, (&vertex_buffer)[0..1]);
     defer gl.DeleteBuffers(1, (&vertex_buffer)[0..1]);
-    gl.NamedBufferData(vertex_buffer, vertex_data.len * @sizeOf(f32), &vertex_data, gl.STATIC_DRAW);
+    gl.BindBuffer(gl.ARRAY_BUFFER, vertex_buffer);
+    gl.BufferData(gl.ARRAY_BUFFER, vertex_data.len * @sizeOf(f32), &vertex_data, gl.STATIC_DRAW);
 
     var vao: gl.uint = undefined;
-    gl.CreateVertexArrays(1, &vao);
+    gl.GenVertexArrays(1, (&vao)[0..1]);
     defer gl.DeleteVertexArrays(1, (&vao)[0..1]);
     gl.BindVertexArray(vao);
     gl.EnableVertexAttribArray(0);
     gl.VertexAttribPointer(0, 2, gl.FLOAT, gl.FALSE, 0, 0);
-    gl.VertexArrayVertexBuffer(vao, 0, vertex_buffer, 0, 2 * @sizeOf(f32));
 
     gl.Disable(gl.CULL_FACE);
 

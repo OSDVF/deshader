@@ -13,13 +13,18 @@ int main(int argc, char** argv) {
     }
 
     glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
-    GLFWwindow* offscreen_window = glfwCreateWindow(640, 480, "", nullptr, nullptr);
-    if (!offscreen_window) {
-        std::cerr << "Failed to create GLFW window" << std::endl;
+    GLFWwindow* offscreen = glfwCreateWindow(640, 480, "", nullptr, nullptr);
+    if (!offscreen) {
+        // Try software renderer
+        glfwWindowHint(GLFW_CONTEXT_RENDERER, GLFW_SOFTWARE_RENDERER);
+        offscreen = glfwCreateWindow(640, 480, "", nullptr, nullptr);
+    }    
+    if (!offscreen) {
+        std::cerr << "Failed to create GLFW offscreen window" << std::endl;
         glfwTerminate();
         return 1;
     }
-    glfwMakeContextCurrent(offscreen_window);
+    glfwMakeContextCurrent(offscreen);
 
     glewExperimental = GL_TRUE;
     if (glewInit() != GLEW_OK) {

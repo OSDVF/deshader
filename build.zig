@@ -639,26 +639,10 @@ pub fn build(b: *std.Build) !void {
 
             // GLFW
             const example_glfw = try SubExampleStep.create(example_bootstraper, sub_examples.glfw, "examples/" ++ sub_examples.glfw ++ ".zig", exampleModules ++ .{.{ .name = "zig_glfw", .module = zig_glfw_dep.module("zig-glfw") }});
-            try addVcpkgInstalledPaths(b, example_glfw.compile, option_triplet, option_lib_debug);
             try addVcpkgInstalledPaths(b, zig_glfw_dep.module("zig-glfw"), option_triplet, option_lib_debug);
-            if (option_system_glfw)
-                example_glfw.compile.linkSystemLibrary("glfw3")
-            else
-                try linkVcpkgLibrary(example_glfw.compile, "glfw3", option_triplet, option_lib_debug);
             example_glfw.compile.linkLibC();
-            if (targetTarget == .linux) {
-                example_glfw.compile.linkSystemLibrary("x11");
-            }
 
             const example_sdf = try SubExampleStep.create(example_bootstraper, sub_examples.sdf, "examples/" ++ sub_examples.sdf ++ ".zig", exampleModules ++ .{.{ .name = "zig_glfw", .module = zig_glfw_dep.module("zig-glfw") }});
-            try addVcpkgInstalledPaths(b, example_sdf.compile, option_triplet, option_lib_debug);
-            if (option_system_glfw)
-                example_sdf.compile.linkSystemLibrary("glfw3")
-            else
-                try linkVcpkgLibrary(example_sdf.compile, "glfw3", option_triplet, option_lib_debug);
-            if (targetTarget == .linux) {
-                example_sdf.compile.linkSystemLibrary("x11");
-            }
             example_sdf.compile.linkLibC();
 
             // Editor
@@ -669,21 +653,6 @@ pub fn build(b: *std.Build) !void {
             const example_glfw_cpp = try SubExampleStep.create(example_bootstraper, sub_examples.glfw_cpp, "examples/" ++ sub_examples.glfw ++ ".cpp", .{});
             example_glfw_cpp.compile.addIncludePath(.{ .cwd_relative = b.h_dir });
             example_glfw_cpp.compile.linkLibCpp();
-            if (option_system_glfw)
-                example_glfw_cpp.compile.linkSystemLibrary("glfw3")
-            else
-                try linkVcpkgLibrary(example_glfw_cpp.compile, "glfw3", option_triplet, option_lib_debug);
-            if (targetTarget == .linux) {
-                example_glfw_cpp.compile.linkSystemLibrary("x11");
-            }
-            try addVcpkgInstalledPaths(b, example_glfw_cpp.compile, option_triplet, option_lib_debug);
-            if (targetTarget == .macos) {
-                example_glfw_cpp.compile.linkFramework("OpenGL");
-                example_glfw_cpp.compile.addFrameworkPath(framework_path);
-                example_glfw_cpp.compile.addFrameworkPath(system_framwork_path);
-            }
-
-            try addVcpkgInstalledPaths(b, example_glfw_cpp.compile, option_triplet, option_lib_debug);
             try linkGlew(example_glfw_cpp.install, option_system_glew, option_triplet, option_lib_debug);
 
             // Embed shaders into the executable
@@ -730,22 +699,35 @@ pub fn build(b: *std.Build) !void {
             const example_debug_commands = try SubExampleStep.create(example_bootstraper, sub_examples.debug_commands, "examples/debug_commands.cpp", .{});
             example_debug_commands.compile.addIncludePath(.{ .cwd_relative = b.h_dir });
             example_debug_commands.compile.linkLibCpp();
-            example_debug_commands.compile.linkSystemLibrary("glfw3");
             example_debug_commands.compile.addFrameworkPath(framework_path);
             example_debug_commands.compile.addFrameworkPath(system_framwork_path);
             try linkGlew(example_debug_commands.install, option_system_glew, option_triplet, option_lib_debug);
 
-            if (!system_libs_available) {
-                example_glfw_cpp.compile.step.dependOn(&dependencies_step.step);
-                example_sdf.compile.step.dependOn(&dependencies_step.step);
-                example_glfw.compile.step.dependOn(&dependencies_step.step);
-                example_debug_commands.compile.step.dependOn(&dependencies_step.step);
-                example_editor_linked_cpp.compile.step.dependOn(&dependencies_step.step);
-                _ = try installVcpkgLibrary(example_debug_commands.install, "glfw3", option_triplet, option_lib_debug);
-                _ = try installVcpkgLibrary(example_glfw_cpp.install, "glfw3", option_triplet, option_lib_debug);
-                _ = try installVcpkgLibrary(example_sdf.install, "glfw3", option_triplet, option_lib_debug);
-                _ = try installVcpkgLibrary(example_glfw.install, "glfw3", option_triplet, option_lib_debug);
-                _ = try installVcpkgLibrary(example_editor_linked_cpp.install, "glfw3", option_triplet, option_lib_debug);
+            inline for (.{ example_glfw, example_sdf, example_glfw_cpp, example_debug_commands }) |example| {
+                if (option_system_glfw)
+                    example.compile.linkSystemLibrary("glfw3")
+                else {
+                    example.compile.step.dependOn(&dependencies_step.step);
+                    try linkVcpkgLibrary(example.compile, "glfw3", option_triplet, option_lib_debug);
+                    _ = try installVcpkgLibrary(example.install, "glfw3", option_triplet, option_lib_debug);
+                }
+
+                if (!system_libs_available) {
+                    try addVcpkgInstalledPaths(b, example.compile, option_triplet, option_lib_debug);
+                }
+
+                switch (targetTarget) {
+                    .linux => example.compile.linkSystemLibrary("x11"),
+                    .macos => {
+                        example.compile.linkFramework("Cocoa");
+                        example.compile.linkFramework("OpenGL");
+                        example.compile.linkFramework("IOKit");
+                        example.compile.linkFramework("QuartzCore");
+                        example.compile.addFrameworkPath(framework_path);
+                        example.compile.addFrameworkPath(system_framwork_path);
+                    },
+                    else => {},
+                }
             }
         }
         examples_cmd.dependOn(stub_gen_cmd);

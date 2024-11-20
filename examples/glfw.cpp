@@ -80,6 +80,10 @@ MessageCallback(GLenum source,
     #endif
 }
 
+GLFWwindow* createWindow() {
+    return glfwCreateWindow(640, 480, "GLFW with C++ and Deshader", nullptr, nullptr);
+}
+
 int main(int argc, char** argv) {
     std::cout << "Showing GLFW window from C++" << std::endl;
 
@@ -88,7 +92,16 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    GLFWwindow* window = glfwCreateWindow(640, 480, "GLFW with C++ and Deshader", nullptr, nullptr);
+    // Set opengl version
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+    GLFWwindow* window = createWindow();
+    if (!window) {
+        // Try software renderer
+        glfwWindowHint(GLFW_CONTEXT_RENDERER, GLFW_SOFTWARE_RENDERER);
+        window = createWindow();
+    }
     if (!window) {
         std::cerr << "Failed to create GLFW window" << std::endl;
         glfwTerminate();
@@ -102,9 +115,16 @@ int main(int argc, char** argv) {
         glfwTerminate();
         return 1;
     }
-    glEnable(GL_DEBUG_OUTPUT);
-    glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS);
-    glDebugMessageCallback(MessageCallback, 0);
+
+    // Print renderer information
+    std::cout << "Renderer: " << glGetString(GL_RENDERER) << std::endl;
+    std::cout << "OpenGL version supported " << glGetString(GL_VERSION) << std::endl;
+
+    if (GLEW_KHR_debug) {
+        glEnable(GL_DEBUG_OUTPUT);
+        glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS);
+        glDebugMessageCallback(MessageCallback, 0);
+    }
 
     // Initialize programs and shaders
     std::vector<float> vertex_data = {
@@ -154,15 +174,18 @@ int main(int argc, char** argv) {
     glLinkProgram(program);
 
     GLuint vertex_buffer;
-    glCreateBuffers(1, &vertex_buffer);
-    glNamedBufferData(vertex_buffer, vertex_data.size() * sizeof(float), vertex_data.data(), GL_STATIC_DRAW);
+    glGenBuffers(1, &vertex_buffer);
+    glBindBuffer(GL_ARRAY_BUFFER, vertex_buffer);
+    glBufferData(GL_ARRAY_BUFFER, vertex_data.size() * sizeof(float), vertex_data.data(), GL_STATIC_DRAW);
 
     GLuint vao;
-    glCreateVertexArrays(1, &vao);
-    glVertexArrayVertexBuffer(vao, 0, vertex_buffer, 0, sizeof(float) * 2);
-    glVertexArrayAttribFormat(vao, 0, 2, GL_FLOAT, GL_FALSE, 0);
-    glVertexArrayAttribBinding(vao, 0, 0);
-    glEnableVertexArrayAttrib(vao, 0);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
+
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_CULL_FACE);
 
 
     while (!glfwWindowShouldClose(window)) {
