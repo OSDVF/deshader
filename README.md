@@ -11,8 +11,7 @@ You can also:
 - Track variable values for different output primitives and pixels
 - Incrementally visualise primitive and pixel output (so you can fix that weird vertex!)
 - Open the integrated editor (VSCode in a separate window or in your browser - at `localhost:8080/index.html` by default)
-- Run it on Linux and Windows
-<!-- TODO check https://github.com/coder/code-server -->
+- Runs on Linux, Windows and macOS
 
 # Goals
 - Compatibility between OpenGL vendor implementations (ICDs)
@@ -32,7 +31,6 @@ You can also:
 - View assembly
     - SPIR-V (compile by GLSLang)
     - ISA level ([nvdisasm](https://developer.download.nvidia.com/compute/cuda/redist/cuda_nvdisasm/), [nvcachetools](https://github.com/therontarigo/nvcachetools), [envytools](https://github.com/envytools/envytools/))
-- Mac OS CGL Support
 
 Feel free to fork and add your own goals or even better, break the non-goals!
 
@@ -58,7 +56,7 @@ Display the Launcher GUI:
 ```bash
 deshader-run
 ```
-Advanced instructions are written in [Deshader Manual](./guide/README.md).
+Advanced instructions are contained in [Deshader Manual](./guide/README.md).
 
 # Build
 ## Components
@@ -130,12 +128,12 @@ zig build launcher
 # Or run & build all the provided examples one-by-one
 zig build examples-run
 ```
-If the Launcher is not able to find Deshader library, you can specify it in env
+If Launcher is not able to find Deshader library, you can specify it in environment variable:
 ```sh
 DESHADER_LIB=zig-out/lib/libdeshader.so deshader-run
 ```
 
-Deshader and its build process support many [configuraiton options](guide/Settings.md).
+Deshader and its build process support some [configuraiton options](guide/Settings.md).
 
 ### Usage Without Launcher
 #### Linux
@@ -150,10 +148,24 @@ your\app\dir\app.exe
 ```
 
 #### Mac OS
-(Not tested)
 ```sh
 DYLD_INSERT_LIBRARIES=./zig-out/lib/libdeshader.dylib your_application
 ```
+
+## Frequently Seen Build Errors
+- Cannot compile
+    - Something with `struct_XSTAT` inside WolfSSL
+        - fix by `powershell .\fix_c_import.sh` or `./fix_c_import.ps1` and build again
+        **CAUTION**: The script searches the whole `zls` global cache in `~/.cache/zls` and deletes lines with `struct_XSTAT` so be careful.
+- Segmentation fault at when starting application from Launcher GUI
+    - Check if Launcher is build with the same tracing and release options as Deshader
+- Editor window is blank
+    - This is a known issue between WebKit and vendor GL drivers
+    - Disable GPU acceleration
+        - Set environment variable `WEBKIT_DISABLE_COMPOSITING_MODE=1`
+    - Or select a different GPU
+        - by setting `__GLX_VENDOR_LIBRARY_NAME=nvidia __NV_PRIME_RENDER_OFFLOAD=1`
+        - or `DRI_PRIME=1`
 
 ## Build process
 Deshader components are built with different build systems. They are being called inside the main build process (`zig build ...`). The notes here are just for reference:
@@ -175,6 +187,8 @@ Deshader components are built with different build systems. They are being calle
 
 ### Zig dependencies
 Some of the dependencies are managed as git submodules, other are specified in `build.zig.zon`. `zig build` without additonal target name will only download Zig-managed dependencies.
+
+### Build Outputs
 
 Output files will be placed at `./zig-out/`:
 - `bin/`
@@ -207,6 +221,7 @@ Output files will be placed at `./zig-out/`:
 The files inside `include/` are API definitions for use in your application.
 
 # License
-Deshader is licensed under the [GPL-3.0](https://www.gnu.org/licenses/gpl-3.0.html) license. See [LICENSE](LICENSE) for more information.
+Deshader is licensed under the [GPL-3.0](https://www.gnu.org/licenses/gpl-3.0.html) license. See [LICENSE](LICENSE.md) for more information.  
+This repository also contains third-party software, which is licensed under their respective licenses. See [NOTICES](NOTICES.md) for more information.
 
 If Deshader saved some of your time, you can leave a comment in the [discussions](https://github.com/OSDVF/deshader/discussions) or [star](https://github.com/OSDVF/deshader/star) the repo.

@@ -53,8 +53,7 @@ pub const CommandListener = struct {
     // various command providers
     http: ?*positron.Provider = null,
     ws: std.ArrayList(*websocket.Conn) = undefined,
-    ws_config: ?websocket.Config.Server = null,
-    ws_running: bool = true,
+    ws_config: ?websocket.Config = null,
     provide_thread: ?std.Thread = null,
     websocket_thread: ?std.Thread = null,
     websocket_arena: std.heap.ArenaAllocator = undefined,
@@ -75,30 +74,30 @@ pub const CommandListener = struct {
         self.provider_arena = std.heap.ArenaAllocator.init(allocator);
         // WS Command Listener
         if (ws_port) |port| {
-            self.ws_running = true;
             setting_vars.commandsWsPort = port;
             if (!try common.isPortFree(null, port)) {
                 return error.AddressInUse;
             }
 
-            self.ws_config = .{
+            self.ws_config = websocket.Config{
                 .port = port,
-                .max_headers = 10,
                 .address = "127.0.0.1",
             };
             self.websocket_thread = try std.Thread.spawn(
                 .{ .allocator = common.allocator },
                 struct {
-                    fn listen(list: *CommandListener, alloc: std.mem.Allocator, conf: websocket.Config.Server, ws_running: *bool) void {
+                    fn listen(list: *CommandListener, alloc: std.mem.Allocator, conf: websocket.Config) void {
                         var arena = std.heap.ArenaAllocator.init(alloc);
                         defer arena.deinit();
 
-                        websocket.listen(WSHandler, arena.allocator(), list, conf, ws_running) catch |err| {
+                        var listener = websocket.Server(WSHandler).init(arena.allocator(), conf) catch |err|
+                            return DeshaderLog.err("Error while creating webscoket listener: {any}", .{err});
+
+                        listener.listen(list) catch |err|
                             DeshaderLog.err("Error while listening for websocket commands: {any}", .{err});
-                        };
                     }
                 }.listen,
-                .{ self, allocator, self.ws_config.?, &self.ws_running },
+                .{ self, allocator, self.ws_config.? },
             );
             self.websocket_thread.?.setName("CmdListWS") catch {};
         }
@@ -149,11 +148,9 @@ pub const CommandListener = struct {
         }
         for (self.ws.items) |ws| {
             ws.writeText("432: Closing connection\n") catch {};
-            ws.writeClose() catch {};
-            ws.close();
+            ws.close(.{ .code = 1001, .reason = "server shutting down" }) catch {};
         }
         if (self.hasClient()) {
-            self.ws_running = false;
             self.websocket_thread.?.join();
             self.websocket_thread = null;
             self.ws.clearAndFree();
@@ -334,6 +331,16 @@ pub const CommandListener = struct {
             };
         }
 
+        fn writeAll(self: *@This(), opcode: websocket.OpCode, data: []const String) !void {
+            var writer = self.conn.writeBuffer(common.allocator, opcode);
+            defer writer.deinit();
+
+            for (data) |line| {
+                _ = try writer.write(line);
+            }
+            try writer.flush();
+        }
+
         /// command_echo echoes either the input command or the "seq" parameter of the request. "seq" is not checked agains duplicates or anything.
         fn handleInner(self: *@This(), result_or_error: anytype, command_echo: String, free: ?*const fn (@TypeOf(result_or_error)) void) !void {
             defer if (free) |f| f(result_or_error);
@@ -343,27 +350,27 @@ pub const CommandListener = struct {
                 switch (@TypeOf(result)) {
                     void => {
                         DeshaderLog.debug("WS Command {s} => void", .{command_echo});
-                        try self.conn.writeAllFrame(.text, &.{ accepted, command_echo, "\n" });
+                        try self.writeAll(.text, &.{ accepted, command_echo, "\n" });
                     },
                     String => {
                         DeshaderLog.debug("WS Command {s} => {s}", .{ command_echo, result });
-                        try self.conn.writeAllFrame(.text, &.{ accepted, command_echo, "\n", result, "\n" });
+                        try self.writeAll(.text, &.{ accepted, command_echo, "\n", result, "\n" });
                     },
                     []const CString => {
                         const flattened = try common.joinInnerZ(common.allocator, "\n", result);
                         defer common.allocator.free(flattened);
                         DeshaderLog.debug("WS Command {s} => {s}", .{ command_echo, flattened });
-                        try self.conn.writeAllFrame(.text, &.{ accepted, command_echo, "\n", flattened, "\n" });
+                        try self.writeAll(.text, &.{ accepted, command_echo, "\n", flattened, "\n" });
                     },
                     []const String => {
                         const flattened = try std.mem.join(common.allocator, "\n", result);
                         defer common.allocator.free(flattened);
                         DeshaderLog.debug("WS Command {s} => {s}", .{ command_echo, flattened });
-                        try self.conn.writeAllFrame(.text, &.{ accepted, command_echo, "\n", flattened, "\n" });
+                        try self.writeAll(.text, &.{ accepted, command_echo, "\n", flattened, "\n" });
                     },
                     serve.HttpStatusCode => {
                         DeshaderLog.debug("WS Command {s} => {d}", .{ command_echo, result });
-                        try self.conn.writeAllFrame(.text, &.{
+                        try self.writeAll(.text, &.{
                             try std.fmt.bufPrint(&http_code_buffer, "{d}", .{@as(serve.HttpStatusCode, result)}),
                             ": ",
                             @tagName(result),
@@ -381,15 +388,15 @@ pub const CommandListener = struct {
             }
         }
 
-        pub fn handle(self: *@This(), message: Message) !void {
+        pub fn clientMessage(self: *@This(), message: String) !void {
             errdefer |err| {
                 DeshaderLog.err("Error while handling websocket command: {any}", .{err});
-                DeshaderLog.debug("Message: {any}", .{message.data});
+                DeshaderLog.debug("Message: {any}", .{message});
                 const err_mess = std.fmt.allocPrint(common.allocator, "Error: {any}\n", .{err}) catch "";
                 defer if (err_mess.len > 0) common.allocator.free(err_mess);
                 self.conn.writeText(err_mess) catch |er| DeshaderLog.err("Error while writing error: {any}", .{er});
             }
-            var iterator = std.mem.splitScalar(u8, message.data, 0);
+            var iterator = std.mem.splitScalar(u8, message, 0);
             var request = iterator.first();
             if (request.len == 0) {
                 try self.conn.writeText("400: Bad request\n");
@@ -454,10 +461,6 @@ pub const CommandListener = struct {
                 return;
             }
         }
-
-        // optional hooks
-        pub fn afterInit(_: *WSHandler) !void {}
-        pub fn close(_: *WSHandler) void {}
     };
 
     fn stringToBool(val: ?String) bool {
@@ -490,11 +493,13 @@ pub const CommandListener = struct {
         const string = try std.json.stringifyAlloc(common.allocator, body, json_options);
         defer common.allocator.free(string);
         for (self.ws.items, 0..) |ws, i| {
-            ws.writeAllFrame(.text, &.{
+            const content = try std.mem.concat(common.allocator, u8, &.{
                 "600: Event\n",
                 @tagName(event) ++ "\n",
                 string,
-            }) catch |err| {
+            });
+            defer common.allocator.free(content);
+            ws.writeText(content) catch |err| {
                 if (err == error.NotOpenForWriting) {
                     _ = self.ws.swapRemove(i);
                 } else {

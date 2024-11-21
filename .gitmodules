@@ -16,9 +16,6 @@
 [submodule "editor/deshader-vscode"]
 	path = editor/deshader-vscode
 	url = https://github.com/OSDVF/deshader-vscode.git
-[submodule "libs/websocket"]
-	path = libs/websocket
-	url = https://github.com/OSDVF/websocket.zig.git
 [submodule "bootstrap/llvm-ir-cmake"]
 	path = bootstrap/llvm-ir-cmake
 	url = https://github.com/compor/llvm-ir-cmake-utils.git

@@ -10,8 +10,8 @@
     },
     .dependencies = .{
         .zig_glfw = .{
-            .url = "https://github.com/osdvf/zig-glfw/archive/41056c8796243486ce65e210f6acfa7139382806.tar.gz",
-            .hash = "12206dfece8f7b90dfb1b0e24840a3beab027907f247aefb874b20a09052708cda92",
+            .url = "https://github.com/osdvf/zig-glfw/archive/21f0fa952f0b866fe59ef51b1507840791ef6c20.tar.gz",
+            .hash = "1220121e676a1a60542cbfca01a086bc3f6253e65ef12a39376b821513979e651fba",
         },
         .vulkan_zig = .{
             .url = "https://github.com/Snektron/vulkan-zig/archive/84b9622f92284fd8d90bc29097da5e58ce51a27f.tar.gz",
@@ -20,6 +20,10 @@
         .zigglgen = .{
             .url = "git+https://github.com/castholm/zigglgen#701f41808086411f14d3bc2d87fc0b14bd09ceba",
             .hash = "1220acff2285b51630055c7c062fb62a01b32272297b27e90cd6f85901c1b4d1c48d",
+        },
+        .websocket = .{
+            .url = "git+https://github.com/OSDVF/websocket.zig#df625a9680a539aa5f6a3c2142b20272f8fb042a",
+            .hash = "1220a46da620ec5779a890c623537cfe762b59dac0ca37e980e89fa0a84e72afd819",
         },
     },
 }

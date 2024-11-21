@@ -22,7 +22,7 @@
             "arguments": "-version",
             "env": {
                 "DESHADER_LIB": "deshader/zig-out/lib",
-                "DESHADER_IGNORE_PROCESS": "gdb,zsh,llvm-symbolizer,code",
+                "DESHADER_IGNORE_PROCESS": "gdb:zsh:llvm-symbolizer:code",
             },
         },
         {
@@ -76,7 +76,7 @@
                 "set environment DYLD_INSERT_LIBRARIES ${workspaceRoot}/zig-out/lib/libdeshader.dylib",
             ],
             "env": {
-                "DESHADER_IGNORE_PROCESS": "gdb,zsh,deshader-examples-all",
+                "DESHADER_IGNORE_PROCESS": "gdb:zsh:deshader-examples-all",
             },
         },
         {
@@ -89,7 +89,7 @@
             "preLaunchTask": "Build Examples",
             "env": {
                 "DESHADER_COMMANDS_WS": "8082",
-                "DESHADER_IGNORE_PROCESS": "gdb,zsh",
+                "DESHADER_IGNORE_PROCESS": "gdb:zsh",
             },
             "autorun": [
                 "set environment LD_PRELOAD ${workspaceRoot}/zig-out/lib/libdeshader.so"
@@ -108,7 +108,7 @@
                 "set environment DYLD_INSERT_LIBRARIES ${workspaceRoot}/zig-out/lib/libdeshader.dylib"
             ],
             "env": {
-                "DESHADER_IGNORE_PROCESS": "gdb,zsh",
+                "DESHADER_IGNORE_PROCESS": "gdb:zsh",
                 "DESHADER_COMMANDS_WS": "8082",
                 "DESHADER_START_SERVER": "1",
                 "DESHADER_LSP": "8083",
@@ -131,7 +131,7 @@
                 "set environment LD_PRELOAD ${workspaceRoot}/zig-out/lib/libdeshader.so"
             ],
             "env": {
-                "DESHADER_IGNORE_PROCESS": "gdb,zsh",
+                "DESHADER_IGNORE_PROCESS": "gdb:zsh",
                 "DESHADER_LIB_ROOT": "/usr/lib/",
                 "DESHADER_COMMANDS_WS": "8082",
                 "DESHADER_START_SERVER": "1",
@@ -219,7 +219,7 @@
                 "set environment LD_PRELOAD ${workspaceRoot}/zig-out/lib/libdeshader.so"
             ],
             "env": {
-                "DESHADER_IGNORE_PROCESS": "gdb,zsh",
+                "DESHADER_IGNORE_PROCESS": "gdb:zsh",
             }
         },
         {

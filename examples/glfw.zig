@@ -74,7 +74,7 @@ pub fn onResize(window: glfw.Window, width: u32, height: u32) void {
     gl.Viewport(0, 0, w * 2, h * 2);
 }
 
-pub fn glDebugMessageCallback(source: gl.@"enum", typ: gl.@"enum", id: gl.uint, severity: gl.@"enum", length: gl.sizei, message: [*:0]const gl.char, userParam: ?*const anyopaque) callconv(.C) void {
+pub fn glDebugMessageCallback(source: gl.@"enum", typ: gl.@"enum", id: gl.uint, severity: gl.@"enum", length: gl.sizei, message: [*:0]const gl.char, userParam: ?*const anyopaque) callconv(std.os.windows.WINAPI) void {
     _ = userParam;
     _ = length;
     const source_string = switch (source) {

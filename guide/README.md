@@ -13,3 +13,5 @@ Additionally, Deshader can be controlled from the host application code by:
 - [Zig API](API.md#zig-api)
 
 Generally more than one interface can be used at the same time and they can control the same features.
+
+Low-level features are controlled by setting [environment variables](Settings.md).

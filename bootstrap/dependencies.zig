@@ -2,7 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const memory = @import("../src/common/memory.zig");
 const String = []const u8;
-const arch = @import("../src/common/arch.zig").archToVcpkg;
+const arch = @import("../src/common/arch.zig");
 
 /// `make`s opengl definitions, installs node.js dependencies for the editor and editor extension, and builds VCPKG dependencies for Windows
 pub const DependenciesStep = struct {
@@ -95,7 +95,6 @@ pub const DependenciesStep = struct {
             std.log.debug("Dependencies already (being) built", .{});
         } else {
             defer self.done = true;
-            try self.env_map.put("ZIG_PATH", self.step.owner.graph.zig_exe);
             defer self.env_map.deinit();
             defer self.step.owner.allocator.destroy(self.env_map);
 
@@ -136,36 +135,27 @@ pub const DependenciesStep = struct {
         try self.sub_steps.append(.{ .name = "Installing node.js dependencies by Bun for editor", .args = try self.step.owner.allocator.dupe(String, &.{ "bun", "install", "--frozen-lockfile", "--production" }), .cwd = "editor" });
     }
 
+    /// TODO: how to get install dir when specifying custom triplet?
     pub fn vcpkg(self: *DependenciesStep, triplet: ?String) !void {
-        // TODO overlay to empty port when system library is available
         if (self.target.os.tag == .macos and builtin.os.tag != .macos) {
             compileInstallNameTool(self.step.owner);
         }
         const step = self.step;
-        const debug = self.step.owner.release_mode == .off;
-        const use_triplet: String = triplet orelse try std.mem.join(self.step.owner.allocator, "-", &.{
-            arch(self.target.cpu.arch), switch (self.target.os.tag) {
-                .windows => if (self.target.os.tag == .windows and self.target.abi != .msvc) (if (debug) "windows-zig-dbg" else "windows-zig-rel") else "windows",
-                .linux => if (builtin.os.tag == .linux and builtin.cpu.arch == self.target.cpu.arch) "linux" else "zig",
-                .macos => if (builtin.os.tag == .macos) "osx" else "osx-zig",
-                else => @panic("Unsupported OS"),
-            },
-        });
+        const use_triplet: String = triplet orelse try arch.targetToVcpkgTriplet(step.owner.allocator, self.target);
 
         const sub_sub = try self.step.owner.allocator.dupe(SubStep, &[_]SubStep{SubStep{
             .name = "Rename VCPKG artifacts",
             .create = struct {
                 // After building VCPKG libraries rename the output files
-                fn create(step2: *std.Build.Step, _: std.Progress.Node, tripl: ?String) anyerror!void {
-                    const debug2 = step2.owner.release_mode == .off;
+                fn create(step2: *std.Build.Step, _: std.Progress.Node, dir: ?String) anyerror!void {
+                    const debug = step2.owner.release_mode == .off;
                     std.log.info("Renaming VCPKG artifacts", .{});
-                    const bin_path = step2.owner.pathJoin(&.{ "build", "vcpkg_installed", tripl.?, if (debug2) "debug" else "", "bin" });
+                    const bin_path = step2.owner.pathJoin(&.{ "build", "vcpkg_installed", dir.?, if (debug) "debug" else "", "bin" });
                     defer step2.owner.allocator.free(bin_path);
                     try doOnEachFileIf(step2, bin_path, hasLibPrefix, removeLibPrefix);
                     try doOnEachFileIf(step2, bin_path, hasWrongSuffix, renameSuffix);
-                    const lib_path = step2.owner.pathJoin(&.{ "build", "vcpkg_installed", tripl.?, if (debug2) "debug" else "", "lib" });
+                    const lib_path = step2.owner.pathJoin(&.{ "build", "vcpkg_installed", dir.?, if (debug) "debug" else "", "lib" });
                     defer step2.owner.allocator.free(lib_path);
-                    try doOnEachFileIf(step2, lib_path, hasLibPrefix, removeLibPrefix);
                     try doOnEachFileIf(step2, lib_path, hasWrongSuffix, renameSuffix);
                 }
             }.create,
