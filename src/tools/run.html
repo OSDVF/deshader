@@ -24,9 +24,20 @@
                 <label for="directory">Working directory</label><input type="text" id="directory"
                     placeholder="(PROGRAM DIRECTORY)"><button type="button" onclick="pickDirectory()">Browse</button>
             </p>
+            <div>
+                <input type="checkbox" id="do_whitelist" checked><label for="whitelist">Whitelist...</label>
+                <div id="whitelist_list" style="display: none;">
+                    <input type="text" placeholder="(PROCESS_NAME)" name="whitelist[]" id="whitelist_first">
+                </div>
+                <button type="button" title="Add" id="whitelist_add">➕</button>
+            </div>
+            <div>
+                <input type="checkbox" id="do_blacklist"><label for="do_blacklist">Blacklist...</label>
+                <button type="button" title="Add" id="blacklist_add" style="display: none;">➕</button>
+            </div>
+            <hr>
             <input type="checkbox" id="editor" checked><label for="editor">Show Editor GUI</label>
             <input type="checkbox" id="lsp" checked><label for="lsp">GLSL Language Server</label>
-            <input type="checkbox" id="whitelist" checked><label for="whitelist">Intercept only target process</label>
         </div>
 
         <div class="flex between">
@@ -35,37 +46,83 @@
             <input type="submit" value="Run">
         </div>
     </form>
-    <div id="overlay"><div>Running...</div></div>
+    <div id="overlay">
+        <div>Running...</div>
+        <button style="position: absolute; right: 5px; bottom: 5px;" onclick="terminate()">Terminate</button>
+    </div>
+    <template id="list_template">
+        <div>
+            <input type="text" placeholder="(PROCESS_NAME)" oninput="setCustomValidity('')"
+                oninvalid="setCustomValidity('Enter process name')" required><button type="button" title="Delete"
+                onclick="this.parentElement.remove()">🗑️</button>
+        </div>
+    </template>
     <script>
         const program = document.getElementById('program');
         const directory = document.getElementById('directory');
-        const whitelist = document.getElementById('whitelist');
         const error = document.getElementById('error');
+        const editor = document.getElementById('editor')
         const args = document.getElementById('arguments')
         const overlay = document.getElementById('overlay')
         const lsp = document.getElementById('lsp')
+        const blacklist_add = document.getElementById('blacklist_add')
+        const whitelist_add = document.getElementById('whitelist_add')
+        const do_blacklist = document.getElementById('do_blacklist')
+        const do_whitelist = document.getElementById('do_whitelist')
+        const whitelist_first = document.getElementById('whitelist_first')
+        const whitelist_list = document.getElementById('whitelist_list')
+        /** @type {HTMLTemplateElement} */
+        const template = document.getElementById('list_template')
+
         editor.addEventListener('change', e => {
             lsp.disabled = !e.target.checked
         })
+        do_blacklist.addEventListener('change', e => {
+            blacklist_add.style.display = e.target.checked ? 'inline' : 'none'
+        })
+        blacklist_add.addEventListener('click', e => {
+            const div = template.content.cloneNode(true)
+            div.querySelector('input').name = 'blacklist[]'
+            blacklist_add.parentElement.insertBefore(div, blacklist_add)
+        })
 
+        do_whitelist.addEventListener('change', e => {
+            whitelist_list.style.display = e.target.checked ? 'block' : 'none'
+            whitelist_add.style.display = e.target.checked ? 'inline' : 'none'
+        })
+        whitelist_add.addEventListener('click', e => {
+            const div = template.content.cloneNode(true)
+            div.querySelector('input').name = 'whitelist[]'
+            whitelist_add.parentElement.insertBefore(div, whitelist_add)
+        })
 
         function pickFile() {
-            browseFile(program.value).then(v => { if (v) program.value = v })
+            browseFile(program.value).then(v => {
+                if (v) {
+                    program.value = v
+                    whitelist_list.style.display = 'block'
+                    whitelist_first.value = v.split(/[\\/]/).pop()
+                }
+            })
         }
         function pickDirectory() {
-            browseDirectory(directory.value ? directory.value : null).then(v => { if (v) directory.value = v })
+            browseDirectory(directory.value).then(v => { if (v) directory.value = v })
         }
         document.getElementById('form').addEventListener('submit', e => {
             e.preventDefault();
+            const formData = new FormData(e.target)
             const env = [
                 'DESHADER_GUI=' + (editor.checked ? '1' : '0'),
                 'DESHADER_LSP=' + (editor.checked && lsp.checked ? '8083' : ''),
-                'DESHADER_PROCESS=' + whitelist.checked ? program.value : ''
+                'DESHADER_PROCESS=' + do_whitelist.checked ? formData.getAll('whitelist[]').join(':') : '',
+                'DESHADER_IGNORE_PROCESS=' + do_blacklist.checked ? formData.getAll('blacklist[]').join(':') : ''
             ]
 
             overlay.style.display = "flex"
             setTimeout(() => {
-                run(program.value, directory.value, args.value, env.join('\n')).then(() => {
+                run({
+                    program: program.value, directory: directory.value, args: args.value, env: env.join('\n')
+                }).then(() => {
                     error.innerText = ''
                 }).catch(e => {
                     error.innerText = e;

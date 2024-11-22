@@ -30,6 +30,7 @@ const c = @cImport({
             @cInclude("gtk/gtk.h");
         }
         @cInclude("dlfcn.h");
+        @cInclude("unistd.h");
     }
 });
 const common = @import("common");
@@ -46,6 +47,7 @@ const DefaultDllNames = .{ "opengl32.dll", "vulkan-1.dll" };
 var deshader_lib: std.DynLib = undefined;
 var this_dir: String = undefined;
 var gui = false;
+var yes_to_replace = false;
 
 pub fn main() !u8 {
     try common.init();
@@ -73,7 +75,6 @@ pub fn main() !u8 {
     //
     // Parse args
     //
-    var yes = false;
     gui = args.len <= 1;
     var version = false;
 
@@ -94,7 +95,7 @@ pub fn main() !u8 {
             return 0;
         } else if (std.ascii.eqlIgnoreCase(args[next_arg], "-y")) {
             next_arg += 1;
-            yes = true;
+            yes_to_replace = true;
         } else if (std.ascii.eqlIgnoreCase(args[next_arg], "-gui")) {
             next_arg += 1;
             gui = true;
@@ -167,7 +168,9 @@ pub fn main() !u8 {
             try common.env.appendList(common.env_prefix ++ "PROCESS", process_name);
             LauncherLog.debug("Setting DESHADER_PROCESS to {?s}", .{common.env.get(common.env_prefix ++ "PROCESS")});
         }
-        try run(args[next_arg..], target_cwd, null, yes);
+        var cond = std.Thread.Condition{};
+        var mutex = std.Thread.Mutex{};
+        try run(args[next_arg..], target_cwd, null, &cond, &mutex);
     }
     return 0;
 }
@@ -250,7 +253,7 @@ fn dlopenAbsolute(p: String) !std.DynLib {
 }
 
 /// `target_argv` includes program name as the first element
-fn run(target_argv: []const String, working_dir: ?String, env: ?std.StringHashMapUnmanaged(String), yes: bool) anyerror!void {
+fn run(target_argv: []const String, working_dir: ?String, env: ?*std.BufMap, terminate: *std.Thread.Condition, terminate_mutex: *std.Thread.Mutex) anyerror!void {
     var deshader_path_buffer = try common.allocator.alloc(if (builtin.os.tag == .windows) u16 else u8, std.fs.MAX_NAME_BYTES);
     defer common.allocator.free(deshader_path_buffer);
     const deshader_path = switch (builtin.os.tag) {
@@ -302,9 +305,9 @@ fn run(target_argv: []const String, working_dir: ?String, env: ?std.StringHashMa
         return err;
     };
     defer if (!realpath_not_working) common.allocator.free(target_realpath);
-    var child = std.process.Child.init(target_argv, common.allocator);
-    child.cwd_dir = if (working_dir) |w| if (std.fs.path.isAbsolute(w)) if (std.fs.openDirAbsolute(w, .{ .access_sub_paths = false }) catch null) |dir| dir else null else null else null;
-    defer if (child.cwd_dir) |*d| d.close();
+    var target = std.process.Child.init(target_argv, common.allocator);
+    target.cwd_dir = if (working_dir) |w| if (std.fs.path.isAbsolute(w)) if (std.fs.openDirAbsolute(w, .{ .access_sub_paths = false }) catch null) |dir| dir else null else null else null;
+    defer if (target.cwd_dir) |*d| d.close();
 
     if (env) |wanted_env| {
         var it = wanted_env.iterator();
@@ -327,12 +330,12 @@ fn run(target_argv: []const String, working_dir: ?String, env: ?std.StringHashMa
             const full_symlinkdir = try common.getFullPath(common.allocator, symlink_dir);
             defer common.allocator.free(full_symlinkdir);
             if (!std.ascii.eqlIgnoreCase(full_dir, full_symlinkdir)) {
-                try symlinkLibToLib(cwd, deshader_path, symlink_dir, options.deshaderLibName, yes);
+                try symlinkLibToLib(cwd, deshader_path, symlink_dir, options.deshaderLibName, yes_to_replace);
 
                 inline for (options.dependencies) |lib| {
                     const target_path = try path.join(common.allocator, &.{ deshader_dir, lib });
                     defer common.allocator.free(target_path);
-                    try symlinkLibToLib(cwd, target_path, symlink_dir, lib, yes);
+                    try symlinkLibToLib(cwd, target_path, symlink_dir, lib, yes_to_replace);
                 }
             }
         }
@@ -341,43 +344,57 @@ fn run(target_argv: []const String, working_dir: ?String, env: ?std.StringHashMa
 
         // DLL replacement: symlink opengl32.dll and vulkan-1.dll to the symlinked Deshader
         inline for (DefaultDllNames) |lib| {
-            try symlinkLibToLib(cwd, local_deshader, symlink_dir, lib, yes);
+            try symlinkLibToLib(cwd, local_deshader, symlink_dir, lib, yes_to_replace);
         }
         const extra_lib_paths = common.env.get(common.env_prefix ++ "HOOK_LIBS");
         if (extra_lib_paths) |eln| {
             var extra_lib_it = std.mem.splitScalar(u8, eln, ':');
             while (extra_lib_it.next()) |lib| {
-                try symlinkLibToLib(cwd, local_deshader, symlink_dir, lib, yes);
+                try symlinkLibToLib(cwd, local_deshader, symlink_dir, lib, yes_to_replace);
             }
         }
     } else {
         try common.env.appendList(common.env.library_preload, deshader_path);
     }
-    child.env_map = common.env.getMap();
-    child.stderr_behavior = .Inherit;
-    child.stdout_behavior = .Inherit;
-    child.stdin_behavior = .Inherit;
-    try child.spawn();
-    LauncherLog.info("Launched PID {d}", .{if (builtin.os.tag == .windows) c.GetProcessId(child.id) else child.id});
-
-    switch (try child.wait()) {
-        .Exited => |status| {
-            if (status != 0) {
-                LauncherLog.err("Target process exited with status {d}", .{status});
-            }
-        },
-        .Signal => |signal| {
-            LauncherLog.err("Target process terminated with signal {d}", .{signal});
-        },
-        .Stopped => |signal| {
-            LauncherLog.err("Target process stopped with signal {d}", .{signal});
-        },
-        .Unknown => |result| {
-            LauncherLog.err("Target process terminated with unknown result {d}", .{result});
-        },
+    target.env_map = common.env.getMap();
+    target.stderr_behavior = .Inherit;
+    target.stdout_behavior = .Inherit;
+    target.stdin_behavior = .Inherit;
+    try target.spawn();
+    if (builtin.os.tag != .windows) {
+        _ = c.setpgid(target.id, 0); // Put the target in its own process group
     }
+    LauncherLog.info("Launched PID {d}", .{if (builtin.os.tag == .windows) c.GetProcessId(target.id) else target.id});
+
+    var running = true;
+    var target_watcher = try std.Thread.spawn(.{}, struct {
+        fn spawn(ch: *std.process.Child, co: *std.Thread.Condition, m: *std.Thread.Mutex, r: *bool) !void {
+            common.process.wailNoFailReport(ch);
+            r.* = false;
+            m.lock();
+            defer m.unlock();
+            co.broadcast();
+        }
+    }.spawn, .{ &target, terminate, terminate_mutex, &running });
+
+    defer target_watcher.detach();
 
     // TODO cleanup
+
+    // Wait for the target to finish or for the user to request termination
+    terminate_mutex.lock();
+    defer terminate_mutex.unlock();
+    terminate.wait(terminate_mutex);
+
+    if (running) { // If the target is still running (termination was requested), kill it
+        if (builtin.os.tag == .windows) {
+            _ = try target.kill();
+        } else {
+            try std.posix.kill(-target.id, std.posix.SIG.TERM); // Kill the entire process group
+            std.time.sleep(std.time.ns_per_ms * 200); // Wait for the target to exit
+            std.posix.kill(-target.id, std.posix.SIG.KILL) catch {};
+        }
+    }
 }
 
 fn browseFile() ?String {

@@ -17,6 +17,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const options = @import("options");
 pub const env = @import("common/env.zig");
+pub const process = @import("common/process.zig");
 const commands = @import("commands.zig");
 const c = @cImport({
     if (builtin.os.tag == .windows) {

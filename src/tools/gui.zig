@@ -254,6 +254,9 @@ pub fn editorShow(command_listener: ?*const commands.CommandListener) !void {
         gui_process = std.process.Child.init(&.{ exe_or_dll_path, "editor" }, common.allocator); // the "editor" parameter is really ignored but it is here for reference to be found easily
 
         common.env.set(DESHADER_GUI_URL, base_url);
+        if (builtin.os.tag == .linux) {
+            try common.env.appendList(common.env_prefix ++ "IGNORE_PROCESS", "zenity:WebKitWebProcess");
+        }
 
         gui_process.?.env_map = common.env.getMap();
         gui_process.?.stdout_behavior = .Inherit;
@@ -267,13 +270,8 @@ pub fn editorShow(command_listener: ?*const commands.CommandListener) !void {
             fn watch() !void {
                 if (builtin.os.tag == .windows) {
                     _ = try gui_process.?.wait();
-                } else { //Must be called separately because Zig std library contains extra security check which would crash
-                    var status: u32 = undefined;
-                    while (blk: {
-                        const result = std.posix.system.waitpid(gui_process.?.id, @ptrCast(&status), std.posix.W.UNTRACED);
-                        DeshaderLog.debug("Editor PID {d} watcher result {}", .{ gui_process.?.id, std.posix.errno(result) });
-                        break :blk !(std.posix.W.IFEXITED(status) or std.posix.W.IFSTOPPED(status) or std.posix.W.IFSIGNALED(status));
-                    }) {}
+                } else {
+                    common.process.wailNoFailReport(&gui_process.?);
                     if (global_provider) |gp| {
                         gp.allocator.free(base_url);
                     }
@@ -286,7 +284,7 @@ pub fn editorShow(command_listener: ?*const commands.CommandListener) !void {
     }
 }
 
-pub fn launcherGUI(run: *const fn (target_argv: []const String, working_dir: ?String, env: ?std.StringHashMapUnmanaged(String)) anyerror!void) !void {
+pub fn launcherGUI(run: *const fn (target_argv: []const String, working_dir: ?String, env: ?*std.BufMap, terminate: *std.Thread.Condition, terminate_mutex: *std.Thread.Mutex) anyerror!void) !void {
     state.run = run;
     const content = @embedFile("../tools/run.html");
     const result_len = std.base64.standard.Encoder.calcSize(content.len);
@@ -297,14 +295,9 @@ pub fn launcherGUI(run: *const fn (target_argv: []const String, working_dir: ?St
     @memcpy(result[0..preamble.len], preamble);
     _ = std.base64.standard.Encoder.encode(result[preamble.len..], content);
 
-    // ignore zenity processes (file dialogs)
-    const old_ignore_processes = common.env.get(common.env_prefix ++ "IGNORE_PROCESS");
-    if (old_ignore_processes != null) {
-        const merged = try std.fmt.allocPrint(common.allocator, "{s},zenity", .{old_ignore_processes.?});
-        defer common.allocator.free(merged);
-        common.env.set(common.env_prefix ++ "IGNORE_PROCESS", merged);
-    } else {
-        common.env.set(common.env_prefix ++ "IGNORE_PROCESS", "zenity");
+    if (builtin.os.tag == .linux) {
+        // ignore zenity processes (file dialogs) and WebKitWebProcess (used by WebKitGTK)
+        try common.env.appendList(common.env_prefix ++ "IGNORE_PROCESS", "zenity:WebKitWebProcess");
     }
     try guiProcess(result, "Deshader Launcher");
 }
@@ -341,7 +334,7 @@ pub fn editorWait() !void {
     }
 }
 
-fn dummyRun(_: []const String, _: ?String, _: ?std.StringHashMapUnmanaged(String)) anyerror!void {}
+fn dummyRun(_: []const String, _: ?String, _: ?*std.BufMap, _: *std.Thread.Condition, _: *std.Thread.Mutex) anyerror!void {}
 
 //
 // The following code should exist only in the GUI subprocess
