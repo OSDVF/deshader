@@ -5,7 +5,7 @@
 #include <GLFW/glfw3.h>
 
 int main(int argc, char** argv) {
-    std::cout << "Maybe showing editor from C++ by debug commands" << std::endl;
+    std::cout << "Maybe showing Deshader Library version from C++ code using unobtrusive commands" << std::endl;
 
     if (!glfwInit()) {
         std::cerr << "Failed to initialize GLFW" << std::endl;
@@ -32,7 +32,6 @@ int main(int argc, char** argv) {
         glfwTerminate();
         return 1;
     }
-    deshaderEditorWindowShow();
-    deshaderEditorWindowWait();
+    deshaderVersion();
     return 0;
 }

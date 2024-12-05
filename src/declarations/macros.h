@@ -34,6 +34,4 @@
 #define deshaderDebugFrame() DESHADER_COMMAND(DEBUG_FRAME)
 #define deshaderWorkspaceAdd(name, length) DESHADER_STRING_COMMAND(ADD_WORKSPACE, name, length)
 #define deshaderWorkspaceRemove(name, length) DESHADER_STRING_COMMAND(REMOVE_WORKSPACE, name, length)
-#define deshaderEditorWindowShow() DESHADER_COMMAND(EDITOR_SHOW)
-#define deshaderEditorWindowTerminate() DESHADER_COMMAND(EDITOR_TERMINATE)
-#define deshaderEditorWindowWait() DESHADER_COMMAND(EDITOR_WAIT)
+#define deshaderVersion() DESHADER_COMMAND(VERSION)

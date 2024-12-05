@@ -16,9 +16,9 @@
 const std = @import("std");
 const decls = @import("../declarations/shaders.zig");
 
-const log = @import("../log.zig").DeshaderLog;
 const shaders = @import("shaders.zig");
-const common = @import("../common.zig");
+const common = @import("common");
+const log = common.log;
 
 const String = []const u8;
 const CString = [*:0]const u8;

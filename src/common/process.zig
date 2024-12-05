@@ -1,6 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const log = @import("../log.zig").DeshaderLog;
+const log = @import("log.zig").DeshaderLog;
 
 /// Blocks until child process terminates and then cleans up all resources.
 pub fn waitNoFail(self: *std.process.Child) !std.process.Child.Term {

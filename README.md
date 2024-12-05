@@ -64,7 +64,7 @@ Advanced instructions are contained in [Deshader Manual](./guide/README.md).
 Deshader consists of several (mostly third party; mostly forked) components that require different dev stacks and frameworks. Some of them are installed as git submodules or as Zig dependencies.
 
 - Deshader Launcher
-    - [/src/tools/run.zig](/src/tools/run.zig)
+    - [/src/launcher/launcher.zig](/src/launcher/launcher.zig)
 - Deshader library
     - [/src/](/src/)
     - Written in **Zig**

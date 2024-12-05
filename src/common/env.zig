@@ -14,7 +14,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 const std = @import("std");
-const log = @import("../log.zig").DeshaderLog;
+const log = @import("log.zig").DeshaderLog;
 const builtin = @import("builtin");
 
 const c = @cImport({
@@ -91,10 +91,14 @@ pub fn get(name: String) ?String {
     return env.get(name);
 }
 
-// Append to colon-separated list
+/// Append to colon-separated list
 pub fn appendList(name: String, value: String) !void {
+    return appendListWith(name, value, ":");
+}
+
+pub fn appendListWith(name: String, value: String, separator: String) !void {
     const old = env.get(name);
-    const new = if (old) |o| try std.fmt.allocPrint(allocator, "{s}:{s}", .{ o, value }) else value;
+    const new = if (old) |o| try std.fmt.allocPrint(allocator, "{s}{s}{s}", .{ o, separator, value }) else value;
     defer if (old != null) allocator.free(new);
 
     set(name, new);

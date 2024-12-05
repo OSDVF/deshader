@@ -20,11 +20,9 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const options = @import("options");
-const positron = @import("positron");
 const gl = @import("gl");
-const vulkan = @import("vulkan");
-const DeshaderLog = @import("log.zig").DeshaderLog;
-const common = @import("common.zig");
+const common = @import("common");
+const log = common.log;
 const commands = @import("commands.zig");
 const gl_shaders = @import("interceptors/gl_shaders.zig");
 const shaders = @import("services/shaders.zig");
@@ -32,7 +30,6 @@ const shader_decls = @import("declarations/shaders.zig");
 
 const loaders = @import("interceptors/loaders.zig");
 const transitive = @import("interceptors/transitive.zig");
-const gui = if (options.editor) @import("tools/gui.zig") else null;
 
 const String = []const u8;
 
@@ -41,100 +38,12 @@ const String = []const u8;
 //
 
 /// Defines logging options for the whole library
-pub const std_options = @import("log.zig").std_options;
+pub const std_options = common.logging.std_options;
 const err_format = "{s}: {any}";
 
 const SourcesPayload = shader_decls.SourcesPayload;
 const ProgramPayload = shader_decls.ProgramPayload;
 const ExistsBehavior = shader_decls.ExistsBehavior;
-
-pub export fn deshaderEditorServerStart() usize {
-    if (options.editor) {
-        gui.serverStart(common.command_listener) catch |err| {
-            DeshaderLog.err(err_format, .{ @src().fn_name, err });
-            if (@errorReturnTrace()) |trace|
-                std.debug.dumpStackTrace(trace.*);
-            return @intFromError(err);
-        };
-    }
-    return 0;
-}
-
-pub export fn deshaderEditorServerStop() usize {
-    if (options.editor) {
-        gui.serverStop() catch |err| {
-            DeshaderLog.err(err_format, .{ @src().fn_name, err });
-            if (@errorReturnTrace()) |trace|
-                std.debug.dumpStackTrace(trace.*);
-            return @intFromError(err);
-        };
-    }
-    return 0;
-}
-
-pub export fn deshaderEditorWindowShow() usize {
-    DeshaderLog.debug("Show editor window", .{});
-
-    if (common.selfExePathAlloc(common.allocator)) |exe_path| {
-        const exe_basename = std.fs.path.basename(exe_path);
-        const whitelist_env = common.env_prefix ++ "PROCESS";
-        // add to whitelist
-        if (common.env.get(whitelist_env)) |whitelist| {
-            if (std.mem.indexOf(u8, whitelist, exe_basename) == null) {
-                DeshaderLog.debug("Adding {s} to process whitelist", .{exe_basename});
-                common.env.appendList(whitelist_env, exe_basename) catch {};
-            }
-        }
-
-        // remove from blacklist
-        const blacklist_env = common.env_prefix ++ "PROCESS_IGNORE";
-        if (common.env.get(blacklist_env)) |blacklist| {
-            if (std.mem.indexOf(u8, blacklist, exe_basename) != null) {
-                DeshaderLog.debug("Removing {s} from process blacklist", .{exe_basename});
-                common.env.removeList(blacklist_env, exe_basename) catch {};
-            }
-        }
-    } else |err| {
-        DeshaderLog.err("Failed to get exe path: {any}", .{err});
-    }
-
-    if (options.editor) {
-        gui.editorShow(common.command_listener) catch |err| {
-            DeshaderLog.err(err_format, .{ @src().fn_name, err });
-            if (@errorReturnTrace()) |trace|
-                std.debug.dumpStackTrace(trace.*);
-            return @intFromError(err);
-        };
-        return 0;
-    }
-    return 1;
-}
-
-pub export fn deshaderEditorWindowWait() usize {
-    if (options.editor) {
-        gui.editorWait() catch |err| {
-            DeshaderLog.err(err_format, .{ @src().fn_name, err });
-            if (@errorReturnTrace()) |trace|
-                std.debug.dumpStackTrace(trace.*);
-            return @intFromError(err);
-        };
-        return 0;
-    }
-    return 1;
-}
-
-pub export fn deshaderEditorWindowTerminate() usize {
-    if (options.editor) {
-        gui.editorTerminate() catch |err| {
-            DeshaderLog.err(err_format, .{ @src().fn_name, err });
-            if (@errorReturnTrace()) |trace|
-                std.debug.dumpStackTrace(trace.*);
-            return @intFromError(err);
-        };
-        return 0;
-    }
-    return 1;
-}
 
 pub export fn deshaderFreeList(list: [*]const [*:0]const u8, count: usize) void {
     for (list[0..count]) |item| {
@@ -170,7 +79,7 @@ pub export fn deshaderListSourcesUntagged(count: *usize, ref_or_root: usize, nes
 
 pub export fn deshaderRemovePath(path: [*:0]const u8, dir: bool) usize {
     gl_shaders.current.Shaders.untag(std.mem.span(path), dir) catch |err| {
-        DeshaderLog.err(err_format, .{ @src().fn_name, err });
+        log.err(err_format, .{ @src().fn_name, err });
         if (@errorReturnTrace()) |trace|
             std.debug.dumpStackTrace(trace.*);
         return @intFromError(err);
@@ -180,7 +89,7 @@ pub export fn deshaderRemovePath(path: [*:0]const u8, dir: bool) usize {
 
 pub export fn deshaderRemoveSource(ref: usize) usize {
     gl_shaders.current.Shaders.remove(ref) catch |err| {
-        DeshaderLog.err(err_format, .{ @src().fn_name, err });
+        log.err(err_format, .{ @src().fn_name, err });
         if (@errorReturnTrace()) |trace|
             std.debug.dumpStackTrace(trace.*);
         return @intFromError(err);
@@ -194,7 +103,7 @@ pub export fn deshaderRemoveSource(ref: usize) usize {
 /// path cannot contain '>'
 pub export fn deshaderTagSource(ref: usize, part_index: usize, path: [*:0]const u8, if_exists: ExistsBehavior) usize {
     gl_shaders.current.Shaders.assignTag(ref, part_index, std.mem.span(path), if_exists) catch |err| {
-        DeshaderLog.err(err_format, .{ @src().fn_name, err });
+        log.err(err_format, .{ @src().fn_name, err });
         if (@errorReturnTrace()) |trace|
             std.debug.dumpStackTrace(trace.*);
         return @intFromError(err);
@@ -207,7 +116,7 @@ pub export fn deshaderPhysicalWorkspace(virtual: [*:0]const u8, physical: [*:0]c
     _ = _try: {
         gl_shaders.current.mapPhysicalToVirtual(std.mem.span(physical), shaders.GenericLocator.parse(std.mem.span(virtual)) catch |err| break :_try err) catch |err| break :_try err;
     } catch |err| {
-        DeshaderLog.err(err_format, .{ @src().fn_name, err });
+        log.err(err_format, .{ @src().fn_name, err });
         if (@errorReturnTrace()) |trace|
             std.debug.dumpStackTrace(trace.*);
         return @intFromError(err);
@@ -217,13 +126,13 @@ pub export fn deshaderPhysicalWorkspace(virtual: [*:0]const u8, physical: [*:0]c
 
 pub export fn deshaderTaggedProgram(payload: ProgramPayload, behavior: ExistsBehavior) usize {
     gl_shaders.current.programCreateUntagged(payload) catch |err| {
-        DeshaderLog.err(err_format, .{ @src().fn_name, err });
+        log.err(err_format, .{ @src().fn_name, err });
         if (@errorReturnTrace()) |trace|
             std.debug.dumpStackTrace(trace.*);
         return @intFromError(err);
     };
     gl_shaders.current.Programs.assignTag(payload.ref, 0, std.mem.span(payload.path.?), behavior) catch |err| {
-        DeshaderLog.err(err_format, .{ @src().fn_name, err });
+        log.err(err_format, .{ @src().fn_name, err });
         if (@errorReturnTrace()) |trace|
             std.debug.dumpStackTrace(trace.*);
         return @intFromError(err);
@@ -235,7 +144,7 @@ pub export fn deshaderTaggedSource(payload: SourcesPayload, if_exists: ExistsBeh
     std.debug.assert(payload.count == 1);
     std.debug.assert(payload.paths != null);
     gl_shaders.current.sourcesCreateUntagged(payload) catch |err| {
-        DeshaderLog.err(err_format, .{ @src().fn_name, err });
+        log.err(err_format, .{ @src().fn_name, err });
         if (@errorReturnTrace()) |trace|
             std.debug.dumpStackTrace(trace.*);
         return @intFromError(err);
@@ -243,7 +152,7 @@ pub export fn deshaderTaggedSource(payload: SourcesPayload, if_exists: ExistsBeh
     for (0..payload.count) |i| {
         if (payload.paths.?[i]) |path| {
             gl_shaders.current.Programs.assignTag(payload.ref, i, std.mem.span(path), if_exists) catch |err| {
-                DeshaderLog.err(err_format, .{ @src().fn_name, err });
+                log.err(err_format, .{ @src().fn_name, err });
                 if (@errorReturnTrace()) |trace|
                     std.debug.dumpStackTrace(trace.*);
                 return @intFromError(err);
@@ -251,13 +160,6 @@ pub export fn deshaderTaggedSource(payload: SourcesPayload, if_exists: ExistsBeh
         }
     }
     return 0;
-}
-
-/// Not meant to be called externally by any other program than Deshader Launcher Tool. The launcher callback parameters are zig objects which cannot be handled in C
-pub export fn deshaderLauncherGUI(run: *const anyopaque) void {
-    gui.launcherGUI(@alignCast(@ptrCast(run))) catch |err| {
-        DeshaderLog.err("Launcher GUI Error {}", .{err});
-    };
 }
 
 pub export fn deshaderVersion() [*:0]const u8 {
@@ -315,31 +217,8 @@ fn runOnLoad() !void {
         loaders.checkIgnoredProcess();
     }
 
-    // Should the library instance in this process serve as the GUI subprocess?
-    const url = common.env.get(gui.DESHADER_GUI_URL);
-    if (builtin.os.tag != .windows and url != null and common.env.get(common.env_prefix ++ "EDITOR_SHOWN") == null) {
-        if (loaders.ignored) {
-            DeshaderLog.warn("This GUI process is ignored", .{});
-            return;
-        }
-        common.env.set(common.env_prefix ++ "EDITOR_SHOWN", "1");
-        const preload = common.env.get("LD_PRELOAD") orelse "";
-        var replaced = std.ArrayList(u8).init(common.allocator);
-        var it = std.mem.splitAny(u8, preload, ": ");
-        while (it.next()) |part| {
-            if (std.mem.indexOf(u8, part, options.deshaderLibName) == null) {
-                try replaced.appendSlice(part);
-            }
-        }
-        common.env.set("LD_PRELOAD", replaced.items);
-
-        try gui.guiProcess(url.?, "Deshader Editor");
-        replaced.deinit();
-        std.process.exit(0xde); // Do not continue to original program main()
-    }
-
     if (loaders.ignored) {
-        DeshaderLog.info("This process is ignored", .{});
+        log.info("This process is ignored", .{});
         return;
     }
     if (common.env.get(common.env_prefix ++ "HOOKED") == null) {
@@ -349,74 +228,28 @@ fn runOnLoad() !void {
     }
     try shaders.initStatic(common.allocator);
 
-    const commands_port_string_http = common.env.get(common.env_prefix ++ "COMMANDS_HTTP");
-    const commands_port_string_ws: ?String = common.env.get(common.env_prefix ++ "COMMANDS_WS") orelse common.default_ws_port;
-    const port_string_lsp = common.env.get(common.env_prefix ++ "LSP");
-    const commands_port_http = if (commands_port_string_http) |s| std.fmt.parseInt(u16, s, 10) catch blk: {
-        DeshaderLog.info("Specified HTTP commands port is not a number. Server won't start.", .{});
-        break :blk null;
-    } else null;
-    const commands_port_ws = if (commands_port_string_ws) |s| std.fmt.parseInt(u16, s, 10) catch blk: {
-        DeshaderLog.info("Specified WS commands port is not a number. Server won't start.", .{});
-        break :blk null;
-    } else null;
-    const port_lsp = if (port_string_lsp) |p| std.fmt.parseInt(u16, p, 10) catch try std.fmt.parseInt(u16, common.default_lsp_port, 10) else null;
-    // HTTP port is always open
-    common.command_listener = try commands.CommandListener.start(common.allocator, commands_port_http, commands_port_ws, port_lsp);
-    DeshaderLog.debug("Commands HTTP port {?d}", .{commands_port_http});
-    DeshaderLog.debug("Commands WS port {?d}", .{commands_port_ws});
-    if (port_lsp != null) {
-        DeshaderLog.debug("Language server port {d}", .{port_lsp.?});
-    }
+    var configs = std.ArrayListUnmanaged(commands.MutliListener.Config){};
+    defer configs.deinit(common.allocator);
+    const default = try parseConfigAlloc(common.env.get(common.env_prefix ++ "COMMANDS") orelse common.default_ws_url, common.default_ws_url, common.default_ws_port_n);
+    try configs.append(common.allocator, default);
+    if (common.env.get(common.env_prefix ++ "COMMANDS_WS")) |w| if (configNotEqual(try parseConfigAlloc(w, common.default_ws_url, common.default_ws_port_n), configs.getLastOrNull())) |c| try configs.append(common.allocator, c);
+    if (common.env.get(common.env_prefix ++ "COMMANDS_HTTP")) |h| if (configNotEqual(try parseConfigAlloc(h, common.default_http_url, common.default_http_port_n), default)) |c| try configs.append(common.allocator, c);
 
-    const server_at_startup = common.env.get(common.env_prefix ++ "START_SERVER") orelse "0";
-    const ll = try std.ascii.allocLowerString(common.allocator, server_at_startup);
-    defer common.allocator.free(ll);
-    const opts = enum { yes, no, @"1", @"0", true, false, unknown };
-    switch (std.meta.stringToEnum(opts, ll) orelse .unknown) {
-        .yes, .@"1", .true => {
-            _ = deshaderEditorServerStart();
-        },
-        .no, .@"0", .false => {},
-        .unknown => {
-            DeshaderLog.warn("Invalid value for DESHADER_START_SERVER: {s}", .{server_at_startup});
-        },
-    }
-
-    const editor_at_startup = common.env.get(common.env_prefix ++ "GUI") orelse "0";
-    const l = try std.ascii.allocLowerString(common.allocator, editor_at_startup);
-    defer common.allocator.free(l);
-    switch (std.meta.stringToEnum(opts, l) orelse .unknown) {
-        .yes, .@"1", .true => {
-            _ = deshaderEditorWindowShow();
-        },
-        .no, .@"0", .false => {},
-        .unknown => {
-            DeshaderLog.warn("Invalid value for DESHADER_GUI: {s}", .{editor_at_startup});
-        },
-    }
+    commands.instance = try commands.MutliListener.start(common.allocator, configs.items);
 }
 
 /// Will be called upon Deshader library unload
 fn finalize() callconv(.C) void {
     // Inlining is disabled because Zig would otherwise optimize out all the conditions in release mode (compiler bug?)
-    @call(.never_inline, DeshaderLog.debug, .{ "Unloading Deshader library", .{} });
+    @call(.never_inline, log.debug, .{ "Unloading Deshader library", .{} });
     defer @call(.never_inline, common.deinit, .{});
-    if (common.command_listener != null) {
-        @call(.never_inline, commands.CommandListener.stop, .{common.command_listener.?});
-        @call(.never_inline, std.mem.Allocator.destroy, .{ common.allocator, common.command_listener.? });
-    }
-    if (options.editor) {
-        if (gui.gui_process != null) {
-            @call(.never_inline, gui.editorTerminate, .{}) catch |err| {
-                @call(.never_inline, DeshaderLog.err, .{ "{any}", .{err} });
-            };
+
+    if (commands.instance) |i| {
+        for (i.ws_configs.items) |c| {
+            @call(.never_inline, std.mem.Allocator.free, .{ common.allocator, c.address });
         }
-        if (gui.global_provider != null) {
-            @call(.never_inline, gui.serverStop, .{}) catch |err| {
-                @call(.never_inline, DeshaderLog.err, .{ "{any}", .{err} });
-            };
-        }
+        @call(.never_inline, commands.MutliListener.stop, .{i});
+        @call(.never_inline, std.mem.Allocator.destroy, .{ common.allocator, i });
     }
     if (!loaders.ignored) {
         @call(.never_inline, shaders.deinitStatic, .{});
@@ -428,9 +261,31 @@ fn finalize() callconv(.C) void {
 /// Will be called upon Deshader library load and BEFORE the host application's main()
 fn wrapErrorRunOnLoad() callconv(.C) void {
     runOnLoad() catch |err| {
-        DeshaderLog.err("Initialization error: {any}", .{err});
+        log.err("Initialization error: {any}", .{err});
         if (@errorReturnTrace()) |trace| {
             std.debug.dumpStackTrace(trace.*);
         }
     };
+}
+
+fn parseConfigAlloc(uri: ?String, default: String, default_port: u16) !commands.MutliListener.Config {
+    const parsed = if (uri) |u|
+        std.Uri.parse(u) catch std.Uri.parseAfterScheme(std.mem.sliceTo(default, ':'), u) catch fallback: {
+            log.err("Invalid URI: {s}", .{u});
+            break :fallback std.Uri.parse(default) catch unreachable;
+        }
+    else
+        std.Uri.parse(default) catch unreachable;
+    return .{
+        .host = try std.fmt.allocPrint(common.allocator, "{raw}", .{(parsed.host orelse (std.Uri.parse(default) catch unreachable).host.?)}),
+        .port = parsed.port orelse default_port,
+        .protocol = if (std.ascii.eqlIgnoreCase(parsed.scheme, "ws")) .WS else .HTTP,
+    };
+}
+
+fn configNotEqual(a: commands.MutliListener.Config, mb: ?commands.MutliListener.Config) ?commands.MutliListener.Config {
+    if (mb) |b| if (a.protocol != b.protocol or !std.ascii.eqlIgnoreCase(a.host, b.host) or a.port != b.port) {
+        return a;
+    };
+    return null;
 }

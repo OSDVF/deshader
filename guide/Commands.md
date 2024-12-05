@@ -42,14 +42,10 @@ All commands are passed URL-encoded with arguments as query parameters (`?query=
 
 # Commands List
 
-Command               | Parameters                                                   | Returns/Description
-----------------------|--------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------
-editorServerStart     |                                                              | `void` Start serving VSCode editor at port `DESHADER_PORT` or default `8080`. Open with a web browser.
-editorServerStop      |                                                              | `void` Stop serving VSCode editor
-editorWindowShow      |                                                              | `void` Show embedded web browser viewing VSCode editor
-editorWindowTerminate |                                                              |
-help                  |                                                              | List all possible command names
-list                  | path:`string`, recursive:`bool(true)`, physical:`bool(true)` | `string[]` List all tagged and untagged programs and shaders found in the application, all files in the mapped workspace
-version               |                                                              | `string` Deshader library version
+Command | Parameters                                                   | Returns/Description
+--------|--------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------
+help    |                                                              | List all possible command names
+list    | path:`string`, recursive:`bool(true)`, physical:`bool(true)` | `string[]` List all tagged and untagged programs and shaders found in the application, all files in the mapped workspace
+version |                                                              | `string` Deshader library version
 
 [^1]: Include all detected shaders or only tagged ones (with `deshaderTag...(...)`)

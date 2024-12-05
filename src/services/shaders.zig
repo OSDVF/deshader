@@ -26,8 +26,8 @@ const std = @import("std");
 const builtin = @import("builtin");
 const analyzer = @import("glsl_analyzer");
 
-const common = @import("../common.zig");
-const log = @import("../log.zig").DeshaderLog;
+const common = @import("common");
+const log = common.log;
 const decls = @import("../declarations/shaders.zig");
 const storage = @import("storage.zig");
 const debug = @import("debug.zig");

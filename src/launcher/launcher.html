@@ -13,8 +13,7 @@
         <div>
             <p>
                 <label for="program">Program</label>
-                <input type="text" id="program" required oninput="setCustomValidity('')"
-                    oninvalid="setCustomValidity('Enter program path')"><button type="button"
+                <input type="text" id="program" required><button type="button"
                     onclick="pickFile()">Browse</button>
             </p>
             <p>
@@ -25,7 +24,7 @@
                     placeholder="(PROGRAM DIRECTORY)"><button type="button" onclick="pickDirectory()">Browse</button>
             </p>
             <div>
-                <input type="checkbox" id="do_whitelist" checked><label for="whitelist">Whitelist...</label>
+                <input type="checkbox" id="do_whitelist" checked><label for="do_whitelist">Whitelist...</label>
                 <div id="whitelist_list" style="display: none;">
                     <input type="text" placeholder="(PROCESS_NAME)" name="whitelist[]" id="whitelist_first">
                 </div>
@@ -113,9 +112,9 @@
             const formData = new FormData(e.target)
             const env = [
                 'DESHADER_GUI=' + (editor.checked ? '1' : '0'),
-                'DESHADER_LSP=' + (editor.checked && lsp.checked ? '8083' : ''),
-                'DESHADER_PROCESS=' + do_whitelist.checked ? formData.getAll('whitelist[]').join(':') : '',
-                'DESHADER_IGNORE_PROCESS=' + do_blacklist.checked ? formData.getAll('blacklist[]').join(':') : ''
+                'DESHADER_LSP=' + ((editor.checked && lsp.checked) ? '8083' : ''),
+                'DESHADER_PROCESS=' + (do_whitelist.checked ? formData.getAll('whitelist[]').join(':') : ''),
+                'DESHADER_IGNORE_PROCESS=' + (do_blacklist.checked ? formData.getAll('blacklist[]').join(':') : '')
             ]
 
             overlay.style.display = "flex"

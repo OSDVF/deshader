@@ -19,13 +19,12 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const positron = @import("positron");
-const common = @import("../common.zig");
-const commands = @import("../commands.zig");
+const common = @import("common");
 const options = @import("options");
 const ctregex = @import("ctregex");
-const extended_wv = @import("./extended_wv.zig");
+const extended_wv = @import("extended_wv.zig");
 
-const DeshaderLog = @import("../log.zig").DeshaderLog;
+const log = std.log.scoped(.GUI);
 
 const C = @cImport(if (builtin.os.tag == .linux) {
     @cInclude("gtk/gtk.h");
@@ -87,20 +86,7 @@ fn resolveMime(path: String) String {
 }
 
 // basicaly a HTTP server
-pub fn createEditorProvider(command_listener: ?*const commands.CommandListener) !*positron.Provider {
-    var port: u16 = undefined;
-    if (common.env.get(common.env_prefix ++ "PORT")) |portString| {
-        if (std.fmt.parseInt(u16, portString, 10)) |parsedPort| {
-            port = parsedPort;
-        } else |err| {
-            DeshaderLog.err("Invalid port: {any}. Using default 8080", .{err});
-            port = 8080;
-        }
-    } else {
-        DeshaderLog.warn(common.env_prefix ++ "PORT not set, using default port 8080", .{});
-        port = 8080;
-    }
-
+pub fn createEditorProvider(port: u16, commands_host: ?String, lsp_host: ?String) !*positron.Provider {
     var provider = try positron.Provider.create(common.allocator, port);
     provider.allowed_origins = std.BufSet.init(provider.allocator);
     inline for (.{ "localhost", "127.0.0.1" }) |origin| {
@@ -131,39 +117,32 @@ pub fn createEditorProvider(command_listener: ?*const commands.CommandListener) 
         // assume all paths start with `options.editor_dir`
         const compressed_or_content = if (builtin.mode != .Debug) @embedFile(file);
         if (comptime std.mem.eql(u8, f_address, "/deshader-vscode/dist/extension.js")) {
+            var decompressed_data: String = undefined;
+            if (builtin.mode == .Debug) {
+                const handle = try if (dll_dir) |d| d.openFile(options.editor_dir_relative ++ f_address, .{}) else std.fs.cwd().openFile(file, .{});
+                defer handle.close();
+                decompressed_data = try handle.readToEndAlloc(provider.allocator, provider.max_file_size);
+            } else {
+                var stream = std.io.fixedBufferStream(compressed_or_content);
+                const reader = stream.reader();
+                var decompressor = std.compress.zlib.decompressor(reader);
+                var decompressed = decompressor.reader();
+                decompressed_data = try decompressed.readAllAlloc(provider.allocator, provider.max_file_size);
+            }
+            defer provider.allocator.free(decompressed_data);
+
             // Inject editor config into Deshader extension
             // Construct editor base url and config JSON
-            var editor_config: ?String = null;
-            const editor_config_fmt = "{s}\nglobalThis.deshader={{lsp:{{port:{d}}},{s}:{{host:\"";
-            if (command_listener) |cl| {
-                var decompressed_data: String = undefined;
-                if (cl.ws_config != null or cl.http != null) {
-                    if (builtin.mode == .Debug) {
-                        const handle = try if (dll_dir) |d| d.openFile(options.editor_dir_relative ++ f_address, .{}) else std.fs.cwd().openFile(file, .{});
-                        defer handle.close();
-                        decompressed_data = try handle.readToEndAlloc(provider.allocator, provider.max_file_size);
-                    } else {
-                        var stream = std.io.fixedBufferStream(compressed_or_content);
-                        const reader = stream.reader();
-                        var decompressor = std.compress.zlib.decompressor(reader);
-                        var decompressed = decompressor.reader();
-                        decompressed_data = try decompressed.readAllAlloc(provider.allocator, provider.max_file_size);
-                    }
-                    defer provider.allocator.free(decompressed_data);
-                    if (cl.ws_config) |wsc| {
-                        editor_config = try std.fmt.allocPrint(provider.allocator, editor_config_fmt ++ "{s}\",port:{d}}}}}\n", .{ decompressed_data, commands.setting_vars.languageServerPort, if (cl.secure) "wss" else "ws", wsc.address, wsc.port });
-                    } else {
-                        if (cl.http) |http| {
-                            if (http.server.bindings.getLastOrNull()) |bind| {
-                                editor_config = try std.fmt.allocPrint(provider.allocator, editor_config_fmt ++ "{}\",port:{d}}}}}\n", .{ decompressed_data, commands.setting_vars.languageServerPort, if (cl.secure) "https" else "http", bind.address, bind.port });
-                            }
-                        }
-                    }
-                }
-            }
-            if (editor_config) |c| {
-                defer provider.allocator.free(c);
-                try provider.addContent(f_address, mime_type, c);
+            if (lsp_host != null or commands_host != null) {
+                const editor_config = try std.fmt.allocPrint(provider.allocator,
+                    \\{s}
+                    \\globalThis.deshader={{
+                    \\  lsp:"{?s}",
+                    \\  commands:"{?s}"
+                    \\}}
+                ++ "", .{ decompressed_data, lsp_host, commands_host });
+                defer provider.allocator.free(editor_config);
+                try provider.addContent(f_address, mime_type, editor_config);
             } else if (builtin.mode != .Debug) {
                 try provider.addContentDeflatedNoAlloc(f_address, mime_type, compressed_or_content);
             }
@@ -186,14 +165,14 @@ pub const EditorProviderError = error{ AlreadyRunning, NotRunning };
 
 pub var global_provider: ?*positron.Provider = null;
 var base_url: ZString = undefined;
-pub fn serverStart(command_listener: ?*const commands.CommandListener) !void {
+pub fn serverStart(port: u16, commands_host: ?String, lsp_host: ?String) !void {
     if (global_provider != null) {
         for (global_provider.?.server.bindings.items) |binding| {
-            DeshaderLog.err("GUI server already running on port {d}", .{binding.port});
+            log.err("GUI server already running on port {d}", .{binding.port});
         }
         return error.AlreadyRunning;
     }
-    global_provider = try createEditorProvider(command_listener);
+    global_provider = try createEditorProvider(port, commands_host, lsp_host);
     errdefer {
         global_provider.?.destroy();
         global_provider = null;
@@ -208,7 +187,7 @@ pub fn serverStop() EditorProviderError!void {
         common.allocator.destroy(p);
         global_provider = null;
     } else {
-        DeshaderLog.err("GUI server not running", .{});
+        log.err("GUI server not running", .{});
         return error.NotRunning;
     }
 }
@@ -217,37 +196,37 @@ pub fn serverStop() EditorProviderError!void {
 pub var gui_process: if (builtin.os.tag == .windows) ?std.Thread else ?std.process.Child = null;
 var gui_mutex = std.Thread.Mutex{};
 var gui_shutdown = std.Thread.Condition{};
-pub var state = extended_wv.State{
-    .view = undefined,
-    .run = &dummyRun,
-};
+var state: extended_wv.State = undefined;
+
 const GuiErrors = error{GuiNotEmbedded};
 pub const DESHADER_GUI_URL = common.env_prefix ++ "GUI_URL";
 
 /// Spawns a new thread that runs the editor
 /// This function will block until the editor is ready to be used
-pub fn editorShow(command_listener: ?*const commands.CommandListener) !void {
+pub fn editorShow(port: u16, commands_host: ?String, lsp_host: ?String) !void {
     if (!options.editor) {
-        DeshaderLog.err("GUI not embedded in this Deshader distribution. Cannot show it.", .{});
+        log.err("GUI not embedded in this Deshader Launcher distribution. Cannot show it.", .{});
         return error.GuiNotEmbedded;
     }
 
     if (global_provider == null) {
-        try serverStart(command_listener);
+        try serverStart(port, commands_host, lsp_host);
     }
     if (gui_process != null or common.env.get(DESHADER_GUI_URL) != null) {
-        DeshaderLog.err("GUI already running", .{});
+        log.err("GUI already running", .{});
         return error.AlreadyRunning;
     }
 
     base_url = (try global_provider.?.getUriAlloc("/index.html")).?;
-    DeshaderLog.info("GUI URL: {s}", .{base_url});
+    log.info("GUI URL: {s}", .{base_url});
 
     if (builtin.os.tag == .windows) {
+        // On Windows, the GUI runs in a separate thread
         gui_process = try std.Thread.spawn(.{ .allocator = common.allocator }, guiProcess, .{ base_url, "Deshader Editor" });
         gui_process.?.setName("GUI") catch {};
         gui_process.?.detach();
     } else {
+        // On Unix, the GUI runs in a separate process
         const exe_or_dll_path = try common.selfExePathAlloc(global_provider.?.allocator);
         defer global_provider.?.allocator.free(exe_or_dll_path);
         // Duplicate the current process and set env vars to indicate that the child should act as the Editor Window
@@ -284,24 +263,6 @@ pub fn editorShow(command_listener: ?*const commands.CommandListener) !void {
     }
 }
 
-pub fn launcherGUI(run: *const fn (target_argv: []const String, working_dir: ?String, env: ?*std.BufMap, terminate: *std.Thread.Condition, terminate_mutex: *std.Thread.Mutex) anyerror!void) !void {
-    state.run = run;
-    const content = @embedFile("../tools/run.html");
-    const result_len = std.base64.standard.Encoder.calcSize(content.len);
-    const preamble = "data:text/html;base64,";
-    const result = try common.allocator.alloc(u8, result_len + preamble.len);
-    defer common.allocator.free(result);
-
-    @memcpy(result[0..preamble.len], preamble);
-    _ = std.base64.standard.Encoder.encode(result[preamble.len..], content);
-
-    if (builtin.os.tag == .linux) {
-        // ignore zenity processes (file dialogs) and WebKitWebProcess (used by WebKitGTK)
-        try common.env.appendList(common.env_prefix ++ "IGNORE_PROCESS", "zenity:WebKitWebProcess");
-    }
-    try guiProcess(result, "Deshader Launcher");
-}
-
 pub fn editorTerminate() !void {
     if (gui_process) |*p| {
         if (builtin.os.tag == .windows) {
@@ -312,9 +273,9 @@ pub fn editorTerminate() !void {
         if (global_provider) |pr| {
             pr.allocator.free(base_url);
         }
-        DeshaderLog.debug("Editor terminated", .{});
+        log.debug("Editor terminated", .{});
     } else {
-        DeshaderLog.err("Editor not running", .{});
+        log.err("Editor not running", .{});
         return error.NotRunning;
     }
 }
@@ -326,10 +287,10 @@ pub fn editorWait() !void {
             gui_shutdown.wait(&gui_mutex);
             gui_mutex.unlock();
         } else {
-            _ = std.posix.waitpid(p.id, 0);
+            common.process.wailNoFailReport(p);
         }
     } else {
-        DeshaderLog.err("Editor not running", .{});
+        log.err("Editor not running", .{});
         return error.NotRunning;
     }
 }
@@ -340,6 +301,7 @@ fn dummyRun(_: []const String, _: ?String, _: ?*std.BufMap, _: *std.Thread.Condi
 // The following code should exist only in the GUI subprocess
 //
 pub fn guiProcess(url: String, title: ZString) !void {
+    state = .{};
     const deshader = "deshader";
     const window = if (builtin.os.tag == .linux) create: {
         _ = C.gtk_init_check(null, null);

@@ -20,12 +20,13 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const gl = @import("gl");
+const options = @import("options");
 const decls = @import("../declarations/shaders.zig");
 const shaders = @import("../services/shaders.zig");
 const storage = @import("../services/storage.zig");
 const instrumentation = @import("../services/instrumentation.zig");
-const log = @import("../log.zig").DeshaderLog;
-const common = @import("../common.zig");
+const common = @import("common");
+const log = common.log;
 const commands = @import("../commands.zig");
 const args = @import("args");
 const main = @import("../main.zig");
@@ -406,14 +407,14 @@ fn processOutput(r: InstrumentationResult) !void {
 
         const running_shader = try shaders.running.getOrPut(.{ .service = current, .shader = shader_ref });
         if (bp_hit_ids.count() > 0) {
-            if (common.command_listener) |comm| {
+            if (commands.instance) |comm| {
                 try comm.eventBreak(.stopOnBreakpoint, .{
                     .ids = bp_hit_ids.keys(),
                     .shader = @intFromPtr(running_shader.key_ptr),
                 });
             }
         } else if (selected_thread_rstep) |reached_step| {
-            if (common.command_listener) |comm| {
+            if (commands.instance) |comm| {
                 try comm.eventBreak(.stop, .{
                     .step = reached_step,
                     .shader = @intFromPtr(running_shader.key_ptr),
@@ -444,7 +445,7 @@ fn deinitBuffer(out_storage: *instrumentation.OutputStorage, _: std.mem.Allocato
 fn prepareStorage(input: InstrumentationResult) !InstrumentationResult {
     var result = input; // make mutable
     if (result.result.invalidated) {
-        if (common.command_listener) |comm| {
+        if (commands.instance) |comm| {
             try comm.sendEvent(.invalidated, debug.InvalidatedEvent{ .areas = &.{debug.InvalidatedEvent.Areas.threads} });
         }
     }
@@ -1260,40 +1261,40 @@ pub export fn glShaderSource(shader: gl.uint, count: gl.sizei, sources: [*][*:0]
                         &arg_iter,
                         common.allocator,
                         args.ErrorHandling{ .collect = &ec },
-                    )) |options| {
-                        defer options.deinit();
-                        if (options.verb) |v| {
+                    )) |opts| {
+                        defer opts.deinit();
+                        if (opts.verb) |v| {
                             switch (v) {
                                 // Workspace include
                                 .workspace => {
-                                    current.mapPhysicalToVirtual(options.positionals[0], .{ .sources = .{ .tagged = options.positionals[1] } }) catch |err| failedWorkspacePath(options.positionals[0], err);
+                                    current.mapPhysicalToVirtual(opts.positionals[0], .{ .sources = .{ .tagged = opts.positionals[1] } }) catch |err| failedWorkspacePath(opts.positionals[0], err);
                                 },
                                 .source => {
-                                    current.Shaders.assignTag(shader_wide, source_i, options.positionals[0], .Error) catch |err| objLabErr(options.positionals[0], shader, source_i, err);
+                                    current.Shaders.assignTag(shader_wide, source_i, opts.positionals[0], .Error) catch |err| objLabErr(opts.positionals[0], shader, source_i, err);
                                 },
                                 .@"source-link" => {
-                                    current.Shaders.assignTag(shader_wide, source_i, options.positionals[0], .Link) catch |err| objLabErr(options.positionals[0], shader, source_i, err);
+                                    current.Shaders.assignTag(shader_wide, source_i, opts.positionals[0], .Link) catch |err| objLabErr(opts.positionals[0], shader, source_i, err);
                                 },
                                 .@"source-purge-previous" => {
-                                    current.Shaders.assignTag(shader_wide, source_i, options.positionals[0], .Overwrite) catch |err| objLabErr(options.positionals[0], shader, source_i, err);
+                                    current.Shaders.assignTag(shader_wide, source_i, opts.positionals[0], .Overwrite) catch |err| objLabErr(opts.positionals[0], shader, source_i, err);
                                 },
                                 .breakpoint, .print, .@"breakpoint-if", .@"breakpoint-after", .@"print-if" => {
                                     const condition_pos: usize = if (v == .@"breakpoint-after" or v == .@"breakpoint-if" or v == .@"print-if") 1 else 0;
                                     const new = debug.SourceBreakpoint{
                                         .line = line_i + 1,
                                         .logMessage = if (v == .print or v == .@"print-if")
-                                            std.mem.join(common.allocator, " ", options.positionals[condition_pos..]) catch null
+                                            std.mem.join(common.allocator, " ", opts.positionals[condition_pos..]) catch null
                                         else
                                             null,
-                                        .condition = if (v == .@"breakpoint-if" or v == .@"print-if") options.positionals[condition_pos] else null,
-                                        .hitCondition = if (v == .@"breakpoint-after") options.positionals[condition_pos] else null,
+                                        .condition = if (v == .@"breakpoint-if" or v == .@"print-if") opts.positionals[condition_pos] else null,
+                                        .hitCondition = if (v == .@"breakpoint-after") opts.positionals[condition_pos] else null,
                                     }; // The breakpoint is in fact targeted on the next line
                                     if (current.addBreakpoint(.{ .untagged = .{ .ref = shader_wide, .part = source_i } }, new)) |bp| {
                                         if (bp.id) |stop_id| { // if verified
                                             log.debug("Shader {x} part {d}: breakpoint at line {d}, column {?d}", .{ shader, source_i, line_i, bp.column });
                                             // push an event to the debugger
-                                            if (common.command_listener != null and common.command_listener.?.hasClient()) {
-                                                common.command_listener.?.sendEvent(.breakpoint, debug.BreakpointEvent{ .breakpoint = bp, .reason = .new }) catch {};
+                                            if (commands.instance != null and commands.instance.?.hasClient()) {
+                                                commands.instance.?.sendEvent(.breakpoint, debug.BreakpointEvent{ .breakpoint = bp, .reason = .new }) catch {};
                                             } else {
                                                 current.breakpoints_to_send.append(current.allocator, .{ shader, source_i, stop_id }) catch {};
                                             }
@@ -1467,15 +1468,16 @@ pub export fn glDebugMessageInsert(source: gl.@"enum", _type: gl.@"enum", id: gl
                     }
                 }
             },
-            ids.COMMAND_EDITOR_SHOW => _ = main.deshaderEditorWindowShow(),
-            ids.COMMAND_EDITOR_TERMINATE => _ = main.deshaderEditorWindowTerminate(),
-            ids.COMMAND_EDITOR_WAIT => _ = main.deshaderEditorWindowWait(),
+            ids.COMMAND_VERSION => {
+                std.io.getStdOut().writeAll(options.version ++ "\n") catch {};
+            },
             else => {},
         }
     }
     callIfLoaded("DebugMessageInsert", .{ source, _type, id, severity, length, buf });
 }
 
+/// Calls a function from the OpenGL context if it is available
 fn callIfLoaded(comptime proc: String, a: anytype) voidOrOptional(returnType(@field(gl, proc))) {
     const proc_ret = returnType(@field(gl, proc));
     return if (state.get(current)) |s| if (s.proc_table) |t| if (@intFromPtr(@field(t, proc)) != 0) @call(.auto, @field(gl, proc), a) else voidOrNull(proc_ret) else voidOrNull(proc_ret) else voidOrNull(proc_ret);
@@ -1628,6 +1630,18 @@ pub fn supportCheck(extension_iterator: anytype) bool {
     return false;
 }
 
+noinline fn dumpProcTableErrors(c_state: *State) void {
+    var stderr = std.io.getStdErr();
+    stderr.writeAll("\n") catch {};
+    inline for (@typeInfo(gl.ProcTable).Struct.fields) |decl| {
+        const p = @field(c_state.proc_table.?, decl.name);
+        if (@intFromPtr(p) == 0) {
+            stderr.writeAll(decl.name) catch {};
+            stderr.writeAll("\n") catch {};
+        }
+    }
+}
+
 // TODO destroying contexts
 /// Performs context switching and initialization
 pub fn makeCurrent(comptime api: anytype, c: ?*const anyopaque) void {
@@ -1654,18 +1668,9 @@ pub fn makeCurrent(comptime api: anytype, c: ?*const anyopaque) void {
                             return api.loader.?(name) orelse api.lib.?.lookup(*const anyopaque, std.mem.span(name));
                         }
                     }.loader else api.loader.?)) {
-                        var f = std.ArrayListUnmanaged(u8){};
-                        defer if (builtin.mode == .Debug) f.deinit(common.allocator);
-                        if (builtin.mode == .Debug) {
-                            f.append(common.allocator, '\n') catch {};
-                            inline for (@typeInfo(gl.ProcTable).Struct.fields) |decl| {
-                                const p = @field(c_state.proc_table.?, decl.name);
-                                if (@intFromPtr(p) == 0) {
-                                    f.appendSlice(common.allocator, decl.name ++ "\n") catch {};
-                                }
-                            }
-                        }
-                        log.err("Failed to load some GL functions{s}", .{if (builtin.mode == .Debug) f.items else ""});
+                        log.err("Failed to load some GL functions.", .{});
+                        if (options.logInterception) @call(.never_inline, dumpProcTableErrors, .{c_state}) // Only do this if logging is enabled, because it adds a few megabytes to the binary size
+                        else log.debug("Build with -DlogInterception to show which ones.", .{});
                     }
                 }
 
@@ -1710,7 +1715,7 @@ pub fn makeCurrent(comptime api: anytype, c: ?*const anyopaque) void {
                 result.value_ptr.init(common.allocator) catch |err| break :_try err;
 
                 // Send a notification to debug adapter client
-                if (common.command_listener) |cl| {
+                if (commands.instance) |cl| {
                     cl.sendEvent(.invalidated, debug.InvalidatedEvent{ .areas = &.{.contexts}, .numContexts = shaders.services.count() }) catch |err| break :_try err;
                 }
             }

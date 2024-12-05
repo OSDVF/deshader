@@ -16,9 +16,11 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const options = @import("options");
+
+pub const logging = @import("common/log.zig");
 pub const env = @import("common/env.zig");
 pub const process = @import("common/process.zig");
-const commands = @import("commands.zig");
+
 const c = @cImport({
     if (builtin.os.tag == .windows) {
         @cInclude("windows.h");
@@ -28,7 +30,7 @@ const c = @cImport({
     } else @cInclude("dlfcn.h");
 });
 
-const log = @import("log.zig").DeshaderLog;
+pub const log = logging.DeshaderLog;
 
 const String = []const u8;
 const CString = [*:0]const u8;
@@ -41,9 +43,14 @@ pub var allocator: std.mem.Allocator = undefined;
 pub var initialized = false;
 pub const env_prefix = "DESHADER_";
 pub const default_http_port = "8081";
+pub const default_http_port_n = 8081;
 pub const default_ws_port = "8082";
+pub const default_ws_port_n = 8082;
 pub const default_lsp_port = "8083";
-pub var command_listener: ?*commands.CommandListener = null;
+pub const default_lsp_port_n = 8083;
+pub const default_ws_url = "ws://127.0.0.1:" ++ default_ws_port;
+pub const default_lsp_url = "ws://127.0.0.1:" ++ default_lsp_port;
+pub const default_http_url = "http://127.0.0.1:" ++ default_http_port;
 
 pub const null_trace = std.builtin.StackTrace{
     .index = 0,
@@ -214,7 +221,7 @@ pub fn selfDllPathAlloc(a: std.mem.Allocator, concat_with: String) !String {
         _ = c.dl_iterate_phdr(callback, null);
     } else {
         var info: c.Dl_info = undefined;
-        if (c.dladdr(&dummy, &info) == 0) {
+        if (c.dladdr(&options.version, &info) == 0) {
             return error.DlAddr;
         } else {
             return a.dupe(u8, std.mem.span(info.dli_fname));
@@ -222,8 +229,6 @@ pub fn selfDllPathAlloc(a: std.mem.Allocator, concat_with: String) !String {
     }
     return a.dupe(u8, so_path);
 }
-
-export fn dummy() void {}
 
 /// Wraps std.fs.selfExePathAlloc or gets argv[0] on Windows to workaround Wine bug
 pub fn selfExePathAlloc(alloc: std.mem.Allocator) !String {

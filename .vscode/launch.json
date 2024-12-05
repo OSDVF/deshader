@@ -2,15 +2,26 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "GDB - Launcher",
+            "name": "GDB - Launcher GLFW",
             "type": "gdb",
             "request": "launch",
             "cwd": "${workspaceRoot}",
             "target": "./zig-out/bin/deshader-run",
             "preLaunchTask": "Build Launcher",
-            "arguments": "-y zig-out/bin/deshader-examples/glfw",
+            "arguments": "-y -e zig-out/bin/deshader-examples/glfw",
             "env": {
                 "DESHADER_LIB": "zig-out/lib/libdeshader.so",
+            },
+        },
+        {
+            "name": "GDB - Launcher Editor",
+            "type": "gdb",
+            "request": "launch",
+            "cwd": "${workspaceRoot}/..",
+            "target": "./deshader/zig-out/bin/deshader-run",
+            "env": {
+                "DESHADER_LIB": "deshader/zig-out/lib",
+                "DESHADER_IGNORE_PROCESS": "gdb:zsh:llvm-symbolizer:code",
             },
         },
         {
@@ -19,7 +30,7 @@
             "request": "launch",
             "cwd": "${workspaceRoot}/..",
             "target": "./deshader/zig-out/bin/deshader-run",
-            "arguments": "-version",
+            "arguments": "-g",
             "env": {
                 "DESHADER_LIB": "deshader/zig-out/lib",
                 "DESHADER_IGNORE_PROCESS": "gdb:zsh:llvm-symbolizer:code",
@@ -176,7 +187,7 @@
         {
             "type": "cppvsdbg",
             "request": "launch",
-            "program": "${workspaceRoot}/zig-out/bin/deshader-examples/editor_linked_cpp.exe",
+            "program": "${workspaceRoot}/zig-out/bin/deshader-examples/linked_cpp.exe",
             "name": "CPPDBG - Editor Linked",
             "cwd": "${workspaceRoot}/zig-out/lib/",
             "environment": [
@@ -198,7 +209,7 @@
             "type": "gdb",
             "request": "launch",
             "name": "GDB - Editor in C++",
-            "target": "./zig-out/bin/deshader-examples/editor_linked_cpp",
+            "target": "./zig-out/bin/deshader-examples/linked_cpp",
             "cwd": "${workspaceRoot}",
             "valuesFormatting": "parseText",
             "preLaunchTask": "Build Examples",

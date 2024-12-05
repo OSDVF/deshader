@@ -16,8 +16,7 @@
 //! Edit-time analysis. Wraps glsl_analyzer library
 const std = @import("std");
 const analyzer = @import("glsl_analyzer");
-const shaders = @import("shaders.zig").current;
-const common = @import("../common.zig");
+const common = @import("common");
 
 //
 // Server control

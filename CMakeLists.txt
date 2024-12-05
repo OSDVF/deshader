@@ -32,7 +32,7 @@ file(
     ${CMAKE_CURRENT_SOURCE_DIR}/src/declarations/*.zig
     ${CMAKE_CURRENT_SOURCE_DIR}/src/interceptors/*.zig
     ${CMAKE_CURRENT_SOURCE_DIR}/src/services/*.zig
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/tools/*.zig
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/launcher/*.zig
 )
 
 separate_arguments(SEPARATED_DESHADER_FLAGS UNIX_COMMAND "${DESHADER_BUILD_FLAGS}")
@@ -89,14 +89,14 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_C_STANDARD 99)
 include_directories(${CMAKE_BINARY_DIR}/include/) # here is deshader.hpp
 
-# Editor
-add_executable(example_editor examples/editor_linked.cpp)
+# Linked with C++
+add_executable(example_editor examples/linked.cpp)
 
-# Debug Commands
+# Debug Commands from C++
 add_executable(example_debug_commands examples/debug_commands.cpp)
 add_dependencies(example_debug_commands deshader)
 
-# GLFW
+# GLFW from C++
 add_executable(example_glfw examples/glfw.cpp)
 find_package(glfw3 3.3)
 find_package(GLEW)

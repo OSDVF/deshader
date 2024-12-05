@@ -20,7 +20,7 @@
 
 const std = @import("std");
 const analyzer = @import("glsl_analyzer");
-const log = @import("../log.zig").DeshaderLog;
+const log = @import("common").log;
 const decls = @import("../declarations/shaders.zig");
 
 const String = []const u8;

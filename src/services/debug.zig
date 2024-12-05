@@ -20,7 +20,7 @@
 //!
 //! `InvalidatedEvent` is enriched with `context` and `numContexts` fields.
 const std = @import("std");
-const common = @import("../common.zig");
+const common = @import("common");
 
 const String = []const u8;
 

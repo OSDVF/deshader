@@ -18,15 +18,13 @@ const positron = @import("positron");
 const serve = @import("serve");
 const websocket = @import("websocket");
 
-const common = @import("common.zig");
-const logging = @import("log.zig");
-const DeshaderLog = logging.DeshaderLog;
+const common = @import("common");
+const logging = common.logging;
+const DeshaderLog = common.log;
 const options = @import("options");
-const gui = if (options.editor) @import("tools/gui.zig") else null;
 const storage = @import("services/storage.zig");
 const dap = @import("services/debug.zig");
 const shaders = @import("services/shaders.zig");
-const analysis = @import("services/analysis.zig");
 const analyzer = @import("glsl_analyzer");
 
 const String = []const u8;
@@ -36,24 +34,32 @@ const logParsing = false;
 
 pub const setting_vars = struct {
     pub var logIntoResponses = false;
-    pub var languageServerPort: u16 = std.fmt.parseInt(u16, common.default_lsp_port, 10) catch 8083;
-    // TODO recreate providers on port change
-    pub var commandsHttpPort: u16 = std.fmt.parseInt(u16, common.default_http_port, 10) catch 8080;
-    pub var commandsWsPort: u16 = std.fmt.parseInt(u16, common.default_ws_port, 10) catch 8081;
     /// Are shader parts automatically merged in glShaderSource? (so they will all belong to the same tag)
     pub var singleChunkShader: bool = true;
     pub var stackTraces: bool = false;
 };
 
-pub const CommandListener = struct {
+pub var instance: ?*MutliListener = null;
+
+pub const MutliListener = struct {
     const ArgumentsMap = common.ArgumentsMap;
+    pub const Config = struct {
+        protocol: enum {
+            WS,
+            HTTP,
+        },
+        host: String,
+        port: u16,
+    };
     const queryArgsMap = common.queryToArgsMap;
     const json_options = std.json.StringifyOptions{ .whitespace = .minified, .emit_null_optional_fields = false };
 
     // various command providers
     http: ?*positron.Provider = null,
     ws: std.ArrayList(*websocket.Conn) = undefined,
-    ws_config: ?websocket.Config = null,
+
+    ws_configs: std.ArrayListUnmanaged(websocket.Config) = .{},
+
     provide_thread: ?std.Thread = null,
     websocket_thread: ?std.Thread = null,
     websocket_arena: std.heap.ArenaAllocator = undefined,
@@ -64,29 +70,45 @@ pub const CommandListener = struct {
     do_resume: bool = false,
     paused: bool = false,
 
-    pub fn start(allocator: std.mem.Allocator, http_port: ?u16, ws_port: ?u16, lsp_port: ?u16) !*@This() {
+    pub fn start(allocator: std.mem.Allocator, config: []const Config) !*@This() {
         const self = try allocator.create(@This());
         self.* = @This(){}; // zero out the struct
         errdefer allocator.destroy(self);
         self.ws = std.ArrayList(*websocket.Conn).init(allocator);
         errdefer self.ws.deinit();
 
-        self.provider_arena = std.heap.ArenaAllocator.init(allocator);
-        // WS Command Listener
-        if (ws_port) |port| {
-            setting_vars.commandsWsPort = port;
-            if (!try common.isPortFree(null, port)) {
-                return error.AddressInUse;
-            }
+        var http_configs = std.ArrayListUnmanaged(Config){};
+        defer http_configs.deinit(allocator);
 
-            self.ws_config = websocket.Config{
-                .port = port,
-                .address = "127.0.0.1",
+        self.provider_arena = std.heap.ArenaAllocator.init(allocator);
+
+        // Filter configs
+        for (config) |c| {
+            try switch (c.protocol) {
+                .WS => self.ws_configs.append(allocator, websocket.Config{
+                    .address = c.host,
+                    .port = c.port,
+                }),
+                .HTTP => http_configs.append(allocator, c),
             };
+        }
+
+        var addr_in_use = false;
+        var some_started = false;
+
+        // WS Command Listener
+        for (self.ws_configs.items) |ws_config| {
+            DeshaderLog.info("Starting websocket listener on {s}:{d}", .{ ws_config.address, ws_config.port });
+            if (!try common.isPortFree(ws_config.address, ws_config.port)) {
+                addr_in_use = true;
+                DeshaderLog.err("Port {d} is already in use", .{ws_config.port});
+            }
+            some_started = true;
+
             self.websocket_thread = try std.Thread.spawn(
                 .{ .allocator = common.allocator },
                 struct {
-                    fn listen(list: *CommandListener, alloc: std.mem.Allocator, conf: websocket.Config) void {
+                    fn listen(list: *MutliListener, alloc: std.mem.Allocator, conf: websocket.Config) void {
                         var arena = std.heap.ArenaAllocator.init(alloc);
                         defer arena.deinit();
 
@@ -97,19 +119,22 @@ pub const CommandListener = struct {
                             DeshaderLog.err("Error while listening for websocket commands: {any}", .{err});
                     }
                 }.listen,
-                .{ self, allocator, self.ws_config.? },
+                .{ self, allocator, ws_config },
             );
             self.websocket_thread.?.setName("CmdListWS") catch {};
         }
 
         // HTTP Command listener
-        if (http_port) |port| {
-            setting_vars.commandsHttpPort = port;
-            self.http = try positron.Provider.create(self.provider_arena.allocator(), port);
+        for (http_configs.items) |http_config| { // TODO select interface to run on
+            DeshaderLog.info("Starting HTTP listener on {s}:{d}", .{ http_config.host, http_config.port });
+
+            self.http = try positron.Provider.create(self.provider_arena.allocator(), http_config.port);
             errdefer {
                 self.http.?.destroy();
                 self.http = null;
             }
+            some_started = true;
+
             self.http.?.not_found_text = "Unknown command";
 
             inline for (@typeInfo(commands).Struct.decls) |function| {
@@ -126,15 +151,13 @@ pub const CommandListener = struct {
             self.provide_thread.?.setName("CmdListHTTP") catch {};
         }
 
-        // Language Server
-        if (lsp_port) |port| {
-            setting_vars.languageServerPort = port;
-            if (try common.isPortFree(null, port)) {
-                try analysis.serverStart(port);
-            } else {
+        if (!some_started) {
+            DeshaderLog.warn("No listeners started", .{});
+            if (addr_in_use) {
                 return error.AddressInUse;
             }
         }
+
         return self;
     }
 
@@ -151,12 +174,12 @@ pub const CommandListener = struct {
             ws.close(.{ .code = 1001, .reason = "server shutting down" }) catch {};
         }
         if (self.hasClient()) {
+            self.ws_configs.deinit(self.ws.allocator);
             self.websocket_thread.?.join();
             self.websocket_thread = null;
             self.ws.clearAndFree();
         }
         self.provider_arena.deinit();
-        analysis.serverStop() catch {};
     }
 
     //
@@ -315,13 +338,13 @@ pub const CommandListener = struct {
 
     const WSHandler = struct {
         conn: *websocket.Conn,
-        context: *CommandListener,
+        context: *MutliListener,
 
         const Conn = websocket.Conn;
         const Message = websocket.Message;
         const Handshake = websocket.Handshake;
 
-        pub fn init(h: Handshake, conn: *Conn, context: *CommandListener) !@This() {
+        pub fn init(h: Handshake, conn: *Conn, context: *MutliListener) !@This() {
             try context.ws.append(conn);
             _ = h;
 
@@ -618,7 +641,7 @@ pub const CommandListener = struct {
             const locator: *shaders.ShaderLocator = @ptrFromInt(in_params.threadId);
             try locator.service.@"continue"(locator.shader);
 
-            common.command_listener.?.unPause();
+            instance.?.unPause();
         }
 
         pub fn terminate(args: ?ArgumentsMap) !void {
@@ -726,7 +749,7 @@ pub const CommandListener = struct {
             for (shaders.services.values()) |*s| {
                 s.revert_requested = true;
             }
-            common.command_listener.?.unPause();
+            instance.?.unPause();
         }
 
         pub fn evaluate(args: ?ArgumentsMap) !String {
@@ -825,7 +848,7 @@ pub const CommandListener = struct {
             const in_params = try parseArgs(dap.NextArguments, args);
             const locator: *shaders.ShaderLocator = @ptrFromInt(in_params.threadId);
             try locator.service.advanceStepping(locator.shader, null);
-            common.command_listener.?.unPause();
+            instance.?.unPause();
         }
 
         pub fn readMemory(_: ?ArgumentsMap) !void {
@@ -985,8 +1008,7 @@ pub const CommandListener = struct {
             return std.json.stringifyAlloc(common.allocator, .{
                 .breakpoints = breakpoints_to_send.items,
                 .debugging = shaders.debugging,
-                .paused = common.command_listener.?.paused,
-                .lsp = if (analysis.isRunning()) setting_vars.languageServerPort else null,
+                .paused = instance.?.paused,
                 .runningShaders = running_to_send.items,
                 .singlePauseMode = shaders.single_pause_mode,
             }, json_options);
@@ -1113,45 +1135,6 @@ pub const CommandListener = struct {
                     virtual
             else
                 virtual, json_options);
-        }
-
-        //
-        // Services control commands
-        //
-        pub fn editorWindowShow() !void {
-            if (options.editor) {
-                return gui.editorShow(common.command_listener);
-            }
-        }
-
-        pub fn editorWindowTerminate() !void {
-            if (options.editor) {
-                return gui.editorTerminate();
-            }
-        }
-
-        pub fn editorServerStart() !void {
-            if (options.editor) {
-                return gui.serverStart(common.command_listener);
-            }
-        }
-
-        pub fn editorServerStop() !void {
-            if (options.editor) {
-                return gui.serverStop();
-            }
-        }
-
-        /// port: ?u16. 1st fallback: settings_vars.language_server_port, 2nd fallback: common.default_lsp_port
-        pub fn languageServerStart(args: ?ArgumentsMap) !String {
-            const parsed = try parseArgs(?struct { port: ?u16 }, args);
-            const port = (if (parsed) |p| p.port else null) orelse setting_vars.languageServerPort;
-            try analysis.serverStart(port);
-            return std.fmt.allocPrint(common.allocator, "{d}", .{port});
-        }
-
-        pub fn languageServerStop() !void {
-            return analysis.serverStop();
         }
 
         /// Returns the currently set breakpoints
@@ -1290,7 +1273,6 @@ pub const CommandListener = struct {
         const evaluate = stringReturning;
         const possibleBreakpoints = stringReturning;
         const getStepInTargets = stringReturning;
-        const languageServerStart = stringReturning;
         const readMemory = stringReturning;
         const runningShaders = stringReturning;
         //const scopes = stringReturning;

@@ -17,8 +17,8 @@ const std = @import("std");
 const gl = @import("gl");
 const options = @import("options");
 const builtin = @import("builtin");
-const DeshaderLog = @import("../log.zig").DeshaderLog;
-const common = @import("../common.zig");
+const common = @import("common");
+const log = common.log;
 const transitive = @import("transitive.zig");
 const c = @cImport({
     if (builtin.os.tag == .windows) {
@@ -170,7 +170,7 @@ pub fn checkIgnoredProcess() void {
         var set_reported_process_name = reported_process_name;
         defer reported_process_name = set_reported_process_name;
         if (!reported_process_name) {
-            DeshaderLog.debug("From process {s}", .{self_path});
+            log.debug("From process {s}", .{self_path});
             set_reported_process_name = true;
         }
 
@@ -181,14 +181,14 @@ pub fn checkIgnoredProcess() void {
             while (it.next()) |p_name| {
                 if (std.mem.endsWith(u8, self_path, p_name)) {
                     if (!reported_process_name) {
-                        DeshaderLog.debug("Whitelisting processes {s}", .{p_name});
+                        log.debug("Whitelisting processes {s}", .{p_name});
                     }
                     ignored_this = false;
                     break;
                 }
             }
             if (ignored_this and !reported_process_name) {
-                DeshaderLog.debug("{s} not on whitelist: {s}", .{ self_path, whitelist });
+                log.debug("{s} not on whitelist: {s}", .{ self_path, whitelist });
             }
         }
         // balcklist
@@ -198,7 +198,7 @@ pub fn checkIgnoredProcess() void {
             while (it.next()) |p_name| {
                 if (std.mem.endsWith(u8, self_path, p_name)) {
                     if (!reported_process_name) {
-                        DeshaderLog.debug("Ignoring processes {s}", .{blacklist});
+                        log.debug("Ignoring processes {s}", .{blacklist});
                     }
                     ignored_this = true;
                     break;
@@ -206,7 +206,7 @@ pub fn checkIgnoredProcess() void {
             }
         }
     } else |e| {
-        DeshaderLog.err("Failed to get self path: {any}", .{e});
+        log.err("Failed to get self path: {any}", .{e});
     }
     ignored = ignored or ignored_this;
 }
@@ -223,12 +223,12 @@ comptime {
                 if (APIs.originalDlopen == null) {
                     APIs.originalDlopen = @alignCast(@ptrCast(std.c.dlsym(c.RTLD_NEXT, "dlopen")));
                     if (APIs.originalDlopen == null) {
-                        DeshaderLog.err("Failed to find original dlopen: {s}", .{c.dlerror()});
+                        log.err("Failed to find original dlopen: {s}", .{c.dlerror()});
                     }
 
                     if (!common.initialized) {
                         common.init() catch |err|
-                            DeshaderLog.err("Failed to initialize: {any}", .{err});
+                            log.err("Failed to initialize: {any}", .{err});
                     }
                 }
                 checkIgnoredProcess();
@@ -240,14 +240,14 @@ comptime {
                         name_span[name_span.len - 1] = 0; // kindly replace with sentinel
                         const result = APIs.originalDlopen.?(name, mode);
                         if (result == null) {
-                            DeshaderLog.debug("Failed original dlopen {?s}: {?s}", .{ name, @as(?CString, c.dlerror()) });
+                            log.debug("Failed original dlopen {?s}: {?s}", .{ name, @as(?CString, c.dlerror()) });
                         }
                         return result;
                     }
                     if (!ignored) inline for (_platform_gl_libs) |lib| {
                         for (lib.names) |lib_name| {
                             if (std.mem.startsWith(u8, name_span, std.fs.path.basename(lib_name))) {
-                                DeshaderLog.debug("Intercepting dlopen for API {s}", .{name_span});
+                                log.debug("Intercepting dlopen for API {s}", .{name_span});
                                 return APIs.originalDlopen.?(@ptrCast(options.deshaderLibName ++ &[_]u8{0}), mode);
                             }
                         }
@@ -255,7 +255,7 @@ comptime {
                 }
                 const result = APIs.originalDlopen.?(name, mode);
                 if (result == null) {
-                    DeshaderLog.debug("Failed ignored dlopen {?s}: {?s}", .{ name, @as(?CString, c.dlerror()) });
+                    log.debug("Failed ignored dlopen {?s}: {?s}", .{ name, @as(?CString, c.dlerror()) });
                 }
                 return result;
             }
@@ -324,16 +324,6 @@ pub const intercepted = blk: {
 };
 pub const all_exported_names = _known_gl_loaders ++ intercepted.names;
 
-// Container for all OpenGL function symbols TODO
-const GlFunctions = struct {
-    fn load(self: *@This(), loader: GetProcAddressSignature) void {
-        const fields = @typeInfo(@This()).Struct.fields;
-        inline for (fields) |field| {
-            @field(self, field.name) = loader(field.name);
-        }
-    }
-};
-
 fn withoutTrailingSlash(path: String) String {
     return if (path[path.len - 1] == '/') path[0 .. path.len - 1] else path;
 }
@@ -360,7 +350,7 @@ pub fn loadGlLib() !void {
         var it = std.mem.splitScalar(u8, customProcLoaders.?, ':');
         while (it.next()) |name| {
             names.append(name) catch |err|
-                DeshaderLog.err("Failed to allocate memory for custom GL procedure loader name: {any}", .{err});
+                log.err("Failed to allocate memory for custom GL procedure loader name: {any}", .{err});
         }
     }
     APIs.gl.custom.possible_loaders = try names.toOwnedSlice();
@@ -375,7 +365,7 @@ pub fn loadGlLib() !void {
                 }
             },
             else => {
-                DeshaderLog.err("Only valid positive values are 'yes', '1', 'true'", .{});
+                log.err("Only valid positive values are 'yes', '1', 'true'", .{});
             },
         }
     }
@@ -392,52 +382,52 @@ pub fn loadGlLib() !void {
             defer if (builtin.os.tag != .windows) common.allocator.free(full_lib_name);
             if (loadNotDeshaderLibrary(full_lib_name)) |lib| {
                 gl_lib.lib = lib;
-                if (options.logIntercept) DeshaderLog.debug("Loaded library {s}", .{full_lib_name});
+                if (options.logInterception) log.debug("Loaded library {s}", .{full_lib_name});
                 for (gl_lib.possible_loaders) |loader| {
                     const loaderZ = try common.allocator.dupeZ(u8, loader);
                     defer common.allocator.free(loaderZ);
                     if (gl_lib.lib.?.lookup(*const GetProcAddressSignature, loaderZ)) |proc| {
                         gl_lib.loader = proc;
-                        if (options.logIntercept) DeshaderLog.debug("Found loader {s}", .{loader});
+                        if (options.logInterception) log.debug("Found loader {s}", .{loader});
                     }
                 }
                 inline for (gl_lib.make_current, 0..) |func, i| {
                     if (gl_lib.lib.?.lookup(@TypeOf(func), gl_lib.make_current_names[i])) |target| {
                         gl_lib.make_current[i] = @ptrCast(target);
-                        if (options.logIntercept) DeshaderLog.debug("Found make current {s}", .{gl_lib.make_current_names[i]});
-                    } else if (options.logIntercept) {
-                        DeshaderLog.debug("Failed to find make current {s}", .{gl_lib.make_current_names[i]});
+                        if (options.logInterception) log.debug("Found make current {s}", .{gl_lib.make_current_names[i]});
+                    } else if (options.logInterception) {
+                        log.debug("Failed to find make current {s}", .{gl_lib.make_current_names[i]});
                     }
                 }
                 inline for (gl_lib.create, 0..) |func, i| {
                     if (gl_lib.lib.?.lookup(@TypeOf(func), gl_lib.create_names[i])) |target| {
                         gl_lib.create[i] = @ptrCast(target);
 
-                        if (options.logIntercept) DeshaderLog.debug("Found create {s}", .{gl_lib.create_names[i]});
-                    } else if (options.logIntercept) {
-                        DeshaderLog.debug("Failed to find create {s}", .{gl_lib.create_names[i]});
+                        if (options.logInterception) log.debug("Found create {s}", .{gl_lib.create_names[i]});
+                    } else if (options.logInterception) {
+                        log.debug("Failed to find create {s}", .{gl_lib.create_names[i]});
                     }
                 }
                 if (gl_lib.lib.?.lookup(@TypeOf(gl_lib.destroy), gl_lib.destroy_name)) |target| {
                     gl_lib.destroy = @ptrCast(target);
 
-                    if (options.logIntercept) DeshaderLog.debug("Found destroy {s}", .{gl_lib.destroy_name});
+                    if (options.logInterception) log.debug("Found destroy {s}", .{gl_lib.destroy_name});
                 }
                 if (gl_lib.lib.?.lookup(@TypeOf(gl_lib.get_current), gl_lib.get_current_name)) |target| {
                     gl_lib.get_current = @ptrCast(target);
 
-                    if (options.logIntercept) DeshaderLog.debug("Found get current {s}", .{gl_lib.get_current_name});
+                    if (options.logInterception) log.debug("Found get current {s}", .{gl_lib.get_current_name});
                 }
             } else |err| {
                 if (builtin.os.tag == .linux and builtin.link_libc) {
                     const err_to_print = c.dlerror();
                     if (err_to_print != null) {
-                        DeshaderLog.debug("Failed to open {s}: {s}", .{ full_lib_name, err_to_print });
+                        log.debug("Failed to open {s}: {s}", .{ full_lib_name, err_to_print });
                     } else {
-                        DeshaderLog.debug("Failed to open {s}: {any}", .{ full_lib_name, err });
+                        log.debug("Failed to open {s}: {any}", .{ full_lib_name, err });
                     }
                 } else {
-                    DeshaderLog.debug("Failed to open {s}: {any}", .{ full_lib_name, err });
+                    log.debug("Failed to open {s}: {any}", .{ full_lib_name, err });
                 }
             }
         }
@@ -469,7 +459,7 @@ pub fn deinit() void {
     defer common.allocator.free(APIs.gl.custom.possible_loaders);
     for (renamed_libs.items) |lib| {
         std.posix.unlinkat(cwd, lib, if (builtin.os.tag == .linux) std.posix.AT.SYMLINK_NOFOLLOW else 0) catch |err|
-            DeshaderLog.err("Could not delete renamed lib {s}: {}", .{ lib, err });
+            log.err("Could not delete renamed lib {s}: {}", .{ lib, err });
     }
     if (!ignored) {
         gl_shaders.deinit();
@@ -484,23 +474,23 @@ pub fn LoaderInterceptor(comptime interface: type, comptime loader: String) type
         /// Generic loader interception function
         pub fn loaderReplacement(procedure: CString) callconv(.C) ?gl.PROC {
             if (interface.loader == null) {
-                DeshaderLog.err("Loader " ++ loader ++ " is not available", .{});
+                log.err("Loader " ++ loader ++ " is not available", .{});
                 return null;
             }
             const span = std.mem.span(procedure);
             const target = intercepted.map.get(span);
             if (target != null) {
-                if (options.logIntercept) {
-                    DeshaderLog.debug("Intercepting " ++ loader ++ " procedure {s}", .{procedure});
+                if (options.logInterception) {
+                    log.debug("Intercepting " ++ loader ++ " procedure {s}", .{procedure});
                 }
                 return target.?;
             }
             const original = interface.loader.?(procedure) orelse interface.lib.?.lookup(gl.PROC, span);
-            if (options.logIntercept) {
+            if (options.logInterception) {
                 if (original) |_| {
-                    DeshaderLog.debug("Found original {s}", .{procedure});
+                    log.debug("Found original {s}", .{procedure});
                 } else {
-                    DeshaderLog.warn("Failed to find original {s}", .{procedure});
+                    log.warn("Failed to find original {s}", .{procedure});
                 }
             }
             return original;
@@ -510,8 +500,8 @@ pub fn LoaderInterceptor(comptime interface: type, comptime loader: String) type
 
 /// Interceptor for custom library
 pub fn deshaderGetProcAddress(procedure: CString) callconv(.C) *align(@alignOf(fn (u32) callconv(.C) u32)) const anyopaque {
-    if (options.logIntercept) {
-        DeshaderLog.debug("Intercepting custom GL proc address {s}", .{procedure});
+    if (options.logInterception) {
+        log.debug("Intercepting custom GL proc address {s}", .{procedure});
     }
     if (APIs.gl.custom.loader == null) {
         return undefined;

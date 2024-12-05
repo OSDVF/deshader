@@ -63,7 +63,7 @@
             "command": "sh",
             "args": [
                 "-c",
-                "zig build deshader -DmemoryFrames=15 -freference-trace --summary none || ./fix_c_import.sh && zig build deshader"
+                "zig build deshader -DmemoryFrames=15 -freference-trace --summary none || (sh fix_c_import.sh && zig build deshader)"
             ],
             "problemMatcher": "$zig",
             "group": "build",
@@ -138,7 +138,7 @@
                 "build",
                 "examples",
                 "-freference-trace",
-                "-DlogIntercept",
+                "-DlogInterception",
                 "-DmemoryFrames=15",
                 "--summary",
                 "none"
@@ -162,7 +162,7 @@
                 "examples",
                 "-fwine",
                 "-Dtarget=x86_64-windows-gnu",
-                "-DlogIntercept",
+                "-DlogInterception",
                 "-freference-trace"
             ],
             "problemMatcher": "$zig",
@@ -184,7 +184,7 @@
                 "deshader",
                 "-fwine",
                 "-Dtarget=x86_64-windows-gnu",
-                "-DlogIntercept",
+                "-DlogInterception",
                 "-freference-trace"
             ],
             "group": "build",

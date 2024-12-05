@@ -17,11 +17,11 @@ const std = @import("std");
 const builtin = @import("builtin");
 const options = @import("options");
 const gl = @import("gl");
-const common = @import("../common.zig");
+const common = @import("common");
+const log = common.log;
 
 const loaders = @import("loaders.zig");
 const APIs = @import("loaders.zig").APIs;
-const DeshaderLog = @import("../log.zig").DeshaderLog;
 
 const String = []const u8;
 
@@ -162,7 +162,7 @@ pub const TransitiveSymbols = struct {
                 if (symbol_target != null) {
                     @field(transitive_procs, symbol_name) = symbol_target.?;
                 } else {
-                    DeshaderLog.err("Failed to find symbol {s}", .{symbol_name});
+                    log.err("Failed to find symbol {s}", .{symbol_name});
                 }
             }
         }
