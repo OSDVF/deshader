@@ -36,11 +36,14 @@ const String = []const u8;
 const CString = [*:0]const u8;
 const ZString = [:0]const u8;
 
-pub var gpa = std.heap.GeneralPurposeAllocator(.{
+pub const GPA = std.heap.GeneralPurposeAllocator(.{
     .stack_trace_frames = options.memoryFrames,
-}){};
+});
+
+pub var gpa = GPA{};
 pub var allocator: std.mem.Allocator = undefined;
 pub var initialized = false;
+var self_exe: ?String = null;
 pub const env_prefix = "DESHADER_";
 pub const default_http_port = "8081";
 pub const default_http_port_n = 8081;
@@ -66,6 +69,9 @@ pub fn init() !void {
 }
 
 pub fn deinit() void {
+    if (self_exe) |path| {
+        allocator.free(path);
+    }
     if (initialized) {
         _ = env.deinit();
         _ = gpa.deinit();
@@ -175,9 +181,10 @@ pub fn copyForwardsZ(comptime T: type, dest: []T, source: [*]const T, source_len
     for (dest[0..source_len], source) |*d, s| d.* = s;
 }
 
+/// Spawns a short-lived server to check for port availability
 pub fn isPortFree(address: ?String, port: u16) !bool {
     var check = try std.net.Address.parseIp4(address orelse "0.0.0.0", port);
-    var server = check.listen(.{ .reuse_address = true }) catch |err| switch (err) {
+    var server = check.listen(.{}) catch |err| switch (err) {
         error.AddressInUse => return false,
         else => return err,
     };
@@ -231,15 +238,19 @@ pub fn selfDllPathAlloc(a: std.mem.Allocator, concat_with: String) !String {
 }
 
 /// Wraps std.fs.selfExePathAlloc or gets argv[0] on Windows to workaround Wine bug
-pub fn selfExePathAlloc(alloc: std.mem.Allocator) !String {
+pub fn selfExePath() !String {
+    if (self_exe) |path| {
+        return path;
+    }
     if (builtin.os.tag == .windows) // Wine fails on realpath
     {
-        var arg = try std.process.argsWithAllocator(alloc);
+        var arg = try std.process.argsWithAllocator(allocator);
         defer arg.deinit();
-        return alloc.dupe(u8, arg.next().?);
+        self_exe = allocator.dupe(u8, arg.next().?);
     } else {
-        return std.fs.selfExePathAlloc(alloc);
+        self_exe = try std.fs.selfExePathAlloc(allocator);
     }
+    return self_exe.?;
 }
 
 pub fn LoadLibraryEx(path_or_name: String, only_system: bool) !std.os.windows.HMODULE {
@@ -334,6 +345,13 @@ pub fn queryToArgsMap(allocato: std.mem.Allocator, query: []u8) !ArgumentsMap {
     return list;
 }
 
+pub fn argsFromFullCommand(alloc: std.mem.Allocator, uri: String) !?ArgumentsMap {
+    var command_query = std.mem.splitScalar(u8, uri, '?');
+    _ = command_query.first();
+    const query = command_query.rest();
+    return if (query.len > 0) try queryToArgsMap(alloc, @constCast(query)) else null;
+}
+
 pub const CliArgsIterator = struct {
     i: usize = 0,
     s: String,
@@ -356,3 +374,7 @@ pub const CliArgsIterator = struct {
         return token;
     }
 };
+
+pub fn nullOrEmpty(s: ?String) bool {
+    return if (s) |ys| ys.len == 0 else true;
+}

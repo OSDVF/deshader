@@ -241,7 +241,8 @@ fn runOnLoad() !void {
 /// Will be called upon Deshader library unload
 fn finalize() callconv(.C) void {
     // Inlining is disabled because Zig would otherwise optimize out all the conditions in release mode (compiler bug?)
-    @call(.never_inline, log.debug, .{ "Unloading Deshader library", .{} });
+    const exe = @call(.never_inline, common.selfExePath, .{}) catch "?";
+    @call(.never_inline, log.debug, .{ "Unloading Deshader library from {s}", .{exe} });
     defer @call(.never_inline, common.deinit, .{});
 
     if (commands.instance) |i| {

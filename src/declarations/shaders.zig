@@ -124,12 +124,17 @@ pub const SourcesPayload = extern struct {
     stage: Stage = @enumFromInt(0), // Default to unknown (_) value
     /// Represents the language of the shader source (GLSL ...)
     language: LanguageType = @enumFromInt(0), // Default to unknown (_) value
-    /// (Non-null => user-specified) or default source assignment and compile function to be executed when Deshader inejcts something and wants to apply it
+    /// (Non-null => user-specified) or default source assignment and compile function to be executed when Deshader inejcts something and wants to apply it,
+    /// or when Deshader wants to revert instrumented source.
+    ///
     /// length is the length of the `instrumented` source. If it is 0, then there is no instrumented source.
     /// The instrumented source is also always null-terminated.
     /// Should return 0 when there is no error
     compile: ?*const fn (source: SourcesPayload, instrumented: CString, length: i32) callconv(.C) u8 = null,
-    /// Function to execute when user wants to save a source in the Deshader editor
+    // Deshader executes this function when it wants to get the instrumented version of the source code.
+    // Deshader does not store the instrumented source code, because it is always stored by the host application.
+    currentSource: ?*const fn (ref: usize) callconv(.C) ?CString = null,
+    /// Function to execute when user wants to save a source in the Deshader editor. Set to override the default behavior.
     save: ?*const fn (source: SourcesPayload, physical: ?CString) callconv(.C) u8 = null,
 
     pub fn toString(self: *const @This()) []const u8 {

@@ -40,6 +40,8 @@ const Shader = shaders.Shader;
 /// Both the types must have property
 /// ```
 ///    ref: usize
+///    /// Serves as a cache for the source file path
+///    physical_connected: bool = false
 /// ```
 pub fn Storage(comptime Stored: type, comptime Nested: type, comptime parted: bool) type {
     return struct {
@@ -414,7 +416,7 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime parted: bo
         }
 
         /// NOTE: incosistency: if you want to stat a shader under a program, use 'tagged' locator with the untagged source 'path'
-        pub fn stat(self: *@This(), locator: Locator) !StatPayload {
+        pub fn stat(self: *@This(), locator: Locator.Name) !StatPayload {
             switch (locator) {
                 .untagged => |combined| {
                     const ptr = try self.all.get(combined.ref);
@@ -489,15 +491,15 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime parted: bo
             },
         };
 
-        pub fn getStoredByLocator(self: *@This(), locator: Locator) !?*Stored {
-            switch (locator) {
-                .tagged => |path| return self.getStoredByPath(path),
-                .untagged => |combined| return if (parted) if (self.all.get(combined.ref)) |s| &s.items[combined.part] else null else if (self.all.getPtr(combined.ref)) |s| s else null,
-            }
+        pub fn getStoredByLocator(self: *@This(), locator: Locator.Name) !?*Stored {
+            return switch (locator) {
+                .tagged => |path| try self.getStoredByPath(path),
+                .untagged => |combined| if (parted) if (self.all.get(combined.ref)) |s| &s.items[combined.part] else null else if (self.all.getPtr(combined.ref)) |s| s else null,
+            };
         }
 
         pub const getNestedByLocator = if (Nested == void) undefined else struct {
-            pub fn getNestedByLocator(self: *Self, locator: Locator, under_untagged: ?String) !?*Nested {
+            pub fn getNestedByLocator(self: *Self, locator: Locator.Name, under_untagged: ?String) !?*Nested {
                 switch (((try self.getByLocator(locator, under_untagged)) orelse return error.TargetNotFound).content) {
                     .Nested => |nested| return nested.nested,
                     else => return error.DirExists,
@@ -506,7 +508,7 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime parted: bo
         }.getNestedByLocator;
 
         pub const getByLocator = if (Nested == void) undefined else struct {
-            pub fn getByLocator(self: *Self, locator: Locator, under_untagged: ?String) !?DirOrStored {
+            pub fn getByLocator(self: *Self, locator: Locator.Name, under_untagged: ?String) !?DirOrStored {
                 const ptr = blk: {
                     switch (locator) {
                         .untagged => |combined| {
@@ -527,6 +529,7 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime parted: bo
             }
         }.getByLocator;
 
+        // Return a tagged Stored
         pub fn getStoredByPath(self: *@This(), path: String) !*Stored {
             const ptr = try self.makePathRecursive(path, false, false, false);
             switch (ptr.content) {
@@ -746,18 +749,25 @@ pub const Stat = struct {
     }
 };
 
+pub const Permission = enum(u8) {
+    ReadWrite = 0,
+    ReadOnly = 1,
+};
+
 pub const StatPayload = struct {
     type: usize,
     accessed: i64,
     created: i64,
     modified: i64,
     size: usize,
+    permission: Permission = .ReadWrite,
 
     pub fn fromPhysical(physical: anytype, file_type: FileType) @This() {
         return StatPayload{
             .accessed = @intCast(@divTrunc(physical.atime, 1000)),
             .modified = @intCast(@divTrunc(physical.mtime, 1000)),
             .created = @intCast(@divTrunc(physical.ctime, 1000)),
+            .permission = if ((physical.mode & 0o222) == 0) Permission.ReadOnly else Permission.ReadWrite,
             .type = @intFromEnum(file_type),
             .size = @intCast(physical.size),
         };
@@ -875,7 +885,23 @@ pub fn Tag(comptime taggable: type) type {
 }
 
 pub const untagged_path = "/untagged";
-pub const Locator = union(enum) {
+pub const Locator = struct {
+    /// Return the instrumented version of the file
+    instrumented: bool = false,
+    name: Name,
+
+    const INSTRUMENTED_EXT = ".instrumented";
+
+    pub const Name = union(enum) {
+        tagged: String,
+        untagged: Ref,
+
+        /// `combined` is a path under /untagged
+        pub fn parseUntagged(combined: String) !Name {
+            return Name{ .untagged = try Ref.parse(combined) };
+        }
+    };
+
     pub const Ref = struct {
         const SEPARATOR = '_';
         // TODO Vulkan uses 64bit handles even on 32bit platforms
@@ -897,24 +923,27 @@ pub const Locator = union(enum) {
             return writer.print("{x}_{x}", .{ value.ref, value.part });
         }
     };
-    tagged: String,
-    untagged: Ref,
-
-    /// `combined` is a path under /untagged
-    pub fn parseUntagged(combined: String) !Locator {
-        return Locator{ .untagged = try Ref.parse(combined) };
-    }
 
     /// returns null for untagged root
     pub fn parse(subpath: String) !?Locator {
-        if (std.mem.startsWith(u8, subpath, untagged_path)) {
-            if (subpath.len == untagged_path.len or (subpath[untagged_path.len] == '/' and subpath.len == untagged_path.len + 1)) {
-                return null; //root
-            }
-            const last_dot = std.mem.lastIndexOfScalar(u8, subpath, '.') orelse subpath.len;
-            return try Locator.parseUntagged(subpath[untagged_path.len + 1 .. last_dot]);
-        } else {
-            return Locator{ .tagged = subpath };
+        var without_instr = subpath;
+        var instr = false;
+        if (std.ascii.eqlIgnoreCase(std.fs.path.extension(subpath), INSTRUMENTED_EXT)) {
+            without_instr = subpath[0 .. subpath.len - INSTRUMENTED_EXT.len];
+            instr = true;
         }
+
+        const n = name: {
+            if (std.mem.startsWith(u8, without_instr, untagged_path)) {
+                if (without_instr.len == untagged_path.len or (without_instr[untagged_path.len] == '/' and without_instr.len == untagged_path.len + 1)) {
+                    return null; //root
+                }
+                const last_dot = std.mem.lastIndexOfScalar(u8, without_instr, '.') orelse without_instr.len;
+                break :name try Name.parseUntagged(subpath[untagged_path.len + 1 .. last_dot]);
+            } else {
+                break :name Name{ .tagged = subpath };
+            }
+        };
+        return Locator{ .instrumented = instr, .name = n };
     }
 };

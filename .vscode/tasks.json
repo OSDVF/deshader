@@ -100,7 +100,8 @@
             "args": [
                 "build",
                 "launcher",
-                "-freference-trace"
+                "-freference-trace",
+                "-DmemoryFrames=15"
             ],
             "problemMatcher": "$zig",
             "group": "build",

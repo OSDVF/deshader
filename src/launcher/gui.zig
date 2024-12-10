@@ -19,6 +19,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const positron = @import("positron");
+const serve = @import("serve");
 const common = @import("common");
 const options = @import("options");
 const ctregex = @import("ctregex");
@@ -50,7 +51,7 @@ pub fn getProductJson(allocator: std.mem.Allocator, https: bool, port: u16) !Str
                 .resourceUrlTemplate = "https://openvsxorg.blob.core.windows.net/resources/{publisher}/{name}/{version}/{path}",
             },
             .extensionEnabledApiProposals = .{
-                .@"osdvf.deshader-vscode" = .{ "fileSearchProvider", "textSearchProvider" },
+                .@"osdvf.deshader" = .{ "fileSearchProvider", "textSearchProvider" },
             },
         },
         .folderUri = .{
@@ -85,6 +86,23 @@ fn resolveMime(path: String) String {
     };
 }
 
+fn decompress(provider: *positron.Provider, comptime file: String, dll_path: String, compressed_or_content: anytype) ![]u8 {
+    const f_address = file[options.editor_dir.len..];
+    if (builtin.mode == .Debug) {
+        var dll_dir: ?std.fs.Dir = if (builtin.mode == .Debug) if (std.fs.path.dirname(dll_path)) |d| try std.fs.cwd().openDir(d, .{}) else null else null;
+        defer if (dll_dir) |*d| d.close();
+        const handle = try if (dll_dir) |d| d.openFile(options.editor_dir_relative ++ f_address, .{}) else std.fs.cwd().openFile(file, .{});
+        defer handle.close();
+        return try handle.readToEndAlloc(provider.allocator, provider.max_file_size);
+    } else {
+        var stream = std.io.fixedBufferStream(compressed_or_content);
+        const reader = stream.reader();
+        var decompressor = std.compress.zlib.decompressor(reader);
+        var decompressed = decompressor.reader();
+        return try decompressed.readAllAlloc(provider.allocator, provider.max_file_size);
+    }
+}
+
 // basicaly a HTTP server
 pub fn createEditorProvider(port: u16, commands_host: ?String, lsp_host: ?String) !*positron.Provider {
     var provider = try positron.Provider.create(common.allocator, port);
@@ -97,8 +115,6 @@ pub fn createEditorProvider(port: u16, commands_host: ?String, lsp_host: ?String
     const dll_path = if (builtin.mode == .Debug) try resolveSelfDllTarget(provider.allocator);
 
     defer if (builtin.mode == .Debug) provider.allocator.free(dll_path);
-    var dll_dir: ?std.fs.Dir = if (builtin.mode == .Debug) if (std.fs.path.dirname(dll_path)) |d| try std.fs.cwd().openDir(d, .{}) else null else null;
-    defer if (dll_dir) |*d| d.close();
     if (builtin.mode == .Debug) {
         // Let the provider read the files at runtime in debug mode
         const editor_dir_path = try std.fs.path.join(provider.allocator, if (std.fs.path.dirname(dll_path)) |d| &.{ d, options.editor_dir_relative } else &.{options.editor_dir});
@@ -112,35 +128,25 @@ pub fn createEditorProvider(port: u16, commands_host: ?String, lsp_host: ?String
         if (builtin.mode != .Debug and try ctregex.search("map|ts", .{}, fileExt) != null) {
             comptime continue; // Do not include sourcemaps in release builds
         }
-
         const f_address = file[options.editor_dir.len..];
         // assume all paths start with `options.editor_dir`
         const compressed_or_content = if (builtin.mode != .Debug) @embedFile(file);
-        if (comptime std.mem.eql(u8, f_address, "/deshader-vscode/dist/extension.js")) {
-            var decompressed_data: String = undefined;
-            if (builtin.mode == .Debug) {
-                const handle = try if (dll_dir) |d| d.openFile(options.editor_dir_relative ++ f_address, .{}) else std.fs.cwd().openFile(file, .{});
-                defer handle.close();
-                decompressed_data = try handle.readToEndAlloc(provider.allocator, provider.max_file_size);
-            } else {
-                var stream = std.io.fixedBufferStream(compressed_or_content);
-                const reader = stream.reader();
-                var decompressor = std.compress.zlib.decompressor(reader);
-                var decompressed = decompressor.reader();
-                decompressed_data = try decompressed.readAllAlloc(provider.allocator, provider.max_file_size);
-            }
+        if (comptime std.ascii.eqlIgnoreCase(f_address, "/deshader-vscode/dist/extension.js")) {
+            const decompressed_data = try decompress(provider, file, dll_path, compressed_or_content);
             defer provider.allocator.free(decompressed_data);
-
             // Inject editor config into Deshader extension
             // Construct editor base url and config JSON
             if (lsp_host != null or commands_host != null) {
+                const json = try std.json.stringifyAlloc(provider.allocator, .{
+                    .commands = commands_host,
+                    .lsp = lsp_host,
+                }, .{});
+
+                defer provider.allocator.free(json);
                 const editor_config = try std.fmt.allocPrint(provider.allocator,
                     \\{s}
-                    \\globalThis.deshader={{
-                    \\  lsp:"{?s}",
-                    \\  commands:"{?s}"
-                    \\}}
-                ++ "", .{ decompressed_data, lsp_host, commands_host });
+                    \\globalThis.deshader={s}
+                ++ "", .{ decompressed_data, json });
                 defer provider.allocator.free(editor_config);
                 try provider.addContent(f_address, mime_type, editor_config);
             } else if (builtin.mode != .Debug) {
@@ -155,6 +161,11 @@ pub fn createEditorProvider(port: u16, commands_host: ?String, lsp_host: ?String
     const product_config = try getProductJson(common.allocator, false, port);
     defer common.allocator.free(product_config);
     try provider.addContent("/product.json", "application/json", product_config);
+
+    inline for (.{ "/run", "/browseFile", "/browseDirectory", "/isRunning", "/terminate" }) |command| {
+        var route = try provider.addRoute(command);
+        route.handler = &rpcHandler;
+    }
 
     provide_thread = try std.Thread.spawn(.{}, positron.Provider.run, .{provider});
     provide_thread.?.setName("GUIServer") catch {};
@@ -196,7 +207,7 @@ pub fn serverStop() EditorProviderError!void {
 pub var gui_process: if (builtin.os.tag == .windows) ?std.Thread else ?std.process.Child = null;
 var gui_mutex = std.Thread.Mutex{};
 var gui_shutdown = std.Thread.Condition{};
-var state: extended_wv.State = undefined;
+var state: extended_wv.State = .{};
 
 const GuiErrors = error{GuiNotEmbedded};
 pub const DESHADER_GUI_URL = common.env_prefix ++ "GUI_URL";
@@ -227,15 +238,11 @@ pub fn editorShow(port: u16, commands_host: ?String, lsp_host: ?String) !void {
         gui_process.?.detach();
     } else {
         // On Unix, the GUI runs in a separate process
-        const exe_or_dll_path = try common.selfExePathAlloc(global_provider.?.allocator);
-        defer global_provider.?.allocator.free(exe_or_dll_path);
+        const exe_or_dll_path = try common.selfExePath();
         // Duplicate the current process and set env vars to indicate that the child should act as the Editor Window
         gui_process = std.process.Child.init(&.{ exe_or_dll_path, "editor" }, common.allocator); // the "editor" parameter is really ignored but it is here for reference to be found easily
 
         common.env.set(DESHADER_GUI_URL, base_url);
-        if (builtin.os.tag == .linux) {
-            try common.env.appendList(common.env_prefix ++ "IGNORE_PROCESS", "zenity:WebKitWebProcess");
-        }
 
         gui_process.?.env_map = common.env.getMap();
         gui_process.?.stdout_behavior = .Inherit;
@@ -295,12 +302,14 @@ pub fn editorWait() !void {
     }
 }
 
-fn dummyRun(_: []const String, _: ?String, _: ?*std.BufMap, _: *std.Thread.Condition, _: *std.Thread.Mutex) anyerror!void {}
-
 //
 // The following code should exist only in the GUI subprocess
 //
 pub fn guiProcess(url: String, title: ZString) !void {
+    if (builtin.os.tag == .linux) {
+        try common.env.appendList(common.env_prefix ++ "IGNORE_PROCESS", "zenity:WebKitWebProcess");
+    }
+
     state = .{};
     const deshader = "deshader";
     const window = if (builtin.os.tag == .linux) create: {
@@ -320,7 +329,7 @@ pub fn guiProcess(url: String, title: ZString) !void {
     const titleZ = try common.allocator.dupeZ(u8, title);
     defer common.allocator.free(titleZ);
     state.view.setTitle(titleZ);
-    state.view.setSize(600, 400, .none);
+    state.view.setSize(800, 600, .none);
     const exe = try resolveSelfDllTarget(common.allocator);
     defer common.allocator.free(exe);
 
@@ -356,4 +365,76 @@ fn resolveSelfDllTarget(allocator: std.mem.Allocator) !String {
         return common.readLinkAbsolute(common.allocator, self) catch try common.allocator.dupe(u8, self);
     }
     return self;
+}
+
+/// Used to reply to request from the extension inside Deshader Editor
+fn rpcHandler(p: *positron.Provider, r: *positron.Provider.Route, c: *serve.HttpContext) positron.Provider.Route.Error!void {
+    const Reject = struct {
+        http: *serve.HttpContext,
+
+        fn reject(self: *const @This(), err: anytype) !void {
+            if (!self.http.response.is_writing_body) {
+                try self.http.response.setHeader("Content-Type", "text/plain");
+                try self.http.response.setStatusCode(.bad_request);
+            }
+            var w = try self.http.response.writer();
+            if (@typeInfo(@TypeOf(err)) == .ErrorSet) {
+                try w.print("Error: {}", .{err});
+            } else {
+                try w.writeAll(err);
+            }
+        }
+    };
+    const reject = Reject{ .http = c };
+
+    var args = try common.argsFromFullCommand(p.allocator, c.request.url);
+    defer if (args) |*a| a.deinit(p.allocator);
+    if (std.mem.endsWith(u8, r.prefix, "run")) {
+        if (state.running) {
+            return reject.reject("Multiple subprocesses are not supported");
+        }
+        if (args) |a| {
+            const argv = std.json.parseFromSlice([]String, p.allocator, a.get("argv").?, .{}) catch |e| return reject.reject(e);
+            defer argv.deinit();
+            const env = if (a.get("env")) |e| std.json.parseFromSlice(std.json.ArrayHashMap(String), p.allocator, e, .{}) catch |er| return reject.reject(er) else null;
+            defer if (env) |e| e.deinit();
+            var sanitized_env = if (env) |e| e.value else std.json.ArrayHashMap(String){};
+            try sanitized_env.map.put(p.allocator, common.env_prefix ++ "GUI", "false"); // To not run multiple GUIs
+            if (!common.nullOrEmpty(common.env.get(common.env_prefix ++ "LSP"))) {
+                try sanitized_env.map.put(p.allocator, common.env_prefix ++ "LSP", ""); // To not run multiple LSPs
+            }
+
+            state.run(argv.value, a.get("directory") orelse "", sanitized_env) catch |er| return reject.reject(er);
+            var w = try c.response.writer();
+            try w.print("{}", .{state.target.id});
+            // Because the subprocess inherited the socket, we need to close it here
+            std.posix.shutdown(c.socket.internal, .both) catch |err| {
+                log.err("Failed to shutdown socket: {}", .{err});
+                return reject.reject(err);
+            };
+        }
+    } else if (std.mem.endsWith(u8, r.prefix, "browseFile")) {
+        const result = extended_wv.browseFile(&state, "");
+        if (result) |res| {
+            defer std.heap.raw_c_allocator.free(res);
+            const j = try std.json.stringifyAlloc(p.allocator, res, .{});
+            defer p.allocator.free(j);
+            var w = try c.response.writer();
+            try w.writeAll(j);
+        }
+    } else if (std.mem.endsWith(u8, r.prefix, "browseDirectory")) {
+        const result = extended_wv.browseDirectory(&state, "");
+        if (result) |res| {
+            defer std.heap.raw_c_allocator.free(res);
+            const j = try std.json.stringifyAlloc(p.allocator, res, .{});
+            defer p.allocator.free(j);
+            var w = try c.response.writer();
+            try w.writeAll(j);
+        }
+    } else if (std.mem.endsWith(u8, r.prefix, "terminate")) {
+        state.terminateTarget();
+    } else if (std.mem.endsWith(u8, r.prefix, "isRunning")) {
+        var w = try c.response.writer();
+        try w.writeAll(if (state.running) "true" else "false");
+    }
 }

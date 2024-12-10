@@ -8,8 +8,8 @@ Name      | Default                                                   | Descript
 LIB_ROOT  | `/usr/lib` / `C:\Windows\System32`                        | Override the default path to the folder where the original libraries are located
 LIB       | \[app work dir\]/`libdeshader.so`/`.dylib`/`deshader.dll` | Directory/complete path to Deshader library. If the laucher does not succeed in finding the library and it was started with the GUI, it will show an open dialog to select the library
 HOOK_LIBS | none                                                      | Set to colon-separated list of **additional** libraries to replace with Deshader library (defaults always included)
-LSP       | none                                                      | Port for GLSL Language Server (based on [glsl_analyzer](https://github.com/nolanderc/glsl_analyzer/)) WebSocket
-GUI       | none                                                      | Pass `true` or `1` to show the editor window on startup
+LSP       | ws://127.0.0.1:8083                                       | Host and port for GLSL Language Server (based on [glsl_analyzer](https://github.com/nolanderc/glsl_analyzer/)) WebSocket. Pass empty string to disable.
+GUI       | none                                                      | Pass `true` or `1` to show the editor window on startup. Pass `hidden` to only start the editor server
 GUI_URL   | reserved                                                  | Used internally as a startup URL for embedded Editor
 ### Deshader library
 Name              | Default                            | Description

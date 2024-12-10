@@ -13,15 +13,19 @@
         <div>
             <p>
                 <label for="program">Program</label>
-                <input type="text" id="program" required><button type="button"
-                    onclick="pickFile()">Browse</button>
+                <input type="text" id="program" required><button type="button" onclick="pickFile()">Browse</button>
             </p>
             <p>
-                <label for="arguments">Arguments</label><input type="text" id="arguments">
+                <label for="arguments_add">Arguments</label>
+                <button type="button" title="Add" id="arguments_add">➕</button>
             </p>
             <p>
                 <label for="directory">Working directory</label><input type="text" id="directory"
                     placeholder="(PROGRAM DIRECTORY)"><button type="button" onclick="pickDirectory()">Browse</button>
+            </p>
+            <p>
+                <label for="environment_add">Evironment</label>
+                <button type="button" title="Add" id="environment_add">➕</button>
             </p>
             <div>
                 <input type="checkbox" id="do_whitelist" checked><label for="do_whitelist">Whitelist...</label>
@@ -61,11 +65,12 @@
         const directory = document.getElementById('directory');
         const error = document.getElementById('error');
         const editor = document.getElementById('editor')
-        const args = document.getElementById('arguments')
         const overlay = document.getElementById('overlay')
         const lsp = document.getElementById('lsp')
         const blacklist_add = document.getElementById('blacklist_add')
         const whitelist_add = document.getElementById('whitelist_add')
+        const arguments_add = document.getElementById('arguments_add')
+        const environment_add = document.getElementById('environment_add')
         const do_blacklist = document.getElementById('do_blacklist')
         const do_whitelist = document.getElementById('do_whitelist')
         const whitelist_first = document.getElementById('whitelist_first')
@@ -76,23 +81,40 @@
         editor.addEventListener('change', e => {
             lsp.disabled = !e.target.checked
         })
+
         do_blacklist.addEventListener('change', e => {
             blacklist_add.style.display = e.target.checked ? 'inline' : 'none'
         })
-        blacklist_add.addEventListener('click', e => {
-            const div = template.content.cloneNode(true)
-            div.querySelector('input').name = 'blacklist[]'
-            blacklist_add.parentElement.insertBefore(div, blacklist_add)
-        })
-
         do_whitelist.addEventListener('change', e => {
             whitelist_list.style.display = e.target.checked ? 'block' : 'none'
             whitelist_add.style.display = e.target.checked ? 'inline' : 'none'
         })
+
         whitelist_add.addEventListener('click', e => {
             const div = template.content.cloneNode(true)
-            div.querySelector('input').name = 'whitelist[]'
+            const input = div.querySelector('input')
+            input.name = 'whitelist[]'
             whitelist_add.parentElement.insertBefore(div, whitelist_add)
+        })
+        blacklist_add.addEventListener('click', e => {
+            const div = template.content.cloneNode(true)
+            const input = div.querySelector('input')
+            input.name = 'blacklist[]'
+            blacklist_add.parentElement.insertBefore(div, blacklist_add)
+        })
+        arguments_add.addEventListener('click', e => {
+            const div = template.content.cloneNode(true)
+            const input = div.querySelector('input')
+            input.name = 'arguments[]'
+            input.placeholder = '(ARG)'
+            arguments_add.parentElement.insertBefore(div, arguments_add)
+        })
+        environment_add.addEventListener('click', e => {
+            const div = template.content.cloneNode(true)
+            const input = div.querySelector('input')
+            input.name = 'environment[]'
+            input.placeholder = '(VAR=VALUE)'
+            environment_add.parentElement.insertBefore(div, environment_add)
         })
 
         function pickFile() {
@@ -110,17 +132,21 @@
         document.getElementById('form').addEventListener('submit', e => {
             e.preventDefault();
             const formData = new FormData(e.target)
-            const env = [
-                'DESHADER_GUI=' + (editor.checked ? '1' : '0'),
-                'DESHADER_LSP=' + ((editor.checked && lsp.checked) ? '8083' : ''),
-                'DESHADER_PROCESS=' + (do_whitelist.checked ? formData.getAll('whitelist[]').join(':') : ''),
-                'DESHADER_IGNORE_PROCESS=' + (do_blacklist.checked ? formData.getAll('blacklist[]').join(':') : '')
-            ]
+            const env = {
+                'DESHADER_GUI': editor.checked ? '1' : '0',
+                'DESHADER_LSP': (editor.checked && lsp.checked) ? '8083' : '',
+                'DESHADER_PROCESS': do_whitelist.checked ? formData.getAll('whitelist[]').join(':') : '',
+                'DESHADER_IGNORE_PROCESS': do_blacklist.checked ? formData.getAll('blacklist[]').join(':') : '',
+            }
+            for(const item of formData.getAll('environment[]')) {
+                const [key, value] = item.split('=')
+                env[key] = value
+            }
 
             overlay.style.display = "flex"
             setTimeout(() => {
                 run({
-                    program: program.value, directory: directory.value, args: args.value, env: env.join('\n')
+                    argv: [program.value, ...formData.getAll('arguments[]')], directory: directory.value, env
                 }).then(() => {
                     error.innerText = ''
                 }).catch(e => {

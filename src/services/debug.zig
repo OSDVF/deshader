@@ -346,10 +346,10 @@ pub const ConfigurationDoneResponse = struct {
 pub const LaunchRequest = struct {
     args: ?[]const String,
     console: ?ConsoleType,
+    consoleHost: ?String,
     cwd: ?String,
-    env: ?std.json.Value,
+    env: ?std.json.ArrayHashMap(String),
     program: String,
-    noDebug: ?bool,
     showDebugOutput: ?bool,
     stopOnEntry: ?bool,
 };
@@ -358,15 +358,8 @@ pub const ConsoleType = enum { debugConsole, integratedTerminal, externalTermina
 
 pub const Protocol = enum { http, https, ws, wss };
 
-pub const Connection = struct {
-    host: String,
-    port: u16,
-    protocol: Protocol,
-};
-
 pub const AttachRequest = struct {
-    connection: ?Connection,
-    console: ?ConsoleType,
+    connection: ?String,
     showDebugOutput: ?bool,
     stopOnEntry: ?bool,
 };

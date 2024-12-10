@@ -14,6 +14,19 @@
             },
         },
         {
+            "name": "GDB - Launcher GLFW Hidden",
+            "type": "gdb",
+            "request": "launch",
+            "cwd": "${workspaceRoot}",
+            "target": "./zig-out/bin/deshader-run",
+            "preLaunchTask": "Build Launcher",
+            "arguments": "-y zig-out/bin/deshader-examples/glfw",
+            "env": {
+                "DESHADER_LIB": "zig-out/lib/libdeshader.so",
+                "DESHADER_GUI": "hidden",
+            },
+        },
+        {
             "name": "GDB - Launcher Editor",
             "type": "gdb",
             "request": "launch",
@@ -114,12 +127,11 @@
             "cwd": "${workspaceRoot}",
             "valuesFormatting": "parseText",
             "preLaunchTask": "Build Examples",
-            "autorun": [
-                "set environment LD_PRELOAD ${workspaceRoot}/zig-out/lib/libdeshader.so",
-                "set environment DYLD_INSERT_LIBRARIES ${workspaceRoot}/zig-out/lib/libdeshader.dylib"
-            ],
             "env": {
-                "DESHADER_IGNORE_PROCESS": "gdb:zsh",
+                "DESHADER_IGNORE_PROCESS": "gdb:zsh:lldb",
+                "DESHADER_PROCESS": "glfw",
+                "LD_PRELOAD": "${workspaceRoot}/zig-out/lib/libdeshader.so",
+                "DYLD_INSERT_LIBRARIES": "${workspaceRoot}/zig-out/lib/libdeshader.dylib",
                 "DESHADER_COMMANDS_WS": "8082",
                 "DESHADER_START_SERVER": "1",
                 "DESHADER_LSP": "8083",

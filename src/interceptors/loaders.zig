@@ -165,8 +165,7 @@ var renamed_libs: std.ArrayList(String) = undefined;
 pub var ignored = false;
 pub fn checkIgnoredProcess() void {
     var ignored_this = false;
-    if (common.selfExePathAlloc(common.allocator)) |self_path| {
-        defer common.allocator.free(self_path);
+    if (common.selfExePath()) |self_path| {
         var set_reported_process_name = reported_process_name;
         defer reported_process_name = set_reported_process_name;
         if (!reported_process_name) {

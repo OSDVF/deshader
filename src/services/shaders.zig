@@ -46,7 +46,7 @@ const CString = [*:0]const u8;
 const Storage = storage.Storage;
 const Tag = storage.Tag;
 // each ref can have multiple source parts
-const ShadersRefMap = std.AutoHashMap(usize, *std.ArrayListUnmanaged(Shader.SourceInterface));
+const ShadersRefMap = std.AutoHashMap(usize, *std.ArrayListUnmanaged(Shader.SourcePart));
 
 const Service = @This();
 
@@ -73,8 +73,8 @@ context: *const anyopaque,
 /// TODO watch the filesystem
 physical_to_virtual: ArrayBufMap(VirtualDir.Set) = undefined,
 
-Shaders: Storage(Shader.SourceInterface, void, true) = undefined,
-Programs: Storage(Shader.Program, Shader.SourceInterface, false) = undefined,
+Shaders: Storage(Shader.SourcePart, void, true) = undefined,
+Programs: Storage(Shader.Program, Shader.SourcePart, false) = undefined,
 allocator: std.mem.Allocator = undefined,
 revert_requested: bool = false, // set by the command listener thread, read by the drawing thread
 /// Instrumentation and debugging state for each stage
@@ -124,8 +124,8 @@ pub fn deinit(service: *@This()) void {
 }
 
 pub const VirtualDir = union(enum) {
-    pub const ProgramDir = *Storage(Shader.Program, Shader.SourceInterface, true).StoredDir;
-    pub const ShaderDir = *Storage(Shader.SourceInterface, void, false).StoredDir;
+    pub const ProgramDir = *Storage(Shader.Program, Shader.SourcePart, true).StoredDir;
+    pub const ShaderDir = *Storage(Shader.SourcePart, void, false).StoredDir;
     pub const Set = std.AutoArrayHashMapUnmanaged(VirtualDir, void);
 
     Program: ProgramDir,
@@ -180,12 +180,12 @@ pub const GenericLocator = union(enum) {
 
     pub fn parse(path: String) !GenericLocator {
         if (std.mem.startsWith(u8, path, programs_path)) {
-            if (path.len == programs_path.len) return .{ .programs = .{ .sub = .{ .tagged = "" }, .nested = null } };
+            if (path.len == programs_path.len) return .{ .programs = .{ .sub = .{ .name = .{ .tagged = "" } }, .nested = null } };
             if (std.mem.lastIndexOfScalar(u8, path[programs_path.len..], '/')) |last_slash| {
                 if (last_slash < path.len - programs_path.len) {
                     // theoretically can be untagged program with (un)tagged source
                     if (try storage.Locator.parse(path[programs_path.len..][0..last_slash])) |maybe_untagged| {
-                        switch (maybe_untagged) {
+                        switch (maybe_untagged.name) {
                             .untagged => {
                                 return .{ .programs = .{
                                     .sub = maybe_untagged,
@@ -203,7 +203,7 @@ pub const GenericLocator = union(enum) {
                 .nested = null,
             } };
         } else if (std.mem.startsWith(u8, path, sources_path)) {
-            if (path.len == sources_path.len) return .{ .sources = .{ .tagged = "" } };
+            if (path.len == sources_path.len) return .{ .sources = .{ .name = .{ .tagged = "" } } };
             return .{ .sources = try storage.Locator.parse(path[sources_path.len..]) };
         } else return error.InvalidPath;
     }
@@ -294,14 +294,15 @@ const State = struct {
 
 pub fn getDirByLocator(service: *@This(), locator: GenericLocator) !?VirtualDir {
     return switch (locator) {
-        .sources => |s| if (try service.Shaders.getDirByPath((s orelse return error.TargetNotFound).tagged)) |d| .{ .Shader = d } else null,
-        .programs => |p| if (try service.Programs.getDirByPath((p.sub orelse return error.TargetNotFound).tagged)) |d| .{ .Program = d } else null,
+        .sources => |s| if (try service.Shaders.getDirByPath((s orelse return error.TargetNotFound).name.tagged)) |d| .{ .Shader = d } else null,
+        .programs => |p| if (try service.Programs.getDirByPath((p.sub orelse return error.TargetNotFound).name.tagged)) |d| .{ .Program = d } else null,
     };
 }
 
-/// Maps real absolute directory paths to virtual storage paths
+/// Maps real absolute directory paths to virtual storage paths.
+///
 /// *NOTE: when unsetting or setting path mappings, virtual paths must exist. Physical paths are not validated in any way.*
-/// physical paths can be mapped to multiple virtual paths but not vice versa
+/// Physical paths can be mapped to multiple virtual paths but not vice versa.
 pub fn mapPhysicalToVirtual(service: *@This(), physical: String, virtual: GenericLocator) !void {
     // check for parent overlap
     // TODO more effective
@@ -377,7 +378,7 @@ pub fn isNesting(comptime t: type) bool {
 fn statStorage(stor: anytype, locator: ?storage.Locator, nested: ?String) !storage.StatPayload {
     // {target, ?remaining_iterator}
     var dir_or_file = blk: {
-        switch (locator orelse storage.Locator{ .untagged = .{ .ref = 0, .part = 0 } }) {
+        switch ((locator orelse storage.Locator{ .name = .{ .untagged = .{ .ref = 0, .part = 0 } } }).name) {
             .untagged => |combined| if (locator == null)
                 return try storage.Stat.now().toPayload(.Directory, 0)
             else if (stor.all.get(combined.ref)) |parts| {
@@ -448,13 +449,19 @@ fn statStorage(stor: anytype, locator: ?storage.Locator, nested: ?String) !stora
             if (target.hasTag()) {
                 payload.type = payload.type | @intFromEnum(storage.FileType.SymbolicLink);
             }
+            if (locator != null and locator.?.instrumented) {
+                payload.permission = .ReadOnly;
+            }
             return payload;
         }
     }
 
     var payload = try dir_or_file[0].stat.toPayload(if (is_nesting) .Directory else .File, dir_or_file[0].lenOr0());
-    if (locator.? == .tagged) {
+    if (locator.?.name == .tagged) {
         payload.type = payload.type | @intFromEnum(storage.FileType.SymbolicLink);
+    }
+    if (locator.?.instrumented) {
+        payload.permission = .ReadOnly;
     }
     return payload;
 }
@@ -561,7 +568,7 @@ pub const RunningShader = struct {
 };
 
 pub fn addBreakpoint(self: *@This(), locator: storage.Locator, bp: debug.SourceBreakpoint) !debug.Breakpoint {
-    const shader = try self.Shaders.getStoredByLocator(locator) orelse return error.TargetNotFound;
+    const shader = try self.Shaders.getStoredByLocator(locator.name) orelse return error.TargetNotFound;
     const new = try shader.*.addBreakpoint(bp);
     if (self.state.getPtr(shader.*.ref)) |state| {
         state.dirty = true;
@@ -572,7 +579,7 @@ pub fn addBreakpoint(self: *@This(), locator: storage.Locator, bp: debug.SourceB
 const ProgramOrShader = struct {
     program: ?*const Shader.Program,
     shader: ?struct {
-        source: *Shader.SourceInterface,
+        source: *Shader.SourcePart,
         part: usize,
     },
 };
@@ -580,7 +587,7 @@ const ProgramOrShader = struct {
 pub fn getResourcesByLocator(self: *@This(), locator: GenericLocator) !ProgramOrShader {
     return switch (locator) {
         .programs => |p| //
-        switch ((try self.Programs.getByLocator(p.sub orelse return error.TargetNotFound, p.nested) orelse return error.TargetNotFound).content) {
+        switch ((try self.Programs.getByLocator((p.sub orelse return error.TargetNotFound).name, p.nested) orelse return error.TargetNotFound).content) {
             .Nested => |nested| .{
                 .program = nested.parent,
                 .shader = .{
@@ -597,8 +604,8 @@ pub fn getResourcesByLocator(self: *@This(), locator: GenericLocator) !ProgramOr
         .sources => |s| .{
             .program = null,
             .shader = .{
-                .source = (try self.Shaders.getStoredByLocator(s orelse return error.TargetNotFound) orelse return error.TargetNotFound),
-                .part = switch (s orelse return error.TargetNotFound) {
+                .source = (try self.Shaders.getStoredByLocator((s orelse return error.TargetNotFound).name) orelse return error.TargetNotFound),
+                .part = switch ((s orelse return error.TargetNotFound).name) {
                     .untagged => |comb| comb.part,
                     else => 0,
                 },
@@ -619,7 +626,7 @@ pub fn addBreakpointAlloc(self: *@This(), locator: GenericLocator, bp: debug.Sou
 }
 
 /// Tries to get tagged path, or falls back to untagged path
-pub fn fullPath(self: @This(), allocator: std.mem.Allocator, shader: *Shader.SourceInterface, program: ?*const Shader.Program, part_index: usize) !String {
+pub fn fullPath(self: @This(), allocator: std.mem.Allocator, shader: *Shader.SourcePart, program: ?*const Shader.Program, part_index: usize) !String {
     const basename = try shader.basenameAlloc(allocator, part_index);
     defer allocator.free(basename);
     if (program) |p| {
@@ -661,7 +668,7 @@ pub fn runningShaders(self: *@This(), allocator: std.mem.Allocator, result: *std
     var c_it = self.state.iterator();
     while (c_it.next()) |state_entry| {
         if (self.Shaders.all.get(state_entry.key_ptr.*)) |shader_parts| {
-            const shader: *Shader.SourceInterface = &shader_parts.items[0]; // TODO is it bad when the shader is dirty?
+            const shader: *Shader.SourcePart = &shader_parts.items[0]; // TODO is it bad when the shader is dirty?
             const entry = try running.getOrPut(.{ .service = self, .shader = shader.ref });
             try result.append(allocator, RunningShader{
                 .id = @intFromPtr(entry.key_ptr),
@@ -766,7 +773,7 @@ pub fn @"continue"(self: *@This(), shader_ref: usize) !void {
 
 /// Increments the desired step (or also desired breakpoint) selector for the shader `shader_ref`.
 pub fn advanceStepping(self: *@This(), shader_ref: usize, target: ?u32) !void {
-    const shader: *std.ArrayListUnmanaged(Shader.SourceInterface) = self.Shaders.all.get(shader_ref) orelse return error.TargetNotFound;
+    const shader: *std.ArrayListUnmanaged(Shader.SourcePart) = self.Shaders.all.get(shader_ref) orelse return error.TargetNotFound;
 
     const state = self.state.getPtr(shader_ref) orelse return error.NotInstrumented;
     const next = (if (state.reached_step) |s| s.index else 0) +% 1;
@@ -801,7 +808,7 @@ pub fn disableStepping(self: *@This(), shader_ref: usize) !void {
     }
 }
 
-fn instrumentOrGetCached(self: *@This(), program: *Shader.Program, params: *State.Params, key: usize, sources: []Shader.SourceInterface) !union(enum) {
+fn instrumentOrGetCached(self: *@This(), program: *Shader.Program, params: *State.Params, key: usize, sources: []Shader.SourcePart) !union(enum) {
     cached: *State,
     new: instrumentation.Result,
 } {
@@ -1096,7 +1103,7 @@ pub fn instrument(self: *@This(), program: *Shader.Program, in_params: State.Par
 }
 
 /// Empty variables used just for type resolution
-const SourcePayload: decls.SourcesPayload = undefined;
+const SourcesPayload: decls.SourcesPayload = undefined;
 const ProgramPayload: decls.ProgramPayload = undefined;
 
 pub const InstrumentationResult = struct {
@@ -1125,22 +1132,28 @@ pub const Shader = struct {
         }
     };
 
-    /// Interface for interacting with a single source code part
-    /// Note: this is not a source code itself, but a wrapper around it
-    /// TODO: find a better way to represent source parts vs whole shader sources
-    pub const SourceInterface = struct {
-        ref: @TypeOf(SourcePayload.ref) = 0,
-        tags: std.StringArrayHashMapUnmanaged(*Tag(@This())) = .{},
-        stage: @TypeOf(SourcePayload.stage) = @enumFromInt(0),
-        language: @TypeOf(SourcePayload.language) = @enumFromInt(0),
-        /// Can be anything that is needed for the host application
-        context: ?*const anyopaque = null,
-        /// Function that compiles the (instrumented) shader within the host application context. Defaults to glShaderSource and glCompileShader
-        compileHost: @TypeOf(SourcePayload.compile) = null,
-        saveHost: @TypeOf(SourcePayload.save) = null,
+    /// Class for interacting with a single source code part.
+    /// Implements Storage.Stored.
+    pub const SourcePart = struct {
+        // Storage.Stored implementation
+        physical_connected: bool = false,
+        ref: @TypeOf(SourcesPayload.ref) = 0,
         stat: storage.Stat,
 
+        // SourcePart
+        tags: std.StringArrayHashMapUnmanaged(*Tag(@This())) = .{},
+        stage: @TypeOf(SourcesPayload.stage) = @enumFromInt(0),
+        language: @TypeOf(SourcesPayload.language) = @enumFromInt(0),
+        /// Can be anything that is needed for the host application
+        context: ?*const anyopaque = null,
+        /// Graphics API-dependednt function that compiles the (instrumented) shader within the host application context. Defaults to glShaderSource and glCompileShader
+        compileHost: @TypeOf(SourcesPayload.compile) = null,
+        saveHost: @TypeOf(SourcesPayload.save) = null,
+        currentSourceHost: @TypeOf(SourcesPayload.currentSource) = null,
+
         allocator: std.mem.Allocator,
+        /// Contains a copy of the original passed string
+        source: ?String = null,
         /// Contains references (indexes) to `stops` in the source code
         breakpoints: std.AutoHashMapUnmanaged(usize, BreakpointSpecial) = .{},
         /// A flag for the platform interface (e.g. `gl_shaders`) for setting the required uniforms for source-stepping
@@ -1149,15 +1162,6 @@ pub const Shader = struct {
         tree: ?analyzer.parse.Tree = null,
         /// Possible breakpoint or debugging step locations. Access using `possibleSteps()`
         possible_steps: ?Steps = null,
-
-        implementation: *anyopaque, // is on heap
-        //
-        // Pointers to interface implementation methods. VTable not used here for saving one dereference
-        //
-        /// Returns the currently saved (not instrumented) shader source part
-        getSourceImpl: *const anyopaque,
-        replaceSourceImpl: *const anyopaque,
-        deinitImpl: *const anyopaque,
 
         pub usingnamespace Storage(@This(), void, true).TaggableMixin;
 
@@ -1168,6 +1172,9 @@ pub const Shader = struct {
         });
 
         pub fn deinit(self: *@This()) !void {
+            if (self.source) |s| {
+                self.allocator.free(s);
+            }
             self.tags.deinit(self.allocator);
             var it = self.breakpoints.valueIterator();
             while (it.next()) |bp| {
@@ -1180,10 +1187,9 @@ pub const Shader = struct {
             if (self.tree) |*t| {
                 t.deinit(self.allocator);
             }
-            @as(*const fn (*const anyopaque) void, @alignCast(@ptrCast(self.deinitImpl)))(self.implementation);
         }
 
-        pub fn basenameAlloc(source: *const SourceInterface, allocator: std.mem.Allocator, part_index: usize) !String {
+        pub fn basenameAlloc(source: *const SourcePart, allocator: std.mem.Allocator, part_index: usize) !String {
             if (source.firstTag()) |t| {
                 return try allocator.dupe(u8, t.name);
             } else {
@@ -1195,9 +1201,43 @@ pub const Shader = struct {
             return if (self.getSource()) |s| s.len else 0;
         }
 
-        pub fn getSource(self: *const @This()) ?String {
-            return @as(*const fn (*const anyopaque) ?String, @alignCast(@ptrCast(self.getSourceImpl)))(self.implementation);
+        pub fn init(allocator: std.mem.Allocator, payload: decls.SourcesPayload, index: usize) !@This() {
+            std.debug.assert(index < payload.count);
+            var source: ?String = null;
+            if (payload.sources != null) {
+                source = if (payload.lengths) |lens|
+                    try allocator.dupe(u8, payload.sources.?[index][0..lens[index]])
+                else
+                    try allocator.dupe(u8, std.mem.span(payload.sources.?[index]));
+            }
+            return SourcePart{
+                .allocator = allocator,
+                .ref = payload.ref,
+                .stage = payload.stage,
+                .compileHost = payload.compile,
+                .saveHost = payload.save,
+                .currentSourceHost = payload.currentSource,
+                .language = payload.language,
+                .context = if (payload.contexts != null) payload.contexts.?[index] else null,
+                .stat = storage.Stat.now(),
+                .source = source,
+            };
         }
+
+        /// Returns the currently saved (not instrumented) shader source part
+        pub fn getSource(self: *const @This()) ?String {
+            return self.source;
+        }
+
+        /// The old source will be freed if it exists. The new source will be copied and owned
+        pub fn replaceSource(self: *@This(), source: String) std.mem.Allocator.Error!void {
+            self.invalidate();
+            if (self.source) |s| {
+                self.allocator.free(s);
+            }
+            self.source = try self.allocator.dupe(u8, source);
+        }
+
         /// Invalidate instrumentation and code analysis state
         pub fn invalidate(self: *@This()) void {
             if (self.tree) |*t| {
@@ -1254,11 +1294,6 @@ pub const Shader = struct {
                 self.possible_steps = result;
                 return result;
             }
-        }
-
-        pub fn replaceSource(self: *@This(), source: String) std.mem.Allocator.Error!void {
-            self.invalidate();
-            return @as(*const fn (*const anyopaque, String) std.mem.Allocator.Error!void, @alignCast(@ptrCast(self.replaceSourceImpl)))(self.implementation, source);
         }
 
         /// The result will have empty path field
@@ -1367,7 +1402,7 @@ pub const Shader = struct {
 
     pub fn instrument(
         service: *const Service,
-        parts: []SourceInterface,
+        parts: []SourcePart,
         stepping: bool,
         params: *State.Params, //includes allocator
         uniform_locations: *std.ArrayListUnmanaged(String),
@@ -1500,66 +1535,8 @@ pub const Shader = struct {
         return applied;
     }
 
-    /// Contrary to decls.SourcePayload this is just a single tagged shader source code.
-    /// Contains a copy of the original passed string
-    pub const MemorySource = struct {
-        super: *SourceInterface,
-        source: ?String = null,
-
-        pub fn fromPayload(allocator: std.mem.Allocator, payload: decls.SourcesPayload, index: usize, super: *SourceInterface) !*@This() {
-            std.debug.assert(index < payload.count);
-            var source: ?String = null;
-            if (payload.sources != null) {
-                source = if (payload.lengths) |lens|
-                    try allocator.dupe(u8, payload.sources.?[index][0..lens[index]])
-                else
-                    try allocator.dupe(u8, std.mem.span(payload.sources.?[index]));
-            }
-            const result = try allocator.create(@This());
-            super.* = SourceInterface{
-                .allocator = allocator,
-                .implementation = result,
-                .ref = payload.ref,
-                .stage = payload.stage,
-                .compileHost = payload.compile,
-                .saveHost = payload.save,
-                .language = payload.language,
-                .context = if (payload.contexts != null) payload.contexts.?[index] else null,
-                .stat = storage.Stat.now(),
-                .getSourceImpl = &getSource,
-                .replaceSourceImpl = &replaceSource,
-                .deinitImpl = &MemorySource.deinit,
-            };
-            result.* = @This(){
-                .super = super,
-                .source = source,
-            };
-            return result;
-        }
-
-        pub fn getSource(this: *@This()) ?String {
-            return this.source;
-        }
-
-        /// The old source will be freed if it exists. The new source will be copied and owned
-        pub fn replaceSource(this: *@This(), source: String) std.mem.Allocator.Error!void {
-            if (this.source) |s| {
-                this.super.allocator.free(s);
-            }
-            this.source = try this.super.allocator.dupe(u8, source);
-        }
-
-        pub fn deinit(this: *@This()) void {
-            if (this.source) |s| {
-                this.super.allocator.free(s);
-            }
-            const super = this.super;
-            super.allocator.destroy(this);
-        }
-    };
-
     pub const Program = struct {
-        const DirOrStored = Storage(@This(), Shader.SourceInterface, false).DirOrStored;
+        const DirOrStored = Storage(@This(), Shader.SourcePart, false).DirOrStored;
 
         ref: @TypeOf(ProgramPayload.ref) = 0,
         tags: std.StringArrayHashMapUnmanaged(*Tag(@This())) = .{},
@@ -1574,7 +1551,7 @@ pub const Shader = struct {
         uniform_locations: std.ArrayListUnmanaged(String) = .{}, //will be filled by the instrumentation routine
         uniform_names: std.StringHashMapUnmanaged(usize) = .{}, //inverse to uniform_locations
 
-        pub usingnamespace Storage(@This(), SourceInterface, false).TaggableMixin;
+        pub usingnamespace Storage(@This(), SourcePart, false).TaggableMixin;
 
         pub fn deinit(self: *@This()) void {
             self.tags.deinit(self.stages.allocator);
@@ -1741,12 +1718,12 @@ pub const Shader = struct {
         pub const ShaderIterator = struct {
             program: *const Program,
             shaders: ShadersRefMap.ValueIterator,
-            current_parts: ?[]SourceInterface,
+            current_parts: ?[]SourcePart,
             part_index: usize = 0,
 
             /// Returns the next shader source name and its object. The name is allocated with the allocator
-            pub fn nextAlloc(self: *ShaderIterator, allocator: std.mem.Allocator) error{OutOfMemory}!?struct { name: []const u8, source: *const Shader.SourceInterface } {
-                var stage: *const SourceInterface = undefined;
+            pub fn nextAlloc(self: *ShaderIterator, allocator: std.mem.Allocator) error{OutOfMemory}!?struct { name: []const u8, source: *const Shader.SourcePart } {
+                var stage: *const SourcePart = undefined;
                 var found_part: usize = undefined;
                 var found = false;
                 while (!found) {
@@ -1784,8 +1761,8 @@ pub const Shader = struct {
 
 pub fn sourcesCreateUntagged(service: *Service, sources: decls.SourcesPayload) !void {
     const new_stored = try service.Shaders.createUntagged(sources.ref, sources.count);
-    for (new_stored, 0..) |*super, i| {
-        _ = try Shader.MemorySource.fromPayload(service.Shaders.allocator, sources, i, super);
+    for (new_stored, 0..) |*template, i| {
+        template.* = try Shader.SourcePart.init(service.allocator, sources, i);
     }
 }
 

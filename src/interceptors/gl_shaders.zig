@@ -13,6 +13,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+//! Rendering and shader instrumentation service implementation for OpenGL.
+//! Contains functions prefixed with `gl` which are interceptor functions for OpenGL API calls.
+
 // TODO: support MESA debug extensions? (MESA_program_debug, MESA_shader_debug)
 // TODO: support GL_ARB_shading_language_include (nvidia's), GL_GOOGLE_include_directive and GL_GOOGLE_cpp_style_line_directive
 // TODO: error checking
@@ -51,7 +54,7 @@ const UniformTargets = struct {
     bp_selector: ?gl.int = null,
 };
 
-/// The service instance that belongs to currently selected context.
+/// The service instance which belongs to currently selected context.
 pub threadlocal var current: *shaders = undefined;
 
 // Managed per-context state
@@ -158,6 +161,23 @@ fn defaultCompileShader(source: decls.SourcesPayload, instrumented: CString, len
     return 0;
 }
 
+fn defaultGetShaderSource(ref: usize) callconv(.C) ?CString {
+    const shader: gl.uint = @intCast(ref);
+    var length: gl.sizei = undefined;
+    gl.GetShaderiv(shader, gl.SHADER_SOURCE_LENGTH, &length);
+    if (length == 0) {
+        log.err("Shader {d} has no source", .{shader});
+        return null;
+    }
+    const source: [*:0]gl.char = common.allocator.allocSentinel(gl.char, @intCast(length), 0) catch |err| {
+        log.err("Failed to allocate memory for shader source: {any}", .{err});
+        return null;
+    };
+    defer common.allocator.free(source[0..@intCast(length)]);
+    gl.GetShaderSource(shader, length, &length, source);
+    return source;
+}
+
 /// If count is 0, the function will only link the program. Otherwise it will attach the shaders in the order they are stored in the payload.
 fn defaultLink(self: decls.ProgramPayload) callconv(.C) u8 {
     const program: gl.uint = @intCast(self.ref);
@@ -222,13 +242,14 @@ pub export fn glCreateShader(stage: gl.@"enum") gl.uint {
 
     const ref: usize = @intCast(new_platform_source);
     if (current.Shaders.appendUntagged(ref)) |new| {
-        _ = shaders.Shader.MemorySource.fromPayload(current.Shaders.allocator, decls.SourcesPayload{
+        new.* = shaders.Shader.SourcePart.init(current.Shaders.allocator, decls.SourcesPayload{
             .ref = ref,
             .stage = @enumFromInt(stage),
             .compile = defaultCompileShader,
+            .currentSource = defaultGetShaderSource,
             .count = 1,
             .language = decls.LanguageType.GLSL,
-        }, 0, new) catch |err| {
+        }, 0) catch |err| {
             log.warn("Failed to add shader source {x} cache because of alocation: {any}", .{ new_platform_source, err });
             return new_platform_source;
         };
@@ -264,6 +285,7 @@ pub export fn glCreateShaderProgramv(stage: gl.@"enum", count: gl.sizei, sources
         .sources = sources,
         .lengths = lengths.ptr,
         .compile = defaultCompileShader,
+        .currentSource = defaultGetShaderSource,
         .language = decls.LanguageType.GLSL,
     }) catch |err| {
         log.warn("Failed to add shader source {x} cache: {any}", .{ new_platform_sources[0], err });
@@ -292,7 +314,7 @@ fn processOutput(r: InstrumentationResult) !void {
         const c_state = state.getPtr(current) orelse return error.NoState;
         const instr_state = entry.value_ptr.*;
         const shader_ref = entry.key_ptr.*;
-        const shader: *std.ArrayListUnmanaged(shaders.Shader.SourceInterface) = current.Shaders.all.get(shader_ref) orelse {
+        const shader: *std.ArrayListUnmanaged(shaders.Shader.SourcePart) = current.Shaders.all.get(shader_ref) orelse {
             log.warn("Shader {d} not found in the database", .{shader_ref});
             continue;
         };
@@ -1267,7 +1289,7 @@ pub export fn glShaderSource(shader: gl.uint, count: gl.sizei, sources: [*][*:0]
                             switch (v) {
                                 // Workspace include
                                 .workspace => {
-                                    current.mapPhysicalToVirtual(opts.positionals[0], .{ .sources = .{ .tagged = opts.positionals[1] } }) catch |err| failedWorkspacePath(opts.positionals[0], err);
+                                    current.mapPhysicalToVirtual(opts.positionals[0], .{ .sources = .{ .name = .{ .tagged = opts.positionals[1] } } }) catch |err| failedWorkspacePath(opts.positionals[0], err);
                                 },
                                 .source => {
                                     current.Shaders.assignTag(shader_wide, source_i, opts.positionals[0], .Error) catch |err| objLabErr(opts.positionals[0], shader, source_i, err);
@@ -1289,7 +1311,7 @@ pub export fn glShaderSource(shader: gl.uint, count: gl.sizei, sources: [*][*:0]
                                         .condition = if (v == .@"breakpoint-if" or v == .@"print-if") opts.positionals[condition_pos] else null,
                                         .hitCondition = if (v == .@"breakpoint-after") opts.positionals[condition_pos] else null,
                                     }; // The breakpoint is in fact targeted on the next line
-                                    if (current.addBreakpoint(.{ .untagged = .{ .ref = shader_wide, .part = source_i } }, new)) |bp| {
+                                    if (current.addBreakpoint(.{ .name = .{ .untagged = .{ .ref = shader_wide, .part = source_i } } }, new)) |bp| {
                                         if (bp.id) |stop_id| { // if verified
                                             log.debug("Shader {x} part {d}: breakpoint at line {d}, column {?d}", .{ shader, source_i, line_i, bp.column });
                                             // push an event to the debugger
@@ -1452,7 +1474,7 @@ pub export fn glDebugMessageInsert(source: gl.@"enum", _type: gl.@"enum", id: gl
                     var it = std.mem.split(u8, buf.?[0..real_length], "<-");
                     if (it.next()) |real_path| {
                         if (it.next()) |virtual_path| {
-                            current.mapPhysicalToVirtual(real_path, .{ .sources = .{ .tagged = virtual_path } }) catch |err| failedWorkspacePath(buf.?[0..real_length], err);
+                            current.mapPhysicalToVirtual(real_path, .{ .sources = .{ .name = .{ .tagged = virtual_path } } }) catch |err| failedWorkspacePath(buf.?[0..real_length], err);
                         } else failedWorkspacePath(buf.?[0..real_length], error.@"No virtual path specified");
                     } else failedWorkspacePath(buf.?[0..real_length], error.@"No real path specified");
                 }

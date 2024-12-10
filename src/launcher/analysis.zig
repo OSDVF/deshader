@@ -37,7 +37,6 @@ pub fn serverStart(port: u16) !void {
 pub fn serverStop() !void {
     if (server_thread) |*t| {
         state.stop();
-        // Do not wait for the thread to finish (because it could be still blocked on a request)
         t.join();
         server_thread = null;
     } else {
@@ -50,10 +49,10 @@ pub fn isRunning() bool {
 }
 
 pub fn serverThread(port: u16) !void {
-    var server_arena = std.heap.ArenaAllocator.init(common.allocator);
-    defer server_arena.deinit();
+    var gpa = common.GPA{};
+    defer _ = gpa.deinit();
     // the return value of analyzer.main.run() does not contain any specific information in case of running as server
-    _ = try analyzer.main.run(server_arena.allocator(), &state, .{
+    _ = try analyzer.main.run(gpa.allocator(), &state, .{
         .channel = .{ .ws = port },
         .scheme = uri_scheme ++ ":",
         .allow_reinit = true,

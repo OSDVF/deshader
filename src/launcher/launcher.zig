@@ -34,8 +34,8 @@ const c = @cImport({
         if (builtin.os.tag == .linux) {
             @cInclude("gtk/gtk.h");
         }
-        @cInclude("dlfcn.h");
-        @cInclude("unistd.h");
+        @cInclude("dlfcn.h"); // for dlopen
+        @cInclude("unistd.h"); // for setpgid
     }
 });
 
@@ -57,16 +57,12 @@ var specified_deshader_path: ?String = null;
 pub fn main() !u8 {
     try common.init();
     defer common.deinit();
-    if (common.env.get(gui.DESHADER_GUI_URL)) |url| {
-        try gui.guiProcess(url, "Deshader Editor");
-        return 0;
-    }
 
     var cli_args = try args.parseForCurrentProcess(struct {
         commands: ?String = "",
         directory: ?String = null,
         deshader: ?String = null,
-        editor: bool = true,
+        editor: bool = false,
         gui: bool = false,
         help: bool = false,
         libs: ?String = null,
@@ -93,8 +89,25 @@ pub fn main() !u8 {
     }, common.allocator, .print);
     defer cli_args.deinit();
 
+    // Exclude launcher process from deshader interception
+    var this_path_from_args = false;
+    const this_path = std.fs.selfExePathAlloc(common.allocator) catch blk: {
+        this_path_from_args = true;
+        break :blk cli_args.executable_name.?; //To workaround wine realpath() bug
+    };
+    defer if (!this_path_from_args) common.allocator.free(this_path);
+    try common.env.appendList(common.env_prefix ++ "IGNORE_PROCESS", this_path);
+
+    // Start editor process if this is the forked launcher process (dedicated for editor)
+    if (common.env.get(gui.DESHADER_GUI_URL)) |url| {
+        try gui.guiProcess(url, "Deshader Editor");
+        return 0;
+    }
+
     if (cli_args.options.commands) |cm| if (cm.len == 0) {
-        cli_args.options.commands = common.env.get(common.env_prefix ++ "COMMANDS") orelse common.default_ws_url;
+        cli_args.options.commands = common.env.get(common.env_prefix ++ "COMMANDS") orelse
+            // Set to default value if some program wil be started. Otherwise only editor will be shown.
+            if (cli_args.positionals.len > 0) common.default_ws_url else null;
     };
     if (cli_args.options.lsp) |l| if (l.len == 0) {
         cli_args.options.lsp = common.env.get(common.env_prefix ++ "LSP") orelse common.default_lsp_url;
@@ -113,19 +126,15 @@ pub fn main() !u8 {
     };
 
     const cwd = std.fs.cwd();
-    var this_path_from_args = false;
-    const this_path = std.fs.selfExePathAlloc(common.allocator) catch blk: {
-        this_path_from_args = true;
-        break :blk cli_args.executable_name.?; //To workaround wine realpath() bug
-    };
-    defer if (!this_path_from_args) common.allocator.free(this_path);
     this_dir = path.dirname(this_path) orelse ".";
 
     yes_to_replace = cli_args.options.replace;
     specified_deshader_path = cli_args.options.deshader orelse common.env.get(common.env_prefix ++ "LIB");
 
     // Show gui when no arguments are provided
-    cli_args.options.editor = isYes(common.env.get(common.env_prefix ++ "GUI")) or cli_args.options.editor or (cli_args.positionals.len == 0 and cli_args.raw_start_index == null);
+    const gui_env = common.env.get(common.env_prefix ++ "GUI");
+    const explicit_gui = cli_args.options.editor;
+    cli_args.options.editor = common.env.isYes(gui_env) or cli_args.options.editor or cli_args.positionals.len == 0 and cli_args.raw_start_index == null;
     will_show_gui = cli_args.options.gui or cli_args.options.editor;
 
     if (cli_args.options.gui) {
@@ -156,9 +165,6 @@ pub fn main() !u8 {
         if (specified_libs_dir) |s| { //convert to realpath
             specified_libs_dir = try cwd.realpathAlloc(common.allocator, s);
         }
-
-        //Exclude launcher process from deshader interception
-        try common.env.appendList(common.env_prefix ++ "IGNORE_PROCESS", this_path);
 
         var search = SearchPaths{};
         const deshader_lib_path = while (try search.nextAlloc()) |lib_path| {
@@ -195,9 +201,9 @@ pub fn main() !u8 {
         //
 
         // Language Server
-        if (cli_args.options.lsp) |lsp| {
+        if (cli_args.options.lsp) |lsp| if (lsp.len > 0) {
             const uri = std.Uri.parse(lsp) catch |e| fallback: {
-                log.err("Could not parse LSP URL: {}, using default {s}", .{ e, common.default_lsp_url });
+                log.err("Could not parse LSP URL: {s} ({}), using default {s}", .{ lsp, e, common.default_lsp_url });
                 break :fallback std.Uri{ .port = common.default_lsp_port_n, .scheme = "ws" };
             };
             const h = if (uri.host) |ho| try std.fmt.allocPrint(common.allocator, "{raw}", .{ho}) else null;
@@ -206,12 +212,19 @@ pub fn main() !u8 {
             if (try common.isPortFree(h, p)) {
                 try analysis.serverStart(p); // TODO obey host specification
             } else {
-                log.err("Could not start LSP on port {d}", .{lsp});
+                log.err("Could not start LSP on port {s}", .{lsp});
             }
-        }
+        };
 
         // Editor GUI
-        if (cli_args.options.editor) {
+        var editor_hidden = false;
+        if (gui_env) |g| {
+            if (std.ascii.eqlIgnoreCase(g, "hidden")) {
+                try gui.serverStart(cli_args.options.port.?, cli_args.options.commands, cli_args.options.lsp);
+                editor_hidden = true;
+            }
+        }
+        if ((cli_args.options.editor and !editor_hidden) or explicit_gui) {
             try gui.editorShow(cli_args.options.port.?, cli_args.options.commands, cli_args.options.lsp);
         }
 
@@ -331,7 +344,7 @@ pub fn main() !u8 {
             target.stdin_behavior = .Inherit;
             try target.spawn();
             if (builtin.os.tag != .windows) {
-                _ = c.setpgid(target.id, 0); // Put the target in its own process group
+                _ = c.setpgid(target.id, 0); // Put the target in its own process group so all subprocesses will exit with it
             }
             log.info("Launched PID {d}", .{if (builtin.os.tag == .windows) c.GetProcessId(target.id) else target.id});
 
@@ -350,7 +363,7 @@ pub fn main() !u8 {
 
             defer target_watcher.detach();
 
-            // Controller thread
+            // Controller thread - allows the user to request termination or show the editor again
             var controller_thread = try std.Thread.spawn(.{}, struct {
                 fn controller(
                     co: *std.Thread.Condition,
@@ -392,6 +405,13 @@ pub fn main() !u8 {
             }
         }
         if (cli_args.options.editor) {
+            if (editor_hidden) {
+                try std.io.getStdErr().writeAll("Press enter key to shutdown the server\n");
+                // No subprocess, no GUI, server only
+                var buffer = [_]u8{0} ** 1000;
+                var r = std.io.getStdIn().reader();
+                _ = r.readUntilDelimiterOrEof(&buffer, '\n') catch {};
+            }
             gui.editorWait() catch {};
             gui.serverStop() catch {};
         }
@@ -539,10 +559,6 @@ const SearchPaths = struct {
         }
     }
 };
-
-fn isYes(s: ?String) bool {
-    return if (s) |ys| std.ascii.eqlIgnoreCase(ys, "yes") or std.ascii.eqlIgnoreCase(ys, "y") or std.mem.eql(u8, ys, "1") else false;
-}
 
 pub fn launcherGUI() !void {
     const content = @embedFile("launcher.html");

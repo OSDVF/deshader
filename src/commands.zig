@@ -51,7 +51,6 @@ pub const MutliListener = struct {
         host: String,
         port: u16,
     };
-    const queryArgsMap = common.queryToArgsMap;
     const json_options = std.json.StringifyOptions{ .whitespace = .minified, .emit_null_optional_fields = false };
 
     // various command providers
@@ -98,7 +97,7 @@ pub const MutliListener = struct {
 
         // WS Command Listener
         for (self.ws_configs.items) |ws_config| {
-            DeshaderLog.info("Starting websocket listener on {s}:{d}", .{ ws_config.address, ws_config.port });
+            DeshaderLog.info("Starting websocket listener on {s}:{d} from {s}", .{ ws_config.address, ws_config.port, common.selfExePath() catch "?" });
             if (!try common.isPortFree(ws_config.address, ws_config.port)) {
                 addr_in_use = true;
                 DeshaderLog.err("Port {d} is already in use", .{ws_config.port});
@@ -108,25 +107,25 @@ pub const MutliListener = struct {
             self.websocket_thread = try std.Thread.spawn(
                 .{ .allocator = common.allocator },
                 struct {
-                    fn listen(list: *MutliListener, alloc: std.mem.Allocator, conf: websocket.Config) void {
-                        var arena = std.heap.ArenaAllocator.init(alloc);
-                        defer arena.deinit();
+                    fn listen(list: *MutliListener, conf: websocket.Config) void {
+                        var alloc = common.GPA{};
+                        defer _ = alloc.deinit();
 
-                        var listener = websocket.Server(WSHandler).init(arena.allocator(), conf) catch |err|
+                        var listener = websocket.Server(WSHandler).init(alloc.allocator(), conf) catch |err|
                             return DeshaderLog.err("Error while creating webscoket listener: {any}", .{err});
 
                         listener.listen(list) catch |err|
                             DeshaderLog.err("Error while listening for websocket commands: {any}", .{err});
                     }
                 }.listen,
-                .{ self, allocator, ws_config },
+                .{ self, ws_config },
             );
             self.websocket_thread.?.setName("CmdListWS") catch {};
         }
 
         // HTTP Command listener
         for (http_configs.items) |http_config| { // TODO select interface to run on
-            DeshaderLog.info("Starting HTTP listener on {s}:{d}", .{ http_config.host, http_config.port });
+            DeshaderLog.info("Starting HTTP listener on {s}:{d} from {s}", .{ http_config.host, http_config.port, common.selfExePath() catch "?" });
 
             self.http = try positron.Provider.create(self.provider_arena.allocator(), http_config.port);
             errdefer {
@@ -172,9 +171,13 @@ pub const MutliListener = struct {
         for (self.ws.items) |ws| {
             ws.writeText("432: Closing connection\n") catch {};
             ws.close(.{ .code = 1001, .reason = "server shutting down" }) catch {};
+            // Close forcefully
+            std.posix.shutdown(ws.stream.handle, .both) catch |e| {
+                DeshaderLog.err("Error while shutting down websocket: {}", .{e});
+            };
         }
+        self.ws_configs.deinit(self.ws.allocator);
         if (self.hasClient()) {
-            self.ws_configs.deinit(self.ws.allocator);
             self.websocket_thread.?.join();
             self.websocket_thread = null;
             self.ws.clearAndFree();
@@ -207,12 +210,6 @@ pub const MutliListener = struct {
                 };
             }
 
-            fn argsFromFullCommand(allocator: std.mem.Allocator, uri: []u8) !?ArgumentsMap {
-                const command_query = std.mem.splitScalar(u8, uri, '?');
-                const query = command_query.rest();
-                return if (query.len > 0) try queryArgsMap(allocator, @constCast(query)) else null;
-            }
-
             fn wrapper(provider: *positron.Provider, _: *Route, context: *serve.HttpContext) Route.Error!void {
                 if (setting_vars.logIntoResponses) {
                     writer = try context.response.writer();
@@ -228,7 +225,7 @@ pub const MutliListener = struct {
                     1 => blk: {
                         const url = try provider.allocator.dupe(u8, context.request.url);
                         defer provider.allocator.free(url);
-                        var args = try argsFromFullCommand(provider.allocator, url);
+                        var args = try common.argsFromFullCommand(provider.allocator, url);
                         defer if (args) |*a| {
                             a.deinit(provider.allocator);
                         };
@@ -237,7 +234,7 @@ pub const MutliListener = struct {
                     2 => blk: {
                         const url = try provider.allocator.dupe(u8, context.request.url);
                         defer provider.allocator.free(url);
-                        var args = try argsFromFullCommand(provider.allocator, url);
+                        var args = try common.argsFromFullCommand(provider.allocator, url);
                         defer if (args) |*a| {
                             var it = a.valueIterator();
                             while (it.next()) |s| {
@@ -372,27 +369,22 @@ pub const MutliListener = struct {
             if (result_or_error) |result| {
                 switch (@TypeOf(result)) {
                     void => {
-                        DeshaderLog.debug("WS Command {s} => void", .{command_echo});
                         try self.writeAll(.text, &.{ accepted, command_echo, "\n" });
                     },
                     String => {
-                        DeshaderLog.debug("WS Command {s} => {s}", .{ command_echo, result });
                         try self.writeAll(.text, &.{ accepted, command_echo, "\n", result, "\n" });
                     },
                     []const CString => {
                         const flattened = try common.joinInnerZ(common.allocator, "\n", result);
                         defer common.allocator.free(flattened);
-                        DeshaderLog.debug("WS Command {s} => {s}", .{ command_echo, flattened });
                         try self.writeAll(.text, &.{ accepted, command_echo, "\n", flattened, "\n" });
                     },
                     []const String => {
                         const flattened = try std.mem.join(common.allocator, "\n", result);
                         defer common.allocator.free(flattened);
-                        DeshaderLog.debug("WS Command {s} => {s}", .{ command_echo, flattened });
                         try self.writeAll(.text, &.{ accepted, command_echo, "\n", flattened, "\n" });
                     },
                     serve.HttpStatusCode => {
-                        DeshaderLog.debug("WS Command {s} => {d}", .{ command_echo, result });
                         try self.writeAll(.text, &.{
                             try std.fmt.bufPrint(&http_code_buffer, "{d}", .{@as(serve.HttpStatusCode, result)}),
                             ": ",
@@ -404,7 +396,7 @@ pub const MutliListener = struct {
                     },
                     else => unreachable,
                 }
-            } else |err| {
+            } else |err| { // TODO there are no stack traces and must be captured a in the function above
                 const text = try std.fmt.allocPrint(common.allocator, "500: Internal Server Error\n{s}\n{} at\n{?}", .{ command_echo, err, if (setting_vars.stackTraces) @errorReturnTrace() else &common.null_trace });
                 defer common.allocator.free(text);
                 try self.conn.writeText(text);
@@ -438,7 +430,7 @@ pub const MutliListener = struct {
 
             const target_command = ws_commands.get(command_name);
             if (target_command) |tc| {
-                var parsed_args: ?ArgumentsMap = if (query.len > 0) try queryArgsMap(common.allocator, query_d) else null;
+                var parsed_args: ?ArgumentsMap = if (query.len > 0) try common.queryToArgsMap(common.allocator, query_d) else null;
                 defer if (parsed_args) |*a| {
                     a.deinit(common.allocator);
                 };
@@ -669,8 +661,8 @@ pub const MutliListener = struct {
                     if (context.service) |s| {
                         if (context.resource) |r| {
                             switch (r) {
-                                .programs => |locator| if (try s.Programs.getNestedByLocator(locator.sub orelse return error.TargetNotFound, locator.nested)) |shader| return shader.clearBreakpoints(),
-                                .sources => |locator| if (try s.Shaders.getStoredByLocator(locator orelse return error.TargetNotFound)) |shader| return shader.*.clearBreakpoints(),
+                                .programs => |locator| if (try s.Programs.getNestedByLocator((locator.sub orelse return error.TargetNotFound).name, locator.nested)) |shader| return shader.clearBreakpoints(),
+                                .sources => |locator| if (try s.Shaders.getStoredByLocator((locator orelse return error.TargetNotFound).name)) |shader| return shader.*.clearBreakpoints(),
                             }
                         }
                     }
@@ -715,9 +707,8 @@ pub const MutliListener = struct {
             }
         }
 
-        pub fn debug(args: ?ArgumentsMap) !String {
+        pub fn debug(_: ?ArgumentsMap) !String {
             shaders.user_action = true;
-            const in_args = try parseArgs(?dap.AttachRequest, args);
 
             var breakpoints_to_send = std.ArrayListUnmanaged(dap.Breakpoint){};
             shaders.debugging = true;
@@ -729,15 +720,6 @@ pub const MutliListener = struct {
                     common.allocator.free(bp.path);
                 }
                 breakpoints_to_send.deinit(common.allocator);
-            }
-
-            if (in_args) |a| {
-                if (a.console) |console_type| {
-                    switch (console_type) {
-                        .integratedTerminal => {},
-                        else => {},
-                    }
-                }
             }
 
             return std.json.stringifyAlloc(common.allocator, breakpoints_to_send.items, json_options);
@@ -821,10 +803,10 @@ pub const MutliListener = struct {
             if (context.service) |s| {
                 if (context.resource) |r| {
                     switch (r) {
-                        .programs => |locator| if (try s.Programs.getNestedByLocator(locator.sub orelse return error.TargetNotFound, locator.nested orelse return error.TargetNotFound)) |shader| {
+                        .programs => |locator| if (try s.Programs.getNestedByLocator((locator.sub orelse return error.TargetNotFound).name, locator.nested orelse return error.TargetNotFound)) |shader| {
                             positions = (try shader.possibleSteps()).items(.pos);
                         },
-                        .sources => |locator| if (try s.Shaders.getStoredByLocator(locator orelse return error.TargetNotFound)) |shader| {
+                        .sources => |locator| if (try s.Shaders.getStoredByLocator((locator orelse return error.TargetNotFound).name)) |shader| {
                             positions = (try shader.*.possibleSteps()).items(.pos);
                         },
                     }
@@ -1038,7 +1020,7 @@ pub const MutliListener = struct {
 
         const ListArgs = struct { path: String, recursive: ?bool, physical: ?bool };
         fn listStorage(stor: anytype, locator: ?storage.Locator, args: ListArgs, postfix: ?String) ![]CString {
-            switch (locator orelse storage.Locator{ .untagged = .{ .ref = 0, .part = 0 } }) {
+            switch ((locator orelse storage.Locator{ .name = .{ .untagged = .{ .ref = 0, .part = 0 } } }).name) {
                 .tagged => |path| {
                     var result = try stor.listTagged(common.allocator, path, args.recursive orelse false, args.physical orelse true, postfix);
                     if (path.len == 0 or std.mem.eql(u8, path, "/")) {
@@ -1101,10 +1083,10 @@ pub const MutliListener = struct {
             if (context.service) |service| {
                 if (context.resource) |res| {
                     switch (res) {
-                        .programs => |locator| if (try service.Programs.getNestedByLocator(locator.sub orelse return error.TargetNotFound, locator.nested orelse return error.TargetNotFound)) |shader| {
+                        .programs => |locator| if (try service.Programs.getNestedByLocator((locator.sub orelse return error.TargetNotFound).name, locator.nested orelse return error.TargetNotFound)) |shader| {
                             return shader.getSource() orelse "";
                         },
-                        .sources => |locator| if (try service.Shaders.getStoredByLocator(locator orelse return error.TargetNotFound)) |shader| {
+                        .sources => |locator| if (try service.Shaders.getStoredByLocator((locator orelse return error.TargetNotFound).name)) |shader| {
                             return shader.*.getSource() orelse "";
                         },
                     }
@@ -1121,6 +1103,7 @@ pub const MutliListener = struct {
 
             const context = try shaders.ContextLocator.parse(args_result.path);
             const now = std.time.milliTimestamp();
+            // Used for root
             const virtual = storage.StatPayload{
                 .type = @intFromEnum(storage.FileType.Directory),
                 .accessed = now,

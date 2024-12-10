@@ -132,3 +132,7 @@ pub const library_preload = switch (builtin.os.tag) {
     .linux => "LD_PRELOAD",
     else => @compileError("Unsupported OS"),
 };
+
+pub fn isYes(s: ?String) bool {
+    return if (s) |ys| std.ascii.eqlIgnoreCase(ys, "true") or std.ascii.eqlIgnoreCase(ys, "yes") or std.ascii.eqlIgnoreCase(ys, "y") or std.mem.eql(u8, ys, "1") else false;
+}
