@@ -34,10 +34,15 @@ const C = @cImport(if (builtin.os.tag == .linux) {
 const String = []const u8;
 const ZString = [:0]const u8;
 
-pub fn getProductJson(allocator: std.mem.Allocator, https: bool, port: u16) !String {
-    const authority = try std.fmt.allocPrint(allocator, "127.0.0.1:{}", .{port});
+pub fn getProductJson(allocator: std.mem.Allocator, https: bool, srv_authority: String, comm_url: ?String) !String {
+    const comm_uri: ?std.Uri = if (comm_url) |h| try std.Uri.parse(h) else null;
     // TODO probe the https://open-vsx.org and do not use it if not available (vscode would not even work without the gallery)
-    defer allocator.free(authority);
+    const comm_authority = if (comm_uri) |u| try std.fmt.allocPrint(allocator, "{+}", .{u}) else null;
+    defer if (comm_authority) |a| allocator.free(a);
+
+    const name = if (comm_authority) |c| try std.fmt.allocPrint(allocator, "Deshader {s}", .{c}) else null;
+    defer if (name) |n| allocator.free(n);
+
     return try std.json.stringifyAlloc(allocator, .{
         .productConfiguration = .{
             .nameShort = "Deshader Editor",
@@ -51,23 +56,53 @@ pub fn getProductJson(allocator: std.mem.Allocator, https: bool, port: u16) !Str
                 .resourceUrlTemplate = "https://openvsxorg.blob.core.windows.net/resources/{publisher}/{name}/{version}/{path}",
             },
             .extensionEnabledApiProposals = .{
-                .@"osdvf.deshader" = .{ "fileSearchProvider", "textSearchProvider" },
+                .@"osdvf.deshader" = .{ "fileSearchProvider", "textSearchProvider", "resolvers", "contribViewsRemote" },
             },
         },
-        .folderUri = .{
-            .scheme = "deshader",
-            .path = "/",
-        },
+        .folderUri = if (comm_uri) |u|
+            .{
+                .scheme = if (std.ascii.eqlIgnoreCase(u.scheme, "ws"))
+                    "deshaderws"
+                else if (std.ascii.eqlIgnoreCase(u.scheme, "wss"))
+                    "deshaderwss"
+                else if (std.ascii.eqlIgnoreCase(u.scheme, "http"))
+                    "deshader"
+                else if (std.ascii.eqlIgnoreCase(u.scheme, "https"))
+                    "deshaders"
+                else
+                    u.scheme,
+                .authority = comm_authority.?,
+                .path = "/",
+                .name = name.?,
+            }
+        else
+            null,
         .additionalBuiltinExtensions = .{ .{
             .scheme = if (https) "https" else "http",
-            .authority = authority,
+            .authority = srv_authority,
             .path = "/deshader-vscode",
         }, .{
             .scheme = if (https) "https" else "http",
-            .authority = authority,
+            .authority = srv_authority,
             .path = "/glsl-language-support",
         } },
-    }, .{ .whitespace = .minified });
+    }, .{ .whitespace = .minified, .emit_null_optional_fields = false });
+}
+
+/// Inserts correct authorities into product.json
+fn productJsonHandler(_: *positron.Provider, r: *positron.Provider.Route, c: *serve.HttpContext) positron.Provider.Route.Error!void {
+    const commands_url: [*:0]u8 = @alignCast(@ptrCast(r.context));
+    // Generate product.json according to current settings
+    const srv_authority = c.request.headers.get("Host") orelse "127.0.0.1:" ++ common.default_editor_port;
+    const product_config = getProductJson(common.allocator, c.ssl != null, srv_authority, if (commands_url[0] != 0) std.mem.span(commands_url) else null) catch |e| {
+        log.err("Failed to generate product.json: {}", .{e});
+        return positron.Provider.Route.Error.Unknown;
+    };
+    defer common.allocator.free(product_config);
+    try c.response.setHeader("Content-Type", "application/json");
+    try c.response.setHeader("Cache-Control", "max-age=1800, public");
+    const w = try c.response.writer();
+    try w.writeAll(product_config);
 }
 
 var provide_thread: ?std.Thread = null;
@@ -103,10 +138,23 @@ fn decompress(provider: *positron.Provider, comptime file: String, dll_path: Str
     }
 }
 
+fn addCacheHeaders(_: *positron.Provider, _: ?*positron.Provider.Route, c: *serve.HttpContext) positron.Provider.Route.Error!void {
+    if (builtin.mode == .Debug and std.ascii.indexOfIgnoreCase(c.request.url, "deshader-vscode/dist") != null) {
+        try c.response.setHeader("Cache-Control", "max-age=0, public");
+    } else try c.response.setHeader("Cache-Control", "max-age=1800, public");
+}
+
+fn addDeflateHeaders(p: *positron.Provider, r: ?*positron.Provider.Route, c: *serve.HttpContext) positron.Provider.Route.Error!void {
+    try c.response.setHeader("Content-Encoding", "deflate");
+    try addCacheHeaders(p, r, c);
+}
+const ext_js_address = "/deshader-vscode/dist/extension.js";
 // basicaly a HTTP server
-pub fn createEditorProvider(port: u16, commands_host: ?String, lsp_host: ?String) !*positron.Provider {
+pub fn createEditorProvider(port: u16, commands_uri: ?String, lsp_host: ?String) !*positron.Provider {
     var provider = try positron.Provider.create(common.allocator, port);
     provider.allowed_origins = std.BufSet.init(provider.allocator);
+    provider.additional_handler = &addCacheHeaders;
+
     inline for (.{ "localhost", "127.0.0.1" }) |origin| {
         const concatOrigin = try std.fmt.allocPrint(provider.allocator, "{s}://{s}:{d}", .{ if (provider.server.bindings.getLast().tls == null) "http" else "https", origin, port });
         defer provider.allocator.free(concatOrigin);
@@ -131,14 +179,14 @@ pub fn createEditorProvider(port: u16, commands_host: ?String, lsp_host: ?String
         const f_address = file[options.editor_dir.len..];
         // assume all paths start with `options.editor_dir`
         const compressed_or_content = if (builtin.mode != .Debug) @embedFile(file);
-        if (comptime std.ascii.eqlIgnoreCase(f_address, "/deshader-vscode/dist/extension.js")) {
+        if (comptime std.ascii.eqlIgnoreCase(f_address, ext_js_address)) {
             const decompressed_data = try decompress(provider, file, dll_path, compressed_or_content);
             defer provider.allocator.free(decompressed_data);
             // Inject editor config into Deshader extension
             // Construct editor base url and config JSON
-            if (lsp_host != null or commands_host != null) {
+            if (lsp_host != null or commands_uri != null) {
                 const json = try std.json.stringifyAlloc(provider.allocator, .{
-                    .commands = commands_host,
+                    .commands = commands_uri,
                     .lsp = lsp_host,
                 }, .{});
 
@@ -147,20 +195,21 @@ pub fn createEditorProvider(port: u16, commands_host: ?String, lsp_host: ?String
                     \\{s}
                     \\globalThis.deshader={s}
                 ++ "", .{ decompressed_data, json });
-                defer provider.allocator.free(editor_config);
-                try provider.addContent(f_address, mime_type, editor_config);
+                _ = try provider.addContentNoAlloc(f_address, mime_type, editor_config);
             } else if (builtin.mode != .Debug) {
-                try provider.addContentDeflatedNoAlloc(f_address, mime_type, compressed_or_content);
+                const handler = try provider.addContentNoAlloc(f_address, mime_type, compressed_or_content);
+                handler.additional_handler = &addDeflateHeaders;
             }
         } else if (builtin.mode != .Debug) {
-            try provider.addContentDeflatedNoAlloc(f_address, mime_type, compressed_or_content);
+            const handler = try provider.addContentNoAlloc(f_address, mime_type, compressed_or_content);
+            handler.additional_handler = &addDeflateHeaders;
         }
     }
 
-    // Generate product.json according to current settings
-    const product_config = try getProductJson(common.allocator, false, port);
-    defer common.allocator.free(product_config);
-    try provider.addContent("/product.json", "application/json", product_config);
+    const product_route = try provider.addRoute("/product.json");
+    const comm: [*:0]u8 = (try provider.allocator.dupeZ(u8, commands_uri orelse "")).ptr;
+    product_route.context = @constCast(@ptrCast(comm));
+    product_route.handler = &productJsonHandler;
 
     inline for (.{ "/run", "/browseFile", "/browseDirectory", "/isRunning", "/terminate" }) |command| {
         var route = try provider.addRoute(command);
@@ -176,14 +225,14 @@ pub const EditorProviderError = error{ AlreadyRunning, NotRunning };
 
 pub var global_provider: ?*positron.Provider = null;
 var base_url: ZString = undefined;
-pub fn serverStart(port: u16, commands_host: ?String, lsp_host: ?String) !void {
+pub fn serverStart(port: u16, commands_url: ?String, lsp_host: ?String) !void {
     if (global_provider != null) {
         for (global_provider.?.server.bindings.items) |binding| {
             log.err("GUI server already running on port {d}", .{binding.port});
         }
         return error.AlreadyRunning;
     }
-    global_provider = try createEditorProvider(port, commands_host, lsp_host);
+    global_provider = try createEditorProvider(port, commands_url, lsp_host);
     errdefer {
         global_provider.?.destroy();
         global_provider = null;
@@ -193,10 +242,27 @@ pub fn serverStart(port: u16, commands_host: ?String, lsp_host: ?String) !void {
 pub fn serverStop() EditorProviderError!void {
     if (global_provider) |p| {
         if (builtin.mode == .Debug) p.allocator.free(p.embedded.items[0].path);
+        for (p.routes.items) |r| {
+            if (std.mem.endsWith(u8, r.prefix, "/product.json")) {
+                p.allocator.free(std.mem.span(@as([*:0]u8, @ptrCast(r.context))));
+            } else if (std.mem.endsWith(u8, r.prefix, ext_js_address)) {
+                const handler: *positron.Provider.ContentHandler = r.getContext(positron.Provider.ContentHandler);
+                p.allocator.free(handler.contents);
+            }
+        }
         p.destroy();
         provide_thread.?.join();
         common.allocator.destroy(p);
         global_provider = null;
+    } else {
+        log.err("GUI server not running", .{});
+        return error.NotRunning;
+    }
+}
+
+pub fn serverJoin() EditorProviderError!void {
+    if (provide_thread) |p| {
+        p.join();
     } else {
         log.err("GUI server not running", .{});
         return error.NotRunning;
@@ -258,9 +324,6 @@ pub fn editorShow(port: u16, commands_host: ?String, lsp_host: ?String) !void {
                     _ = try gui_process.?.wait();
                 } else {
                     common.process.wailNoFailReport(&gui_process.?);
-                    if (global_provider) |gp| {
-                        gp.allocator.free(base_url);
-                    }
                 }
                 gui_process = null;
             }

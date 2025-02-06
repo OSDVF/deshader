@@ -253,13 +253,20 @@ pub const ProgressEndEvent = struct {
 };
 
 pub const InvalidatedEvent = struct {
-    pub const Areas = enum { all, stacks, threads, variables, contexts };
+    pub const Areas = enum {
+        all,
+        stacks,
+        threads,
+        variables,
+        /// Deshader-specific
+        contexts,
+    };
     areas: ?[]const Areas,
     /// If specified, the client only needs to refetch data related to this thread.
     threadId: ?usize = null,
     /// If specified, the client only needs to refetch data related to this stack frame (and the `threadId` is ignored).
     stackFrameId: ?usize = null,
-    /// Deshader specific
+    /// Deshader-specific
     numContexts: ?usize = null,
 };
 
@@ -429,6 +436,11 @@ pub const SourceBreakpoint = struct {
     line: usize,
     column: ?usize = null,
     condition: ?String = null,
+
+    /// The expression that controls how many hits of the breakpoint are ignored.
+    /// The debug adapter is expected to interpret the expression as needed.
+    /// The attribute is only honored by a debug adapter if the corresponding capability `supportsHitConditionalBreakpoints` is true.
+    /// If both this property and `condition` are specified, `hitCondition` should be evaluated only if the `condition` is met, and the debug adapter should stop only if both conditions are met.
     hitCondition: ?String = null,
     logMessage: ?String = null,
 };
@@ -536,6 +548,7 @@ pub const ContinueRequest = struct {
 };
 
 pub const ContinueArguments = struct {
+    /// The 2 lowest decimal digits denote a context number, the other two denote shader ref
     threadId: usize,
 
     singleThread: ?bool,

@@ -34,6 +34,7 @@ const c = @cImport({
         if (builtin.os.tag == .linux) {
             @cInclude("gtk/gtk.h");
         }
+        @cInclude("sys/stat.h"); // for umask
         @cInclude("dlfcn.h"); // for dlopen
         @cInclude("unistd.h"); // for setpgid
     }
@@ -58,35 +59,7 @@ pub fn main() !u8 {
     try common.init();
     defer common.deinit();
 
-    var cli_args = try args.parseForCurrentProcess(struct {
-        commands: ?String = "",
-        directory: ?String = null,
-        deshader: ?String = null,
-        editor: bool = false,
-        gui: bool = false,
-        help: bool = false,
-        libs: ?String = null,
-        lsp: ?String = "",
-        port: ?u16 = 0,
-        replace: bool = false,
-        version: bool = false,
-        whitelist: bool = true,
-
-        pub const shorthands = .{
-            .c = "commands",
-            .D = "directory",
-            .d = "deshader",
-            .e = "editor",
-            .g = "gui",
-            .h = "help",
-            .L = "libs",
-            .l = "lsp",
-            .p = "port",
-            .y = "replace",
-            .v = "version",
-            .w = "whitelist",
-        };
-    }, common.allocator, .print);
+    var cli_args = try args.parseForCurrentProcess(Args, common.allocator, .print);
     defer cli_args.deinit();
 
     // Exclude launcher process from deshader interception
@@ -118,10 +91,10 @@ pub fn main() !u8 {
                 if (std.fmt.parseInt(u16, portString, 10)) |parsedPort| {
                     break :get_port parsedPort;
                 } else |err| {
-                    log.err("Invalid port: {any}. Using default 8080", .{err});
+                    log.err("Invalid port: {any}. Using default {d}", .{ err, common.default_editor_port_n });
                 }
             }
-            break :get_port 8080;
+            break :get_port common.default_editor_port_n;
         };
     };
 
@@ -134,7 +107,7 @@ pub fn main() !u8 {
     // Show gui when no arguments are provided
     const gui_env = common.env.get(common.env_prefix ++ "GUI");
     const explicit_gui = cli_args.options.editor;
-    cli_args.options.editor = common.env.isYes(gui_env) or cli_args.options.editor or cli_args.positionals.len == 0 and cli_args.raw_start_index == null;
+    cli_args.options.editor = common.env.isYes(gui_env) or cli_args.options.editor or (cli_args.positionals.len == 0 and cli_args.raw_start_index == null);
     will_show_gui = cli_args.options.gui or cli_args.options.editor;
 
     if (cli_args.options.gui) {
@@ -144,15 +117,17 @@ pub fn main() !u8 {
             try std.io.getStdErr().writer().print(
                 \\Usage: deshader-run [options] <program> [args...]
                 \\Options:
+                \\  -b, --background        Start Editor server in background (daemon mode)
                 \\  -c, --commands <uri>    Set the URI for the commands protocol (default {s}) (fallback to env DESHADER_WS)
                 \\  -D, --directory <dir>   Set the working directory for the target program
                 \\  -d, --deshader <path>   Set the path to the Deshader library (fallback to env DESHADER_LIB)
                 \\  -e, --editor            Show Editor GUI (default when run without arguments)
                 \\  -g, --gui               Show configuration GUI
                 \\  -h, --help              Show this help
+                \\  -H, --hidden            Start Editor hidden, accept commands from stdin
                 \\  -L, --libs <dir>        Set the directory for the libraries (fallback to env DESHADER_LIB_ROOT)
                 \\  -l, --lsp <uri>         GLSL Language Server URI (protocol, IP and port) (default {s}) (fallback to env DESHADER_LSP)
-                \\  -p, --port <port>       Port for Editor GUI (default 8080) (fallback to env DESHADER_PORT)
+                \\  -p, --port <port>       Port for Editor GUI server (default 8080) (fallback to env DESHADER_PORT)
                 \\  -v, --version           Print the version of the Deshader library and exit
                 \\  -w, --whitelist <y/n>   Whitelist the target process for Deshader operation (default)
                 \\  -y, --replace           Answer yes to all library replacement questions
@@ -166,28 +141,10 @@ pub fn main() !u8 {
             specified_libs_dir = try cwd.realpathAlloc(common.allocator, s);
         }
 
-        var search = SearchPaths{};
-        const deshader_lib_path = while (try search.nextAlloc()) |lib_path| {
-            log.debug("Trying {s}", .{lib_path});
-            deshader_lib = dlopenAbsolute(lib_path) catch {
-                log.info("Deshader not found at {s}: {s}", .{ lib_path, dlerror() });
-                common.allocator.free(lib_path);
-                continue;
-            };
-            break lib_path;
-        } else {
-            log.err("Failed to find deshader library", .{});
-            return error.DeshaderNotFound;
-        };
-        defer common.allocator.free(deshader_lib_path);
-
-        defer deshader_lib.close();
-
-        if (builtin.os.tag == .windows) {
-            try common.env.appendListWith("PATH", path.dirname(deshader_lib_path) orelse ".", ";");
-        }
-
         if (cli_args.options.version) {
+            const d = try findDeshader();
+            defer common.allocator.free(d);
+            defer deshader_lib.close();
             const deshaderVersion = deshader_lib.lookup(*const fn () [*:0]const u8, "deshaderVersion") orelse {
                 log.err("Could not find deshaderVersion symbol in the Deshader Library.", .{});
                 return 2;
@@ -199,6 +156,30 @@ pub fn main() !u8 {
         //
         // Start background services
         //
+
+        // Editor GUI
+        var editor_presentation: enum {
+            Hidden,
+            Shown,
+            Server,
+        } = .Shown;
+        if (cli_args.options.background) {
+            editor_presentation = .Server;
+        } else if (cli_args.options.hidden) {
+            editor_presentation = .Hidden;
+        } else if (gui_env) |g| {
+            if (std.ascii.eqlIgnoreCase(g, "bg")) {
+                editor_presentation = .Server;
+            } else if (std.ascii.eqlIgnoreCase(g, "hidden")) {
+                editor_presentation = .Hidden;
+            }
+        }
+        if (editor_presentation != .Shown) {
+            try gui.serverStart(cli_args.options.port.?, cli_args.options.commands, cli_args.options.lsp);
+        }
+        if ((cli_args.options.editor and editor_presentation == .Shown) or explicit_gui) {
+            try gui.editorShow(cli_args.options.port.?, cli_args.options.commands, cli_args.options.lsp);
+        }
 
         // Language Server
         if (cli_args.options.lsp) |lsp| if (lsp.len > 0) {
@@ -216,19 +197,16 @@ pub fn main() !u8 {
             }
         };
 
-        // Editor GUI
-        var editor_hidden = false;
-        if (gui_env) |g| {
-            if (std.ascii.eqlIgnoreCase(g, "hidden")) {
-                try gui.serverStart(cli_args.options.port.?, cli_args.options.commands, cli_args.options.lsp);
-                editor_hidden = true;
-            }
-        }
-        if ((cli_args.options.editor and !editor_hidden) or explicit_gui) {
-            try gui.editorShow(cli_args.options.port.?, cli_args.options.commands, cli_args.options.lsp);
-        }
-
         if (cli_args.positionals.len > 0) {
+            // Find Deshader
+            const deshader_lib_path = try findDeshader();
+            defer common.allocator.free(deshader_lib_path);
+            defer deshader_lib.close();
+
+            if (builtin.os.tag == .windows) {
+                try common.env.appendListWith("PATH", path.dirname(deshader_lib_path) orelse ".", ";");
+            }
+
             if (cli_args.options.whitelist) {
                 // Whitelist only the target process
                 const process_name = std.fs.path.basename(cli_args.positionals[0]);
@@ -364,29 +342,7 @@ pub fn main() !u8 {
             defer target_watcher.detach();
 
             // Controller thread - allows the user to request termination or show the editor again
-            var controller_thread = try std.Thread.spawn(.{}, struct {
-                fn controller(
-                    co: *std.Thread.Condition,
-                    m: *std.Thread.Mutex,
-                    run: *bool,
-                    cli: @TypeOf(cli_args),
-                ) !void {
-                    var stdin = std.io.getStdIn().reader();
-                    var buffer: [1024]u8 = undefined;
-                    while (run.*) {
-                        if (try stdin.readUntilDelimiterOrEof(&buffer, '\n')) |n| {
-                            if (std.ascii.eqlIgnoreCase(n, "q")) {
-                                m.lock();
-                                defer m.unlock();
-                                co.broadcast();
-                                gui.editorTerminate() catch {};
-                            } else if (std.ascii.eqlIgnoreCase(n, "e")) {
-                                gui.editorShow(cli.options.port.?, cli.options.commands, cli.options.lsp) catch {};
-                            }
-                        }
-                    }
-                }
-            }.controller, .{ &terminate, &terminate_mutex, &running, cli_args });
+            var controller_thread = try std.Thread.spawn(.{}, controller, .{ &terminate, &terminate_mutex, &running, cli_args });
             controller_thread.detach();
 
             // Wait for the target to finish or for the user to request termination
@@ -405,12 +361,32 @@ pub fn main() !u8 {
             }
         }
         if (cli_args.options.editor) {
-            if (editor_hidden) {
-                try std.io.getStdErr().writeAll("Press enter key to shutdown the server\n");
-                // No subprocess, no GUI, server only
-                var buffer = [_]u8{0} ** 1000;
-                var r = std.io.getStdIn().reader();
-                _ = r.readUntilDelimiterOrEof(&buffer, '\n') catch {};
+            switch (editor_presentation) {
+                .Server => {
+                    log.info("Joining with editor server thread", .{});
+                    if (builtin.os.tag != .windows) {
+                        _ = c.signal(c.SIGCHLD, c.SIG_IGN);
+                        _ = c.signal(c.SIGHUP, c.SIG_IGN);
+                        _ = c.umask(0);
+                        _ = c.setsid();
+                        var fd = c.sysconf(c._SC_OPEN_MAX);
+                        while (fd > 0) : (fd -= 1) {
+                            _ = c.close(@intCast(fd));
+                        }
+                        _ = c.freopen("/dev/null", "r", c.stdin);
+                        _ = c.freopen("/dev/null", "w", c.stdout);
+                        _ = c.freopen("/dev/null", "w", c.stderr);
+                    }
+                    try gui.serverJoin();
+                },
+                .Hidden => {
+                    log.info("Editor is hidden. Runs on {d}. Use 'q' to quit, 'e' to show editor, 'h' for help", .{cli_args.options.port orelse common.default_editor_port_n});
+                    controller(null, null, null, cli_args) catch |e| if (e == error.NotOpenForReading) {
+                        log.warn("Stdin closed. Contiuining without user input", .{});
+                        try gui.serverJoin();
+                    } else return e;
+                },
+                else => {},
             }
             gui.editorWait() catch {};
             gui.serverStop() catch {};
@@ -571,4 +547,86 @@ pub fn launcherGUI() !void {
     _ = std.base64.standard.Encoder.encode(result[preamble.len..], content);
 
     try gui.guiProcess(result, "Deshader Launcher");
+}
+
+const Args = struct {
+    background: bool = false,
+    commands: ?String = "",
+    directory: ?String = null,
+    deshader: ?String = null,
+    editor: bool = false,
+    gui: bool = false,
+    help: bool = false,
+    hidden: bool = false,
+    libs: ?String = null,
+    lsp: ?String = "",
+    port: ?u16 = 0,
+    replace: bool = false,
+    version: bool = false,
+    whitelist: bool = true,
+
+    pub const shorthands = .{
+        .b = "background",
+        .c = "commands",
+        .D = "directory",
+        .d = "deshader",
+        .e = "editor",
+        .g = "gui",
+        .h = "help",
+        .H = "hidden",
+        .L = "libs",
+        .l = "lsp",
+        .p = "port",
+        .y = "replace",
+        .v = "version",
+        .w = "whitelist",
+    };
+};
+
+fn controller(
+    condition: ?*std.Thread.Condition,
+    mutex: ?*std.Thread.Mutex,
+    run: ?*bool,
+    cli: args.ParseArgsResult(Args, null),
+) !void {
+    var stdin = std.io.getStdIn().reader();
+    var buffer: [1024]u8 = undefined;
+    while (run == null or run.?.*) {
+        const n = try stdin.readUntilDelimiter(&buffer, '\n');
+        if (std.ascii.eqlIgnoreCase(n, "q")) {
+            if (mutex) |m| {
+                m.lock();
+                defer m.unlock();
+                if (condition) |con| con.broadcast();
+            }
+            gui.editorTerminate() catch {};
+            return;
+        } else if (std.ascii.eqlIgnoreCase(n, "e")) {
+            gui.editorShow(cli.options.port.?, cli.options.commands, cli.options.lsp) catch {};
+        } else {
+            try std.io.getStdErr().writeAll(
+                \\Commands:
+                \\  q - Quit
+                \\  e - Show Editor
+                \\  h - Show this help
+                \\
+            );
+        }
+    }
+}
+
+fn findDeshader() !String {
+    var search = SearchPaths{};
+    return while (try search.nextAlloc()) |lib_path| {
+        log.debug("Trying {s}", .{lib_path});
+        deshader_lib = dlopenAbsolute(lib_path) catch {
+            log.info("Deshader not found at {s}: {s}", .{ lib_path, dlerror() });
+            common.allocator.free(lib_path);
+            continue;
+        };
+        break lib_path;
+    } else {
+        log.err("Failed to find deshader library", .{});
+        return error.DeshaderNotFound;
+    };
 }

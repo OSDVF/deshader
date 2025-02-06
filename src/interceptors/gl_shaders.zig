@@ -20,6 +20,8 @@
 // TODO: support GL_ARB_shading_language_include (nvidia's), GL_GOOGLE_include_directive and GL_GOOGLE_cpp_style_line_directive
 // TODO: error checking
 // TODO: support older OpenGL, GLES
+// https://github.com/msqrt/shader-printf
+// TODO: deleting objects
 const std = @import("std");
 const builtin = @import("builtin");
 const gl = @import("gl");
@@ -40,6 +42,9 @@ const ids = @cImport(@cInclude("commands.h"));
 const CString = [*:0]const u8;
 const String = []const u8;
 const uvec2 = struct { u32, u32 };
+const Support = instrumentation.Processor.Config.Support;
+const Ref = usize;
+
 const MAX_VARIABLES_SIZE = 1024 * 1024; // 1MB
 
 const BufferType = enum(gl.@"enum") {
@@ -68,6 +73,7 @@ const State = struct {
 
     // memory for used indexed buffer binding indexed. OpenGL does not provide a standard way to query them.
     indexed_buffer_bindings: std.EnumMap(BufferType, usize) = .{},
+    search_paths: std.AutoHashMapUnmanaged(Ref, []String) = .{},
 
     // Handles for the debug output objects
     stack_trace_ref: gl.uint = gl.NONE,
@@ -83,6 +89,15 @@ const State = struct {
     max_attachments: gl.uint = 0,
 
     fn deinit(s: *@This()) void {
+        var sit = s.search_paths.valueIterator();
+        while (sit.next()) |val| {
+            for (val.*) |v| {
+                common.allocator.free(v);
+            }
+            common.allocator.free(val.*);
+        }
+        s.search_paths.deinit(common.allocator);
+
         var it = s.readback_step_buffers.valueIterator();
         while (it.next()) |val| {
             common.allocator.free(val.*);
@@ -161,7 +176,7 @@ fn defaultCompileShader(source: decls.SourcesPayload, instrumented: CString, len
     return 0;
 }
 
-fn defaultGetShaderSource(ref: usize) callconv(.C) ?CString {
+fn defaultGetShaderSource(ref: Ref, _: ?CString, _: usize) callconv(.C) ?CString {
     const shader: gl.uint = @intCast(ref);
     var length: gl.sizei = undefined;
     gl.GetShaderiv(shader, gl.SHADER_SOURCE_LENGTH, &length);
@@ -242,7 +257,7 @@ pub export fn glCreateShader(stage: gl.@"enum") gl.uint {
 
     const ref: usize = @intCast(new_platform_source);
     if (current.Shaders.appendUntagged(ref)) |new| {
-        new.* = shaders.Shader.SourcePart.init(current.Shaders.allocator, decls.SourcesPayload{
+        new.stored.* = shaders.Shader.SourcePart.init(current.Shaders.allocator, decls.SourcesPayload{
             .ref = ref,
             .stage = @enumFromInt(stage),
             .compile = defaultCompileShader,
@@ -293,6 +308,63 @@ pub export fn glCreateShaderProgramv(stage: gl.@"enum", count: gl.sizei, sources
 
     return new_platform_program;
 }
+
+/// Compile shaders with #include support
+export fn glCompileShaderIncludeARB(shader: gl.uint, count: gl.sizei, paths: ?[*][*:0]const gl.char, lengths: ?[*:0]const gl.int) void {
+    gl.CompileShaderIncludeARB(shader, count, paths, lengths);
+    if (gl.GetError() != gl.NO_ERROR) {
+        return;
+    }
+
+    // Store the search paths for the shader
+    wrapErrorHandling(actions.updateSearchPaths, .{ shader, count, paths, lengths });
+}
+
+export fn glCompileShader(shader: gl.uint) void {
+    gl.CompileShader(shader);
+    if (gl.GetError() != gl.NO_ERROR) {
+        return;
+    }
+
+    // Store the search paths for the shader
+    wrapErrorHandling(actions.updateSearchPaths, .{ shader, 0, null, null });
+}
+
+// Functions to be wrapped by error handling
+const actions = struct {
+    fn updateSearchPaths(shader: gl.uint, count: gl.sizei, paths: ?[*][*:0]const gl.char, lengths: ?[*]const gl.int) !void {
+        const c_state = state.getPtr(current) orelse return;
+        if (paths) |p| {
+            const paths_d = try common.allocator.alloc(String, @intCast(count));
+            for (p, paths_d, 0..) |path, *d, i| {
+                d.* = try common.allocator.dupe(u8, path[0..realLength(if (lengths) |l| l[i] else -1, path)]);
+            }
+
+            try c_state.search_paths.put(common.allocator, @intCast(shader), paths_d);
+        } else {
+            // Free the paths
+            if (c_state.search_paths.fetchRemove(@intCast(shader))) |kv| {
+                for (kv.value) |v| {
+                    common.allocator.free(v);
+                }
+                common.allocator.free(kv.value);
+            }
+        }
+    }
+
+    fn createNamedString(namelen: gl.int, name: CString, stringlen: gl.int, string: CString) !void {
+        const result = try current.Shaders.appendUntagged(0); // Special key 0 means "named strings"
+        result.stored.* = try shaders.Shader.SourcePart.init(common.allocator, decls.SourcesPayload{
+            .currentSource = namedStringSourceAlloc,
+            .free = freeNamedString,
+            .language = decls.LanguageType.GLSL,
+            .lengths = &.{@intCast(stringlen)},
+            .ref = 0,
+            .sources = &.{string},
+        }, 0);
+        _ = try current.Shaders.assignTag(0, result.index, name[0..realLength(namelen, name)], .Error);
+    }
+};
 
 //
 // Drawing functions - the heart of shader instrumentaton
@@ -427,19 +499,19 @@ fn processOutput(r: InstrumentationResult) !void {
             gl.GetNamedBufferSubData(c_state.stack_trace_ref, 0, shaders.STACK_TRACE_MAX * @sizeOf(shaders.StackTraceT), &c_state.stack_trace_buffer);
         }
 
-        const running_shader = try shaders.running.getOrPut(.{ .service = current, .shader = shader_ref });
+        const running = try shaders.Running.Locator.from(current, shader_ref);
         if (bp_hit_ids.count() > 0) {
             if (commands.instance) |comm| {
                 try comm.eventBreak(.stopOnBreakpoint, .{
                     .ids = bp_hit_ids.keys(),
-                    .shader = @intFromPtr(running_shader.key_ptr),
+                    .shader = running.impl,
                 });
             }
         } else if (selected_thread_rstep) |reached_step| {
             if (commands.instance) |comm| {
                 try comm.eventBreak(.stop, .{
                     .step = reached_step,
-                    .shader = @intFromPtr(running_shader.key_ptr),
+                    .shader = running.impl,
                 });
             }
         }
@@ -819,6 +891,7 @@ fn instrumentDraw(vertices: gl.int, instances: gl.sizei) !InstrumentationResult 
                 .max_xfb = if (buffer_mode == gl.SEPARATE_ATTRIBS) @max(0, c_state.max_xfb_streams * c_state.max_xfb_sep_components) else @max(0, c_state.max_xfb_interleaved_components),
                 .vertices = @intCast(vertices),
                 .instances = @intCast(instances),
+                .search_paths = c_state.search_paths,
                 .screen = screen_u,
                 .compute = [_]usize{ 0, 0, 0, 0, 0, 0 },
             }),
@@ -862,6 +935,7 @@ fn instrumentCompute(num_groups: [3]usize) !InstrumentationResult {
                 .vertices = 0,
                 .instances = 0,
                 .screen = [_]usize{ 0, 0 },
+                .search_paths = if (state.getPtr(current)) |s| s.search_paths else null,
                 .compute = [_]usize{
                     num_groups[0],
                     num_groups[1],
@@ -1229,123 +1303,6 @@ pub export fn glShaderSource(shader: gl.uint, count: gl.sizei, sources: [*][*:0]
         log.warn("Failed to add shader source {x} cache: {any}", .{ shader, err });
     };
     gl.ShaderSource(shader, count, sources, lengths);
-
-    // Maybe assign tag and create workspaces
-    // Scan for pragmas
-    for (if (single_chunk) &.{merged.ptr} else sources[0..wide_count], if (single_chunk) &.{total_length} else lengths_wide.?[0..wide_count], 0..) |source, len, source_i| {
-        var it = std.mem.splitScalar(u8, source[0..len], '\n');
-        var in_block_comment = false;
-        var line_i: usize = 0;
-        while (it.next()) |line| : (line_i += 1) {
-            // GLSL cannot have strings so we can just search for uncommented pragma
-            var pragma_found: usize = std.math.maxInt(usize);
-            var comment_found: usize = std.math.maxInt(usize);
-            const pragma_text = "#pragma deshader";
-            if (std.ascii.indexOfIgnoreCase(line, pragma_text)) |i| {
-                pragma_found = i;
-            }
-            if (std.mem.indexOf(u8, line, "/*")) |i| {
-                if (i < pragma_found) {
-                    in_block_comment = true;
-                    comment_found = @min(comment_found, i);
-                }
-            }
-            if (std.mem.indexOf(u8, line, "*/")) |_| {
-                in_block_comment = false;
-            }
-            if (std.mem.indexOf(u8, line, "//")) |i| {
-                if (i < pragma_found) {
-                    comment_found = @min(comment_found, i);
-                }
-            }
-            if (pragma_found != std.math.maxInt(usize)) {
-                if (comment_found > pragma_found and !in_block_comment) {
-                    var arg_iter = common.CliArgsIterator{ .s = line, .i = pragma_found + pragma_text.len };
-                    // skip leading whitespace
-                    while (line[arg_iter.i] == ' ' or line[arg_iter.i] == '\t') {
-                        arg_iter.i += 1;
-                    }
-                    var ec = args.ErrorCollection.init(common.allocator);
-                    defer ec.deinit();
-                    if (args.parseWithVerb(
-                        struct {},
-                        union(enum) {
-                            breakpoint: void,
-                            @"breakpoint-if": void,
-                            @"breakpoint-after": void,
-                            print: void,
-                            @"print-if": void,
-                            workspace: void,
-                            source: void,
-                            @"source-link": void,
-                            @"source-purge-previous": void,
-                        },
-                        &arg_iter,
-                        common.allocator,
-                        args.ErrorHandling{ .collect = &ec },
-                    )) |opts| {
-                        defer opts.deinit();
-                        if (opts.verb) |v| {
-                            switch (v) {
-                                // Workspace include
-                                .workspace => {
-                                    current.mapPhysicalToVirtual(opts.positionals[0], .{ .sources = .{ .name = .{ .tagged = opts.positionals[1] } } }) catch |err| failedWorkspacePath(opts.positionals[0], err);
-                                },
-                                .source => {
-                                    current.Shaders.assignTag(shader_wide, source_i, opts.positionals[0], .Error) catch |err| objLabErr(opts.positionals[0], shader, source_i, err);
-                                },
-                                .@"source-link" => {
-                                    current.Shaders.assignTag(shader_wide, source_i, opts.positionals[0], .Link) catch |err| objLabErr(opts.positionals[0], shader, source_i, err);
-                                },
-                                .@"source-purge-previous" => {
-                                    current.Shaders.assignTag(shader_wide, source_i, opts.positionals[0], .Overwrite) catch |err| objLabErr(opts.positionals[0], shader, source_i, err);
-                                },
-                                .breakpoint, .print, .@"breakpoint-if", .@"breakpoint-after", .@"print-if" => {
-                                    const condition_pos: usize = if (v == .@"breakpoint-after" or v == .@"breakpoint-if" or v == .@"print-if") 1 else 0;
-                                    const new = debug.SourceBreakpoint{
-                                        .line = line_i + 1,
-                                        .logMessage = if (v == .print or v == .@"print-if")
-                                            std.mem.join(common.allocator, " ", opts.positionals[condition_pos..]) catch null
-                                        else
-                                            null,
-                                        .condition = if (v == .@"breakpoint-if" or v == .@"print-if") opts.positionals[condition_pos] else null,
-                                        .hitCondition = if (v == .@"breakpoint-after") opts.positionals[condition_pos] else null,
-                                    }; // The breakpoint is in fact targeted on the next line
-                                    if (current.addBreakpoint(.{ .name = .{ .untagged = .{ .ref = shader_wide, .part = source_i } } }, new)) |bp| {
-                                        if (bp.id) |stop_id| { // if verified
-                                            log.debug("Shader {x} part {d}: breakpoint at line {d}, column {?d}", .{ shader, source_i, line_i, bp.column });
-                                            // push an event to the debugger
-                                            if (commands.instance != null and commands.instance.?.hasClient()) {
-                                                commands.instance.?.sendEvent(.breakpoint, debug.BreakpointEvent{ .breakpoint = bp, .reason = .new }) catch {};
-                                            } else {
-                                                current.breakpoints_to_send.append(current.allocator, .{ shader, source_i, stop_id }) catch {};
-                                            }
-                                        } else {
-                                            log.warn("Breakpoint at line {d} for shader {x} part {d} could not be placed.", .{ line_i, source_i, shader });
-                                        }
-                                    } else |err| {
-                                        log.warn("Failed to add breakpoint for shader {x} part {d}: {any}", .{ shader, source_i, err });
-                                    }
-                                    if (new.logMessage) |l| {
-                                        common.allocator.free(l);
-                                    }
-                                },
-                            }
-                        } else {
-                            log.warn("Unknown pragma: {s}", .{line});
-                        }
-                    } else |err| {
-                        log.warn("Failed to parse pragma in shader source: {s}, because of {}", .{ line, err });
-                    }
-                    for (ec.errors()) |err| {
-                        log.info("Pragma parsing: {} at {s}", .{ err.kind, err.option });
-                    }
-                } else {
-                    log.debug("Ignoring pragma in shader source: {s}, because is at {d} and comment at {d}, block: {any}", .{ line, pragma_found, comment_found, in_block_comment });
-                }
-            }
-        }
-    }
 }
 
 pub export fn glCreateProgram() gl.uint {
@@ -1376,9 +1333,17 @@ pub export fn glDetachShader(program: gl.uint, shader: gl.uint) void {
     gl.DetachShader(program, shader);
 }
 
-fn objLabErr(label: String, name: gl.uint, index: usize, err: anytype) void {
-    log.err("Failed to assign tag {s} for {d} index {d}: {any}", .{ label, name, index, err });
-}
+pub const errors = struct {
+    pub fn workspacePath(path: anytype, err: anytype) void {
+        log.warn("Failed to add workspace path {s}: {any}", .{ path, err });
+    }
+    pub fn removeWorkspacePath(path: anytype, err: anytype) void {
+        log.warn("Failed to remove workspace path {s}: {any}", .{ path, err });
+    }
+    pub fn tag(label: String, name: gl.uint, index: usize, err: anytype) void {
+        log.err("Failed to assign tag {s} for {d} index {d}: {any}", .{ label, name, index, err });
+    }
+};
 
 fn realLength(length: gl.sizei, label: ?CString) usize {
     if (length < 0) {
@@ -1398,7 +1363,7 @@ fn realLength(length: gl.sizei, label: ?CString) usize {
 /// l0:path/to/file.glsl
 /// To purge all previous source parts linked with this path use
 /// p0:path/to/file.glsl
-/// To link with a physical file, use virtual path relative to some workspace root. Use glDebugMessageInsert or #pragma deshader workspace to set workspace roots.
+/// To link with a physical file, use virtual path relative to some workspace root. Use `glDebugMessageInsert`, `glGetObjectLabel` , `deshaderPhysicalWorkspace` or `#pragma deshader workspace` to set workspace roots.
 pub export fn glObjectLabel(identifier: gl.@"enum", name: gl.uint, length: gl.sizei, label: ?CString) void {
     if (label == null) {
         // Then the tag is meant to be removed.
@@ -1438,23 +1403,70 @@ pub export fn glObjectLabel(identifier: gl.@"enum", name: gl.uint, length: gl.si
                             log.err("Failed to parse tag {s} for shader {x}", .{ current_p, name });
                             continue;
                         }
-                        current.Shaders.assignTag(@intCast(name), index, tag.?, behavior) catch |err| objLabErr(label.?[0..real_length], name, index, err);
+                        _ = current.Shaders.assignTag(@intCast(name), index, tag.?, behavior) catch |err| errors.tag(label.?[0..real_length], name, index, err);
                     }
                 } else {
-                    current.Shaders.assignTag(@intCast(name), 0, label.?[0..real_length], .Error) catch |err| objLabErr(label.?[0..real_length], name, 0, err);
+                    _ = current.Shaders.assignTag(@intCast(name), 0, label.?[0..real_length], .Error) catch |err| errors.tag(label.?[0..real_length], name, 0, err);
                 }
             },
-            gl.PROGRAM => current.Programs.assignTag(@intCast(name), 0, label.?[0..real_length], .Error) catch |err| objLabErr(label.?[0..real_length], name, 0, err),
+            gl.PROGRAM => _ = current.Programs.assignTag(@intCast(name), 0, label.?[0..real_length], .Error) catch |err| errors.tag(label.?[0..real_length], name, 0, err),
             else => {}, // TODO support other objects?
         }
     }
+    callIfLoaded("ObjectLabel", .{ identifier, name, length, label });
 }
 
-fn failedWorkspacePath(path: String, err: anytype) void {
-    log.warn("Failed to add workspace path {s}: {any}", .{ path, err });
+/// Set `size`, `identifier` and `name` to 0 to use this function for mapping physical paths to virtual paths.
+/// Set `physical` to null to remove all mappings for that virtual path.
+///
+/// **NOTE**: the original signature is `glGetObjectLabel(identifier: @"enum", name: uint, bufSize: sizei, length: [*c]sizei, label: [*c]char)`
+pub export fn glGetObjectLabel(_identifier: gl.@"enum", _name: gl.uint, _size: gl.sizei, virtual: CString, physical: CString) void {
+    if (_identifier == 0 and _name == 0 and _size == 0) {
+        if (@intFromPtr(virtual) != 0) {
+            if (@intFromPtr(virtual) != 0) {
+                current.mapPhysicalToVirtual(std.mem.span(virtual), .{ .sources = .{ .name = .{ .tagged = std.mem.span(physical) } } }) catch |err| errors.workspacePath(virtual, err);
+            } else {
+                current.clearWorkspacePaths();
+            }
+        }
+    } else {
+        callIfLoaded("GetObjectLabel", .{ _identifier, _name, _size, hardCast([*c]gl.sizei, virtual), hardCast([*c]gl.char, physical) });
+    }
 }
-fn failedRemoveWorkspacePath(path: String, err: anytype) void {
-    log.warn("Failed to remove workspace path {s}: {any}", .{ path, err });
+
+fn hardCast(comptime T: type, val: anytype) T {
+    return @as(T, @alignCast(@ptrCast(@constCast(val))));
+}
+
+fn namedStringSourceAlloc(_: usize, path: ?CString, length: usize) callconv(.C) ?CString {
+    if (path) |p| {
+        var result_len: gl.int = undefined;
+        gl.GetNamedStringivARB(@intCast(length), p, gl.NAMED_STRING_LENGTH_ARB, &result_len);
+        const result = common.allocator.allocSentinel(u8, @intCast(result_len), 0) catch |err| {
+            log.warn("Failed to allocate memory for named string {s}: {any}", .{ p[0..length], err });
+            return null;
+        };
+        gl.GetNamedStringARB(@intCast(length), p, result_len, &result_len, result.ptr);
+        if (gl.GetError() != gl.NO_ERROR) {
+            log.warn("Failed to get named string {s}", .{p[0..length]});
+            common.allocator.free(result);
+            return null;
+        }
+        return result;
+    }
+    return null;
+}
+
+fn freeNamedString(_: Ref, _: *const anyopaque, string: CString) callconv(.C) void {
+    common.allocator.free(std.mem.span(string));
+}
+
+/// Named strings from ARB_shading_language_include can be used for labeling shader source files ("parts" in Deshader)
+pub export fn glNamedStringARB(_type: gl.@"enum", _namelen: gl.int, _name: ?CString, _stringlen: gl.int, _string: ?CString) void {
+    if (_string) |s| if (_name) |n|
+        wrapErrorHandling(actions.createNamedString, .{ _namelen, n, _stringlen, s });
+
+    callIfLoaded("NamedStringARB", .{ _type, _namelen, _name, _stringlen, _string });
 }
 
 /// use glDebugMessageInsert with these parameters to set workspace root
@@ -1474,9 +1486,9 @@ pub export fn glDebugMessageInsert(source: gl.@"enum", _type: gl.@"enum", id: gl
                     var it = std.mem.split(u8, buf.?[0..real_length], "<-");
                     if (it.next()) |real_path| {
                         if (it.next()) |virtual_path| {
-                            current.mapPhysicalToVirtual(real_path, .{ .sources = .{ .name = .{ .tagged = virtual_path } } }) catch |err| failedWorkspacePath(buf.?[0..real_length], err);
-                        } else failedWorkspacePath(buf.?[0..real_length], error.@"No virtual path specified");
-                    } else failedWorkspacePath(buf.?[0..real_length], error.@"No real path specified");
+                            current.mapPhysicalToVirtual(real_path, .{ .sources = .{ .name = .{ .tagged = virtual_path } } }) catch |err| errors.workspacePath(buf.?[0..real_length], err);
+                        } else errors.workspacePath(buf.?[0..real_length], error.@"No virtual path specified");
+                    } else errors.workspacePath(buf.?[0..real_length], error.@"No real path specified");
                 }
             },
             ids.COMMAND_WORKSPACE_REMOVE => if (buf == null) { //Remove all
@@ -1485,13 +1497,13 @@ pub export fn glDebugMessageInsert(source: gl.@"enum", _type: gl.@"enum", id: gl
                 const real_length = realLength(length, buf);
                 var it = std.mem.split(u8, buf.?[0..real_length], "<-");
                 if (it.next()) |real_path| {
-                    if (!(current.removeWorkspacePath(real_path, if (it.next()) |v| shaders.GenericLocator.parse(v) catch |err| return failedRemoveWorkspacePath(buf.?[0..real_length], err) else null) catch false)) {
-                        failedRemoveWorkspacePath(buf.?[0..real_length], error.@"No such real path in workspace");
+                    if (!(current.removeWorkspacePath(real_path, if (it.next()) |v| shaders.ResourceLocator.parse(v) catch |err| return errors.removeWorkspacePath(buf.?[0..real_length], err) else null) catch false)) {
+                        errors.removeWorkspacePath(buf.?[0..real_length], error.@"No such real path in workspace");
                     }
                 }
             },
             ids.COMMAND_VERSION => {
-                std.io.getStdOut().writeAll(options.version ++ "\n") catch {};
+                main.deshaderVersion(@constCast(@alignCast(@ptrCast(buf))));
             },
             else => {},
         }
@@ -1501,8 +1513,23 @@ pub export fn glDebugMessageInsert(source: gl.@"enum", _type: gl.@"enum", id: gl
 
 /// Calls a function from the OpenGL context if it is available
 fn callIfLoaded(comptime proc: String, a: anytype) voidOrOptional(returnType(@field(gl, proc))) {
-    const proc_ret = returnType(@field(gl, proc));
-    return if (state.get(current)) |s| if (s.proc_table) |t| if (@intFromPtr(@field(t, proc)) != 0) @call(.auto, @field(gl, proc), a) else voidOrNull(proc_ret) else voidOrNull(proc_ret) else voidOrNull(proc_ret);
+    const proc_proc = @field(gl, proc);
+    const proc_ret = returnType(proc_proc);
+    const target_args = @typeInfo(@TypeOf(proc_proc)).Fn.params.len;
+    const source_args = @typeInfo(@TypeOf(a)).Struct.fields.len;
+    if (target_args != source_args) {
+        @compileError("Parameter count mismatch in callIfLoaded(\"" ++ proc ++ "\",...). Expected " ++ (@as(u8, @truncate(target_args)) + '0') ++ ", got " ++ (@as(u8, @truncate(source_args)) + '0'));
+    }
+    // would need @coercesTo
+    // inline for (@typeInfo(@TypeOf(proc_proc)).Fn.params, a, 0..) |dest, source, i| {
+    //     comptime {
+    //         if ( dest.type != @TypeOf(source)) {
+    //             @compileError("Parameter " ++ [_]u8{@as(u8, @truncate(i)) + '0'} ++ " type mismatch in callIfLoaded(" ++ proc ++ "). " ++
+    //                 "Expected " ++ (if (dest.type) |t| @typeName(t) else "{no type}") ++ ", got " ++ @typeName(@TypeOf(source)));
+    //         }
+    //     }
+    // }
+    return if (state.get(current)) |s| if (s.proc_table) |t| if (@intFromPtr(@field(t, proc)) != 0) @call(.auto, proc_proc, a) else voidOrNull(proc_ret) else voidOrNull(proc_ret) else voidOrNull(proc_ret);
 }
 
 fn voidOrOptional(comptime t: type) type {
@@ -1540,13 +1567,14 @@ const ids_array = blk: {
 
 /// Fallback for compatibility with OpenGL < 4.3
 /// Used from C when DESHADER_COMPATIBILITY is set
-pub export fn glTransformFeedbackVaryings(_program: gl.uint, length: gl.sizei, buf: ?[*:0]const gl.char, id: gl.@"enum") void {
-    if (_program == 0) {
-        if (std.mem.indexOfScalar(c_uint, &ids_array, id) != null) {
-            glDebugMessageInsert(gl.DEBUG_SOURCE_APPLICATION, gl.DEBUG_TYPE_OTHER, id, gl.DEBUG_SEVERITY_HIGH, length, buf);
+pub export fn glBufferData(_target: gl.@"enum", _size: gl.sizeiptr, _data: ?*const anyopaque, _usage: gl.@"enum") void {
+    if (_target == 0) {
+        // Could be potentially a deshader command
+        if (std.mem.indexOfScalar(c_uint, &ids_array, _usage) != null) {
+            glDebugMessageInsert(gl.DEBUG_SOURCE_APPLICATION, gl.DEBUG_TYPE_OTHER, _usage, gl.DEBUG_SEVERITY_HIGH, @intCast(_size), @ptrCast(_data));
         }
     }
-    gl.TransformFeedbackVaryings(_program, length, @alignCast(@ptrCast(buf)), id);
+    gl.BufferData(_target, _size, _data, _usage);
 }
 
 //TODO glSpecializeShader glShaderBinary
@@ -1643,13 +1671,23 @@ else
         //#endregion
     };
 
-pub fn supportCheck(extension_iterator: anytype) bool {
+pub fn supportCheck(extension_iterator: anytype) Support {
+    var result: Support = .{
+        .buffers = false,
+        .include = false,
+        .max_variables_size = MAX_VARIABLES_SIZE,
+        .all_once = false,
+    };
     while (extension_iterator.next()) |ex| {
         if (std.ascii.endsWithIgnoreCase(ex, "shader_storage_buffer_object")) {
-            return true;
+            result.buffers = true;
+        } else if (std.ascii.endsWithIgnoreCase(ex, "include_directive")) {
+            result.include = true;
+        } else if (std.ascii.endsWithIgnoreCase(ex, "language_include")) {
+            result.include = true;
         }
     }
-    return false;
+    return result;
 }
 
 noinline fn dumpProcTableErrors(c_state: *State) void {
@@ -1657,9 +1695,11 @@ noinline fn dumpProcTableErrors(c_state: *State) void {
     stderr.writeAll("\n") catch {};
     inline for (@typeInfo(gl.ProcTable).Struct.fields) |decl| {
         const p = @field(c_state.proc_table.?, decl.name);
-        if (@intFromPtr(p) == 0) {
-            stderr.writeAll(decl.name) catch {};
-            stderr.writeAll("\n") catch {};
+        if (@typeInfo(@TypeOf(p)) == .Pointer) {
+            if (@intFromPtr(p) == 0) {
+                stderr.writeAll(decl.name) catch {};
+                stderr.writeAll("\n") catch {};
+            }
         }
     }
 }
@@ -1669,7 +1709,7 @@ noinline fn dumpProcTableErrors(c_state: *State) void {
 pub fn makeCurrent(comptime api: anytype, c: ?*const anyopaque) void {
     if (c) |context| {
         _ = _try: {
-            const result = shaders.services.getOrPut(common.allocator, context) catch |err| break :_try err;
+            const result = shaders.getOrAddService(context, common.allocator) catch |err| break :_try err;
             const c_state = (state.getOrPut(common.allocator, result.value_ptr) catch |err| break :_try err).value_ptr;
             if (result.found_existing) {
                 gl.makeProcTableCurrent(@ptrCast(&c_state.proc_table));
@@ -1698,32 +1738,30 @@ pub fn makeCurrent(comptime api: anytype, c: ?*const anyopaque) void {
 
                 gl.makeProcTableCurrent(&c_state.proc_table.?);
 
-                log.debug("Initializing service {x} for context {x}", .{ @intFromPtr(result.value_ptr), @intFromPtr(context) });
-                const buffers_supported = blk: {
+                log.debug("Initializing service {s} for context {x}", .{ result.value_ptr.name, @intFromPtr(context) });
+
+                // Check for supported features of this context
+                result.value_ptr.support = check: {
                     if (gl.GetString(gl.EXTENSIONS)) |exs| {
                         var it = std.mem.splitScalar(u8, std.mem.span(exs), ' ');
-                        break :blk supportCheck(&it);
+                        break :check supportCheck(&it);
+                    } else {
+                        // getString vs getStringi
+                        const ExtensionInterator = struct {
+                            num: gl.int,
+                            i: gl.uint,
+
+                            fn next(self: *@This()) ?String {
+                                const ex = gl.GetStringi(gl.EXTENSIONS, self.i);
+                                self.i += 1;
+                                return if (ex) |e| std.mem.span(e) else null;
+                            }
+                        };
+                        var it = ExtensionInterator{ .num = undefined, .i = 0 };
+                        gl.GetIntegerv(gl.NUM_EXTENSIONS, (&it.num)[0..1]);
+                        break :check supportCheck(&it);
                     }
-                    // getString vs getStringi
-                    const ExtensionInterator = struct {
-                        num: gl.int,
-                        i: gl.uint,
-
-                        fn next(self: *@This()) ?String {
-                            const ex = gl.GetStringi(gl.EXTENSIONS, self.i);
-                            self.i += 1;
-                            return if (ex) |e| std.mem.span(e) else null;
-                        }
-                    };
-                    var it = ExtensionInterator{ .num = undefined, .i = 0 };
-                    gl.GetIntegerv(gl.NUM_EXTENSIONS, (&it.num)[0..1]);
-                    break :blk supportCheck(&it);
                 };
-
-                result.value_ptr.* = shaders{ .context = context, .support = .{
-                    .buffers = buffers_supported,
-                    .max_variables_size = MAX_VARIABLES_SIZE,
-                } };
 
                 if (c_state.max_xfb_streams == 0) {
                     gl.GetIntegerv(gl.MAX_COLOR_ATTACHMENTS, @ptrCast(&c_state.max_attachments));
@@ -1734,12 +1772,7 @@ pub fn makeCurrent(comptime api: anytype, c: ?*const anyopaque) void {
                     gl.GetIntegerv(gl.MAX_VERTEX_STREAMS, (&c_state.max_xfb_streams)[0..1]);
                 }
 
-                result.value_ptr.init(common.allocator) catch |err| break :_try err;
-
-                // Send a notification to debug adapter client
-                if (commands.instance) |cl| {
-                    cl.sendEvent(.invalidated, debug.InvalidatedEvent{ .areas = &.{.contexts}, .numContexts = shaders.services.count() }) catch |err| break :_try err;
-                }
+                contextInvalidatedEvent() catch |err| break :_try err;
             }
             current = result.value_ptr;
         } catch |err| {
@@ -1750,31 +1783,45 @@ pub fn makeCurrent(comptime api: anytype, c: ?*const anyopaque) void {
     }
 }
 
+/// Convenience function for wrapping function calls, catching errors and logging them
+fn wrapErrorHandling(comptime function: anytype, _args: anytype) void {
+    @call(.auto, function, _args) catch |err| {
+        log.err("Error in {s}({}): {} {?}", .{ @typeName(@TypeOf(function)), _args, err, @errorReturnTrace() });
+    };
+}
+
+fn contextInvalidatedEvent() !void {
+    // Send a notification to debug adapter client
+    if (commands.instance) |cl| {
+        try cl.sendEvent(.invalidated, debug.InvalidatedEvent{ .areas = &.{.contexts}, .numContexts = shaders.servicesCount() });
+    }
+}
+
 fn deleteContext(c: *const anyopaque, api: anytype, arg: anytype) bool {
     const prev_context = api.get_current.?();
-    if (shaders.services.getPtr(c)) |s| {
+    if (shaders.getService(c)) |s| {
         deinit: {
             // makeCurrent on Windows is illegal here
             if (builtin.os.tag != .windows and @call(.auto, api.make_current[0], api.last_params ++ .{c}) == 0) break :deinit;
             makeCurrent(api, c);
-            s.deinit();
             if (state.getPtr(s)) |c_state| {
                 c_state.deinit();
             }
             if (builtin.os.tag != .windows and @call(.auto, api.make_current[0], api.last_params ++ .{prev_context}) == 0) break :deinit;
             makeCurrent(api, prev_context);
         }
-        _ = state.remove(s);
-        _ = shaders.services.swapRemove(c);
+        std.debug.assert(state.remove(s));
+        std.debug.assert(shaders.removeService(c, common.allocator));
+        // Send a notification to debug adapter client
+        contextInvalidatedEvent() catch {};
     }
     return @call(.auto, api.destroy.?, arg ++ .{c});
 }
 
 pub fn deinit() void {
-    for (shaders.services.values()) |*val| {
-        val.deinit(); // there shouldn't be any services left if the host app has called deleteContext for all contexts, but to make sure...
-    }
-    shaders.services.deinit(common.allocator);
+    // there shouldn't be any services left if the host app has called deleteContext for all contexts, but to make sure...
+    shaders.deinitServices(common.allocator);
+    contextInvalidatedEvent() catch {};
     var per_context_it = state.valueIterator();
     while (per_context_it.next()) |s| {
         s.deinit();

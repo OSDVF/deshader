@@ -240,7 +240,9 @@ pub fn build(b: *std.Build) !void {
 
     // OpenGL
     const zigglgen = @import("zigglgen");
-    const string_exts = b.option([]const []const u8, "glExtensions", "OpenGL extensions included in the bindings") orelse &.{};
+    const string_exts = b.option([]const String, "glExtensions", "OpenGL extensions included in the bindings") orelse &[_]String{
+        "ARB_shading_language_include",
+    };
     const exts = try b.allocator.alloc(zigglgen.GeneratorOptions.Extension, string_exts.len);
     for (string_exts, exts) |s, *e| {
         e.* = std.meta.stringToEnum(zigglgen.GeneratorOptions.Extension, s) orelse @panic("Invalid extension");
@@ -533,12 +535,7 @@ pub fn build(b: *std.Build) !void {
         const editor_directory = "editor";
         const editor_dir_relative = try std.fs.path.relative(b.allocator, if (targetTarget == .windows) b.exe_dir else b.lib_dir, b.pathFromRoot(editor_directory));
         if (option_editor) {
-            if (optimize == .Debug) {
-                // permit parallel building of editor and deshader, because editor is then not embedded
-                launcher_exe.step.dependOn(&dependencies_step.step);
-            } else {
-                launcher_exe.step.dependOn(&dependencies_step.step);
-            }
+            launcher_exe.step.dependOn(&dependencies_step.step);
         }
 
         //

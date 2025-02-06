@@ -1,7 +1,11 @@
 # Settings
+## Command Line Options
+Deshader Launcher accepts several command line options. They can be listed by running the launcher with `--help` or `-h` argument.
+
 ## Environment variables
 Runtime settings can be specified by environment variables.
-All names start with DESHADER_ prefix e.g. `DESHADER_PORT`
+All variable names need to be prepended with `DESHADER_` prefix e.g. `DESHADER_PORT`
+
 ### Deshader Launcher
 Name      | Default                                                   | Description
 ----------|-----------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -9,8 +13,10 @@ LIB_ROOT  | `/usr/lib` / `C:\Windows\System32`                        | Override
 LIB       | \[app work dir\]/`libdeshader.so`/`.dylib`/`deshader.dll` | Directory/complete path to Deshader library. If the laucher does not succeed in finding the library and it was started with the GUI, it will show an open dialog to select the library
 HOOK_LIBS | none                                                      | Set to colon-separated list of **additional** libraries to replace with Deshader library (defaults always included)
 LSP       | ws://127.0.0.1:8083                                       | Host and port for GLSL Language Server (based on [glsl_analyzer](https://github.com/nolanderc/glsl_analyzer/)) WebSocket. Pass empty string to disable.
-GUI       | none                                                      | Pass `true` or `1` to show the editor window on startup. Pass `hidden` to only start the editor server
+GUI       | none                                                      | Pass `true` or `1` to show the editor window on startup. Also supports `hidden` (no window, commands from tty available[^4]) and `bg` (editor server only)
 GUI_URL   | reserved                                                  | Used internally as a startup URL for embedded Editor
+
+[^4] The `hidden` mode is useful for running Deshader in the background and sending commands to it from a script or another program. Available commands are `e` for showing editor window and `q` for quit.
 ### Deshader library
 Name              | Default                            | Description
 ------------------|------------------------------------|---------------------------------------------------------------------------------------------------------------------------

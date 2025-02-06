@@ -45,6 +45,8 @@ pub var allocator: std.mem.Allocator = undefined;
 pub var initialized = false;
 var self_exe: ?String = null;
 pub const env_prefix = "DESHADER_";
+pub const default_editor_port = "8080";
+pub const default_editor_port_n = 8080;
 pub const default_http_port = "8081";
 pub const default_http_port_n = 8081;
 pub const default_ws_port = "8082";
@@ -358,10 +360,20 @@ pub const CliArgsIterator = struct {
     pub fn next(self: *@This()) ?String {
         var token: ?String = null;
         if (self.i < self.s.len) {
-            if (self.s[self.i] == '\"') {
-                const end = std.mem.indexOfScalar(u8, self.s[self.i + 1 ..], '\"') orelse return null;
-                token = self.s[self.i + 1 .. self.i + 1 + end];
-                self.i += end + 2;
+            if (self.s[self.i] == '"') {
+                var end = self.i + 1;
+                while (end < self.s.len) {
+                    if (self.s[end] == '\\' and end + 1 < self.s.len and self.s[end + 1] == '"') {
+                        end += 2;
+                    } else if (self.s[end] == '"') {
+                        break;
+                    } else {
+                        end += 1;
+                    }
+                }
+                if (end >= self.s.len) return null;
+                token = self.s[self.i + 1 .. end];
+                self.i = end + 1;
             } else {
                 const end = std.mem.indexOfScalar(u8, self.s[self.i..], ' ') orelse (self.s.len - self.i);
                 token = self.s[self.i .. self.i + end];
@@ -377,4 +389,17 @@ pub const CliArgsIterator = struct {
 
 pub fn nullOrEmpty(s: ?String) bool {
     return if (s) |ys| ys.len == 0 else true;
+}
+
+pub fn indexOfSliceMember(comptime T: type, slice: []const T, needle: *T) ?usize {
+    for (slice) |*entry| {
+        if (entry == needle) {
+            return (@intFromPtr(entry) - @intFromPtr(slice.ptr)) / @sizeOf(T);
+        }
+    }
+    return null;
+}
+
+pub fn nullishEq(a: anytype, b: anytype) bool {
+    return (a == null) == (b == null);
 }

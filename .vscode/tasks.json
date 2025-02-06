@@ -2,6 +2,15 @@
     "version": "2.0.0",
     "tasks": [
         {
+            "label": "Create all ramdisks",
+            "dependsOn": [
+                "Create build ramdisk",
+                "Create zig-out ramdisk",
+                "Create .zig-cache ramdisk"
+            ],
+            "problemMatcher": []
+        },
+        {
             "label": "Create build ramdisk",
             "type": "shell",
             "command": "sudo",
@@ -60,10 +69,14 @@
         },
         {
             "label": "Build Library",
-            "command": "sh",
+            "command": "zig",
             "args": [
-                "-c",
-                "zig build deshader -DmemoryFrames=15 -freference-trace --summary none || (sh fix_c_import.sh && zig build deshader)"
+                "build",
+                "deshader",
+                "-DmemoryFrames=15",
+                "-freference-trace",
+                "--summary",
+                "none"
             ],
             "problemMatcher": "$zig",
             "group": "build",
@@ -73,8 +86,8 @@
                 "focus": false,
                 "panel": "shared",
                 "showReuseMessage": true,
-                "clear": true
-            }
+                "clear": true,
+            },
         },
         {
             "label": "Build Documentation",
@@ -113,6 +126,36 @@
                 "showReuseMessage": true,
                 "clear": true
             }
+        },
+        {
+            "label": "Start Editor Server",
+            "dependsOn": [
+                "Build Launcher"
+            ],
+            "command": "${workspaceFolder}/zig-out/bin/deshader-run",
+            "options": {
+                "env": {
+                    "DESHADER_GUI": "hidden"
+                }
+            },
+            "isBackground": true,
+            "problemMatcher": [
+                {
+                    "pattern": [
+                        {
+                            "regexp": ".",
+                            "file": 1,
+                            "location": 2,
+                            "message": 3
+                        }
+                    ],
+                    "background": {
+                        "activeOnStart": true,
+                        "beginsPattern": ".",
+                        "endsPattern": "."
+                    }
+                }
+            ]
         },
         {
             "label": "Run Examples",

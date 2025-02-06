@@ -22,6 +22,7 @@ const std = @import("std");
 const analyzer = @import("glsl_analyzer");
 const log = @import("common").log;
 const decls = @import("../declarations/shaders.zig");
+const shaders = @import("shaders.zig");
 
 const String = []const u8;
 const CString = [*:0]const u8;
@@ -208,6 +209,10 @@ pub const Processor = struct {
         pub const Support = struct {
             buffers: bool,
             max_variables_size: usize,
+            /// Supports #include directives (ARB_shading_language_include, GOOGL_include_directive)
+            include: bool,
+            /// Not really a support flag, but an option for the preprocessor to not include any source file multiple times.
+            all_once: bool,
         };
 
         allocator: std.mem.Allocator,
@@ -217,6 +222,7 @@ pub const Processor = struct {
         groups_count: ?[]const usize,
         max_buffers: usize,
         max_interface: usize,
+        parts: std.ArrayListUnmanaged(*shaders.Shader.SourcePart),
         part_stops: []const usize,
         shader_stage: decls.Stage,
         single_thread_mode: bool,
@@ -287,6 +293,7 @@ pub const Processor = struct {
 
     pub fn toOwnedOutputs(self: *@This()) Result.Outputs {
         self.config.allocator.free(self.threads);
+        self.config.parts.deinit(self.config.allocator);
 
         // deinit contents
         var it = self.inserts.inorderIterator();
@@ -332,7 +339,7 @@ pub const Processor = struct {
         return .{ .name = name_token.text(source, tree), .return_type = source[return_type_span.start..return_type_span.end] };
     }
 
-    /// Should be run on semi-initialized Output (only fields with no default values need to be initialized)
+    /// Should be run on semi-initialized `Output` (only fields with no default values need to be initialized)
     pub fn setup(self: *@This(), source: String) !void {
         // TODO explicit uniform locations
         // TODO place outputs with explicit locations at correct place

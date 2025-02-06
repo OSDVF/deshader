@@ -97,12 +97,13 @@ pub export fn deshaderRemoveSource(ref: usize) usize {
     return 0;
 }
 
-// # Shader tagging
-// Deshader creates a virtual file system for better management of you shaders. Use these functions to assign filesystem locations to your shaders and specify dependencies between them. Call them just before you call `glShaderSource` or similar functions.
-
-/// path cannot contain '>'
-pub export fn deshaderTagSource(ref: usize, part_index: usize, path: [*:0]const u8, if_exists: ExistsBehavior) usize {
-    gl_shaders.current.Shaders.assignTag(ref, part_index, std.mem.span(path), if_exists) catch |err| {
+/// # Shader tagging
+/// Deshader creates a virtual file system for better management of your shaders. Use these functions to assign filesystem locations to your shaders and specify dependencies between them. Call them just before you call `glShaderSource` or similar functions.
+/// `path` cannot contain '>'
+///
+/// Alternatively, glNamedStringARB or glObjectLabel can be used to tag shaders.
+pub export fn deshaderTag(ref: usize, part_index: usize, path: [*:0]const u8, if_exists: ExistsBehavior) usize {
+    _ = gl_shaders.current.Shaders.assignTag(ref, part_index, std.mem.span(path), if_exists) catch |err| {
         log.err(err_format, .{ @src().fn_name, err });
         if (@errorReturnTrace()) |trace|
             std.debug.dumpStackTrace(trace.*);
@@ -114,7 +115,7 @@ pub export fn deshaderTagSource(ref: usize, part_index: usize, path: [*:0]const 
 /// Set a physical folder as a workspace for shader sources
 pub export fn deshaderPhysicalWorkspace(virtual: [*:0]const u8, physical: [*:0]const u8) usize {
     _ = _try: {
-        gl_shaders.current.mapPhysicalToVirtual(std.mem.span(physical), shaders.GenericLocator.parse(std.mem.span(virtual)) catch |err| break :_try err) catch |err| break :_try err;
+        gl_shaders.current.mapPhysicalToVirtual(std.mem.span(physical), shaders.ResourceLocator.parse(std.mem.span(virtual)) catch |err| break :_try err) catch |err| break :_try err;
     } catch |err| {
         log.err(err_format, .{ @src().fn_name, err });
         if (@errorReturnTrace()) |trace|
@@ -131,7 +132,7 @@ pub export fn deshaderTaggedProgram(payload: ProgramPayload, behavior: ExistsBeh
             std.debug.dumpStackTrace(trace.*);
         return @intFromError(err);
     };
-    gl_shaders.current.Programs.assignTag(payload.ref, 0, std.mem.span(payload.path.?), behavior) catch |err| {
+    _ = gl_shaders.current.Programs.assignTag(payload.ref, 0, std.mem.span(payload.path.?), behavior) catch |err| {
         log.err(err_format, .{ @src().fn_name, err });
         if (@errorReturnTrace()) |trace|
             std.debug.dumpStackTrace(trace.*);
@@ -151,7 +152,7 @@ pub export fn deshaderTaggedSource(payload: SourcesPayload, if_exists: ExistsBeh
     };
     for (0..payload.count) |i| {
         if (payload.paths.?[i]) |path| {
-            gl_shaders.current.Programs.assignTag(payload.ref, i, std.mem.span(path), if_exists) catch |err| {
+            _ = gl_shaders.current.Programs.assignTag(payload.ref, i, std.mem.span(path), if_exists) catch |err| {
                 log.err(err_format, .{ @src().fn_name, err });
                 if (@errorReturnTrace()) |trace|
                     std.debug.dumpStackTrace(trace.*);
@@ -162,8 +163,13 @@ pub export fn deshaderTaggedSource(payload: SourcesPayload, if_exists: ExistsBeh
     return 0;
 }
 
-pub export fn deshaderVersion() [*:0]const u8 {
-    return options.version;
+/// Writes a pointer to deshader version string to `output`. The string is null-terminated.
+pub export fn deshaderVersion(output: ?*[*:0]const u8) void {
+    if (output) |o| {
+        o.* = options.version.ptr;
+    } else {
+        log.info("Deshader version: {s}", .{options.version});
+    }
 }
 
 //
@@ -245,6 +251,7 @@ fn finalize() callconv(.C) void {
     @call(.never_inline, log.debug, .{ "Unloading Deshader library from {s}", .{exe} });
     defer @call(.never_inline, common.deinit, .{});
 
+    @call(.never_inline, loaders.deinit, .{}); // also deinits gl_shaders
     if (commands.instance) |i| {
         for (i.ws_configs.items) |c| {
             @call(.never_inline, std.mem.Allocator.free, .{ common.allocator, c.address });
@@ -255,8 +262,6 @@ fn finalize() callconv(.C) void {
     if (!loaders.ignored) {
         @call(.never_inline, shaders.deinitStatic, .{});
     }
-    @call(.never_inline, loaders.deinit, .{}); // also deinits gl_shaders
-
 }
 
 /// Will be called upon Deshader library load and BEFORE the host application's main()

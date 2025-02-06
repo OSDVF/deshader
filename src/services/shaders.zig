@@ -21,16 +21,20 @@
 //! - debugging state management
 //! - workspace path mappings
 //! Some functions in this module require to be called by the drawing thread
+//!
+//! Uses GLSLang for preprocessing
 
 const std = @import("std");
 const builtin = @import("builtin");
 const analyzer = @import("glsl_analyzer");
+const argsm = @import("args");
 
 const common = @import("common");
 const log = common.log;
 const decls = @import("../declarations/shaders.zig");
 const storage = @import("storage.zig");
 const debug = @import("debug.zig");
+const commands = @import("../commands.zig");
 const instrumentation = @import("instrumentation.zig");
 const ArrayBufMap = @import("array_buf_map.zig").ArrayBufMap;
 
@@ -41,12 +45,41 @@ const glslang = @cImport({
 
 pub const STACK_TRACE_MAX = 32;
 pub const StackTraceT = u32;
+const Ref = usize;
 const String = []const u8;
 const CString = [*:0]const u8;
+const ZString = [:0]const u8;
 const Storage = storage.Storage;
 const Tag = storage.Tag;
 // each ref can have multiple source parts
 const ShadersRefMap = std.AutoHashMap(usize, *std.ArrayListUnmanaged(Shader.SourcePart));
+
+/// `#pragma deshader` specifications. `#pragma deshader` arguments are passed like command-line parameters
+/// e.g. separated by spaces. To pass an argument with spaces, enclose it in double quotes. Double quotes can be escaped by `\`.
+pub const Pragmas = union(enum) {
+    breakpoint: void,
+    /// Conditional breakpoint
+    @"breakpoint-if": void,
+    /// Breakpoints with condition for how many hits can be ignored
+    @"breakpoint-after": void,
+    /// Conditional and hit-conditional breakpoint
+    @"breakpoint-if-after": void,
+    /// This source will be included only once
+    once: void,
+    /// All sources in this application should be included only once
+    @"all-once": void,
+    /// Logpoint
+    print: void,
+    /// Conditional logpoint
+    @"print-if": void,
+    /// Map physical workspace path to a virtual shader workspace path (2 positional arguments)
+    workspace: void,
+    /// Set this source virtual path
+    source: void,
+
+    @"source-link": void,
+    @"source-purge-previous": void,
+};
 
 const Service = @This();
 
@@ -54,9 +87,9 @@ pub var inited_static = false;
 pub var available_data: std.StringHashMap(Data) = undefined;
 pub var data_breakpoints: std.StringHashMap(StoredDataBreakpoint) = undefined;
 pub var debugging = false;
-/// Hashing Shader-Context pairs by storing them and casting a pointer to number :)
-pub var running: std.AutoHashMap(ShaderLocator, void) = undefined; //initialized in main
-pub var services = std.AutoArrayHashMapUnmanaged(*const anyopaque, Service){};
+/// When an item is removed, `Invalidated` event must be sent (all threadIds across all services are invalidated)
+var services = std.AutoArrayHashMapUnmanaged(*const anyopaque, Service){};
+var services_by_name = std.StringHashMapUnmanaged(*Service){};
 /// Sets if only the selected shader thread will be paused and the others will run the whole program
 pub var single_pause_mode = true; // TODO more modes (breakpoint only, free run)
 /// Indicator of a user action which has been taken since the last frame (continue, step...).
@@ -64,8 +97,11 @@ pub var single_pause_mode = true; // TODO more modes (breakpoint only, free run)
 pub var user_action: bool = false;
 
 /// IDs of shader, indexes of part, IDs of stops that were not yet sent to the debug adapter. Free for usage by external code (e.g. gl_shaders module)
-breakpoints_to_send: std.ArrayListUnmanaged(struct { usize, usize, usize }) = .{},
+dirty_breakpoints: std.ArrayListUnmanaged(struct { Ref, usize, usize }) = .{},
 context: *const anyopaque,
+/// Human-friendly name of this service/context.
+/// Owned by the service.
+name: String,
 
 /// Workspace paths are like "include path" mappings
 /// Maps one to many [fs directory]<=>[deshader virtual directories] (hence the two complementary hashmaps)
@@ -73,16 +109,15 @@ context: *const anyopaque,
 /// TODO watch the filesystem
 physical_to_virtual: ArrayBufMap(VirtualDir.Set) = undefined,
 
-Shaders: Storage(Shader.SourcePart, void, true) = undefined,
-Programs: Storage(Shader.Program, Shader.SourcePart, false) = undefined,
-allocator: std.mem.Allocator = undefined,
+Shaders: Storage(Shader.SourcePart, void, true),
+Programs: Storage(Shader.Program, Shader.SourcePart, false),
+allocator: std.mem.Allocator,
 revert_requested: bool = false, // set by the command listener thread, read by the drawing thread
 /// Instrumentation and debugging state for each stage
 state: std.AutoHashMapUnmanaged(usize, State) = .{},
-support: instrumentation.Processor.Config.Support,
+support: instrumentation.Processor.Config.Support = .{ .buffers = false, .max_variables_size = 0, .include = true, .all_once = false },
 
 pub fn initStatic(allocator: std.mem.Allocator) !void {
-    running = @TypeOf(running).init(allocator);
     available_data = @TypeOf(available_data).init(allocator);
     data_breakpoints = @TypeOf(data_breakpoints).init(allocator);
 
@@ -94,7 +129,6 @@ pub fn initStatic(allocator: std.mem.Allocator) !void {
 
 pub fn deinitStatic() void {
     if (inited_static) {
-        running.deinit();
         available_data.deinit();
         data_breakpoints.deinit();
 
@@ -104,23 +138,97 @@ pub fn deinitStatic() void {
     }
 }
 
-pub fn init(service: *@This(), a: std.mem.Allocator) !void {
-    service.Programs = try @TypeOf(service.Programs).init(a);
-    service.Shaders = try @TypeOf(service.Shaders).init(a);
-    service.physical_to_virtual = ArrayBufMap(VirtualDir.Set).init(a);
-    service.allocator = a;
-}
-
 pub fn deinit(service: *@This()) void {
     service.Programs.deinit(.{});
     service.Shaders.deinit(.{});
     service.physical_to_virtual.deinit();
-    service.breakpoints_to_send.deinit(service.allocator);
+    service.dirty_breakpoints.deinit(service.allocator);
     var it = service.state.valueIterator();
     while (it.next()) |s| {
         s.deinit();
     }
     service.state.deinit(service.allocator);
+}
+
+pub fn getOrAddService(context: *const anyopaque, allocator: std.mem.Allocator) !@TypeOf(services).GetOrPutResult {
+    const result = try services.getOrPut(allocator, context);
+    if (!result.found_existing) {
+        const thr_name = try common.process.getSelfThreadName(allocator);
+        defer allocator.free(thr_name);
+        const name = try std.fmt.allocPrint(allocator, "{s}-{d}", .{ thr_name, services.count() });
+        try services_by_name.put(allocator, name, result.value_ptr);
+
+        result.value_ptr.* = Service{
+            .physical_to_virtual = ArrayBufMap(VirtualDir.Set).init(allocator),
+            .Shaders = @TypeOf(result.value_ptr.Shaders).init(allocator),
+            .Programs = @TypeOf(result.value_ptr.Programs).init(allocator),
+            .allocator = allocator,
+            .context = context,
+            .name = name,
+        };
+    }
+    return result;
+}
+
+pub fn getServiceByName(name: String) ?*Service {
+    return services_by_name.get(name);
+}
+
+pub fn getService(context: *const anyopaque) ?*Service {
+    return services.getPtr(context);
+}
+
+pub fn servicesCount() usize {
+    return services.count();
+}
+
+/// *NOTE*: Invalidated event should be called on DAP after calling this functon.
+/// *NOTE*: service.deinit() should be called before calling this function.
+pub fn removeService(context: *const anyopaque, allocator: std.mem.Allocator) bool {
+    if (services.getPtr(context)) |service| {
+        service.deinit();
+        std.debug.assert(services_by_name.remove(service.name));
+        allocator.free(service.name);
+        std.debug.assert(services.swapRemove(context));
+        return true;
+    }
+    return false;
+}
+
+pub fn clearServices(allocator: std.mem.Allocator) void {
+    for (services.values()) |*service| {
+        service.deinit(allocator);
+    }
+    services.clearAndFree();
+    services_by_name.clearAndFree();
+}
+
+pub fn deinitServices(allocator: std.mem.Allocator) void {
+    for (services.values()) |*service| {
+        service.deinit();
+    }
+    services.deinit(allocator);
+    services_by_name.deinit(allocator);
+}
+
+pub fn allServices() []Service {
+    return services.values();
+}
+
+pub fn allContexts() []*const anyopaque {
+    return services.keys();
+}
+
+pub fn namesIterate() @TypeOf(services_by_name).KeyIterator {
+    return services_by_name.keyIterator();
+}
+
+pub fn lockServices() void {
+    services_by_name.lockPointers();
+}
+
+pub fn unlockServices() void {
+    services_by_name.unlockPointers();
 }
 
 pub const VirtualDir = union(enum) {
@@ -131,45 +239,58 @@ pub const VirtualDir = union(enum) {
     Program: ProgramDir,
     Shader: ShaderDir,
 
-    pub fn physical(self: *const @This()) *?String {
-        return switch (self.*) {
+    pub fn physical(self: @This()) *?String {
+        return switch (self) {
             .Program => |d| &d.physical,
             .Shader => |d| &d.physical,
         };
     }
-};
 
-/// TODO better way of locating shader by the running threads
-pub const ShaderLocator = struct { service: *Service, shader: usize };
-
-pub const ContextLocator = struct {
-    service: ?*Service,
-    resource: ?GenericLocator,
-
-    /// /abcdef/programs/...
-    pub fn parse(path: String) !ContextLocator {
-        var it = try std.fs.path.ComponentIterator(.posix, u8).init(path);
-        if (it.first()) |service_compound| {
-            var c_it = std.mem.splitScalar(u8, service_compound.name, '-');
-            if (Service.services.getEntry(@ptrFromInt(try std.fmt.parseInt(usize, c_it.first(), 16)))) |entry| {
-                if (it.peekNext()) |_| {
-                    return .{ .service = entry.value_ptr, .resource = try GenericLocator.parse(path[it.end_index..]) };
-                } else {
-                    return .{ .service = entry.value_ptr, .resource = null };
-                }
-            }
+    pub fn parent(self: @This()) ?VirtualDir {
+        switch (self) {
+            .Program => |d| if (d.parent) |p| return VirtualDir{ .Program = p } else return null,
+            .Shader => |d| if (d.parent) |p| return VirtualDir{ .Shader = p } else return null,
         }
-        return .{ .service = null, .resource = null };
+    }
+
+    pub fn name(self: @This()) String {
+        return switch (self) {
+            .Program => |d| d.name,
+            .Shader => |d| d.name,
+        };
     }
 };
 
-/// Represents a virtual resource or directory path
-pub const GenericLocator = union(enum) {
+/// Service, Resource and Locator.
+/// Globally identifies any shader resource in the workspace.
+pub const ServiceLocator = struct {
+    service: *Service,
+    resource: ?ResourceLocator,
+
+    /// /abcdef/programs/...
+    /// Returns `null` for root
+    pub fn parse(path: String) !?ServiceLocator {
+        var it = try std.fs.path.ComponentIterator(.posix, u8).init(path);
+        if (it.first()) |service_compound| {
+            if (services_by_name.get(service_compound.name)) |service| {
+                if (it.peekNext()) |_| {
+                    return .{ .service = service, .resource = try ResourceLocator.parse(path[it.end_index..]) };
+                } else {
+                    return .{ .service = service, .resource = null };
+                }
+            }
+        }
+        return null;
+    }
+};
+
+/// Represents a virtual resource or directory path inside a service.
+pub const ResourceLocator = union(enum) {
     programs: struct {
-        /// untagged program || tagged dir || tagged program || (un)tagged nested under tagged program
-        sub: ?storage.Locator,
-        /// nested under untagged program
-        nested: ?String,
+        /// (un)tagged program, tagged dir, (un)tagged nested under tagged program, or programs root (`null`)
+        program: ?storage.Locator.Name,
+        /// Basename of source nested under untagged program
+        nested: ?storage.Locator,
     },
     /// Shader source part.
     /// `null` means untagged root
@@ -178,34 +299,43 @@ pub const GenericLocator = union(enum) {
     pub const sources_path = "/sources";
     pub const programs_path = "/programs";
 
-    pub fn parse(path: String) !GenericLocator {
+    pub fn parse(path: String) !ResourceLocator {
         if (std.mem.startsWith(u8, path, programs_path)) {
-            if (path.len == programs_path.len) return .{ .programs = .{ .sub = .{ .name = .{ .tagged = "" } }, .nested = null } };
+            if (path.len == programs_path.len) return .{ .programs = .{ .program = .{ .tagged = "" }, .nested = null } };
             if (std.mem.lastIndexOfScalar(u8, path[programs_path.len..], '/')) |last_slash| {
                 if (last_slash < path.len - programs_path.len) {
-                    // theoretically can be untagged program with (un)tagged source
-                    if (try storage.Locator.parse(path[programs_path.len..][0..last_slash])) |maybe_untagged| {
-                        switch (maybe_untagged.name) {
-                            .untagged => {
-                                return .{ .programs = .{
-                                    .sub = maybe_untagged,
-                                    .nested = path[programs_path.len..][last_slash + 1 ..],
-                                } };
-                            },
-                            else => {},
-                        }
+                    // theoretically can be (un)tagged program with nested (un)tagged source
+                    if (try storage.Locator.parse(path[programs_path.len..][0..last_slash])) |with_nested| {
+                        return @This(){ .programs = .{
+                            .program = with_nested.name,
+                            .nested = try storage.Locator.parse(path[programs_path.len..][last_slash + 1 ..]),
+                        } };
                     }
                 }
             }
 
-            return .{ .programs = .{
-                .sub = try storage.Locator.parse(path[programs_path.len..]),
+            return @This(){ .programs = .{
+                .program = if (try storage.Locator.parse(path[programs_path.len..])) |l| l.name else null,
                 .nested = null,
             } };
         } else if (std.mem.startsWith(u8, path, sources_path)) {
             if (path.len == sources_path.len) return .{ .sources = .{ .name = .{ .tagged = "" } } };
             return .{ .sources = try storage.Locator.parse(path[sources_path.len..]) };
-        } else return error.InvalidPath;
+        } else return storage.Error.InvalidPath;
+    }
+
+    pub fn isInstrumented(self: @This()) bool {
+        return switch (self) {
+            .programs => |p| if (p.nested) |n| n.instrumented else false,
+            .sources => |s| s.?.instrumented,
+        };
+    }
+
+    pub fn isTagged(self: @This()) bool {
+        return switch (self) {
+            .programs => |p| p.program.? == .tagged,
+            .sources => |s| s.?.name == .tagged,
+        };
     }
 };
 
@@ -225,8 +355,9 @@ const State = struct {
         max_buffers: usize,
         /// Maximum number of XFB float output variables
         max_xfb: usize,
-        used_buffers: std.ArrayList(usize),
-        used_interface: std.ArrayList(usize),
+        search_paths: ?std.AutoHashMapUnmanaged(Ref, []String),
+        used_buffers: std.ArrayList(Ref),
+        used_interface: std.ArrayList(Ref),
     };
     /// Needs re-instrumentation (stepping enabled flag, pause mode, or source code has changed)
     dirty: bool,
@@ -292,10 +423,10 @@ const State = struct {
 // Workspaces functionality
 //
 
-pub fn getDirByLocator(service: *@This(), locator: GenericLocator) !?VirtualDir {
+pub fn getDirByLocator(service: *@This(), locator: ResourceLocator) !VirtualDir {
     return switch (locator) {
-        .sources => |s| if (try service.Shaders.getDirByPath((s orelse return error.TargetNotFound).name.tagged)) |d| .{ .Shader = d } else null,
-        .programs => |p| if (try service.Programs.getDirByPath((p.sub orelse return error.TargetNotFound).name.tagged)) |d| .{ .Program = d } else null,
+        .sources => |s| .{ .Shader = try service.Shaders.getDirByPath((s orelse return error.TargetNotFound).name.tagged) },
+        .programs => |p| .{ .Program = try service.Programs.getDirByPath((p.program orelse return error.TargetNotFound).tagged) },
     };
 }
 
@@ -303,7 +434,7 @@ pub fn getDirByLocator(service: *@This(), locator: GenericLocator) !?VirtualDir 
 ///
 /// *NOTE: when unsetting or setting path mappings, virtual paths must exist. Physical paths are not validated in any way.*
 /// Physical paths can be mapped to multiple virtual paths but not vice versa.
-pub fn mapPhysicalToVirtual(service: *@This(), physical: String, virtual: GenericLocator) !void {
+pub fn mapPhysicalToVirtual(service: *@This(), physical: String, virtual: ResourceLocator) !void {
     // check for parent overlap
     // TODO more effective
 
@@ -312,14 +443,50 @@ pub fn mapPhysicalToVirtual(service: *@This(), physical: String, virtual: Generi
         entry.value_ptr.* = VirtualDir.Set{};
     }
 
-    const virtual_dir = try service.getDirByLocator(virtual);
-    if (virtual_dir) |dir| {
-        if (dir.physical().*) |existing_phys| {
-            service.allocator.free(existing_phys);
-        }
-        dir.physical().* = entry.key_ptr.*;
-        _ = try entry.value_ptr.getOrPut(service.allocator, dir); // means 'put' effectively on set-like hashmaps
+    const dir = try service.getDirByLocator(virtual);
+    if (dir.physical().*) |existing_phys| {
+        service.allocator.free(existing_phys);
     }
+    dir.physical().* = entry.key_ptr.*;
+    _ = try entry.value_ptr.getOrPut(service.allocator, dir); // means 'put' effectively on set-like hashmaps
+}
+
+/// Actually checks if the path exists in real filesystem
+pub fn resolvePhysicalByVirtual(service: *@This(), virtual: ResourceLocator) !?CString {
+    // Get the virtual directory
+    var stack = std.ArrayListUnmanaged(VirtualDir){};
+    var virtual_dir = service.getDirByLocator(virtual) catch |err| if (err == error.TagExists) try (try service.getResourcesByLocator(virtual)).firstParent() else return err;
+    var physical = virtual_dir.physical().*;
+    // Walk the directory tree to find the physical connection
+    return while (true) {
+        if (virtual_dir.parent()) |p| {
+            try stack.append(service.allocator, virtual_dir);
+            virtual_dir = p;
+            physical = p.physical().*;
+            const path = try getPathFromStack(service.allocator, stack, physical orelse continue);
+            std.fs.cwd().accessZ(path, .{}) catch |err| switch (err) {
+                error.FileNotFound, error.BadPathName => {
+                    defer service.allocator.free(path);
+                    // try next parent
+                    continue;
+                },
+                else => return err,
+            };
+            break path.ptr;
+        } else {
+            return null; // No physical connection found in the directory tree
+        }
+    };
+}
+
+fn getPathFromStack(allocator: std.mem.Allocator, stack: std.ArrayListUnmanaged(VirtualDir), root: String) !ZString {
+    var path = std.ArrayListUnmanaged(u8){};
+    try path.appendSlice(allocator, root);
+    for (stack.items) |i| {
+        try path.append(allocator, '/');
+        try path.appendSlice(allocator, i.name());
+    }
+    return try path.toOwnedSliceSentinel(allocator, 0);
 }
 
 pub fn clearWorkspacePaths(service: *@This()) void {
@@ -330,7 +497,7 @@ pub fn clearWorkspacePaths(service: *@This()) void {
 }
 
 /// When `virtual` is null, all virtual paths associated with the physical path will be removed
-pub fn removeWorkspacePath(service: *@This(), real: String, virtual: ?GenericLocator) !bool {
+pub fn removeWorkspacePath(service: *@This(), real: String, virtual: ?ResourceLocator) !bool {
     const virtual_dir = if (virtual) |v| try service.getDirByLocator(v) else null;
 
     if (service.physical_to_virtual.getPtr(real)) |virtual_dirs| {
@@ -375,10 +542,10 @@ pub fn isNesting(comptime t: type) bool {
     return @hasDecl(ChildOrT(t), "getNested");
 }
 
-fn statStorage(stor: anytype, locator: ?storage.Locator, nested: ?String) !storage.StatPayload {
+fn statStorage(stor: anytype, locator: ?storage.Locator.Name, nested: ?storage.Locator) !storage.StatPayload {
     // {target, ?remaining_iterator}
     var dir_or_file = blk: {
-        switch ((locator orelse storage.Locator{ .name = .{ .untagged = .{ .ref = 0, .part = 0 } } }).name) {
+        switch (locator orelse storage.Locator.Name{ .untagged = .{ .ref = 0, .part = 0 } }) {
             .untagged => |combined| if (locator == null)
                 return try storage.Stat.now().toPayload(.Directory, 0)
             else if (stor.all.get(combined.ref)) |parts| {
@@ -442,14 +609,14 @@ fn statStorage(stor: anytype, locator: ?storage.Locator, nested: ?String) !stora
     blk: {
         if (is_nesting) {
             const stage = try if (dir_or_file[1]) |remaining_iterator|
-                dir_or_file[0].getNested(remaining_iterator.rest())
-            else if (nested) |n| dir_or_file[0].getNested(n) else break :blk;
+                dir_or_file[0].getNested((try storage.Locator.parse(remaining_iterator.rest()) orelse return storage.Error.InvalidPath).name)
+            else if (nested) |n| dir_or_file[0].getNested(n.name) else break :blk;
             const target = stage.content.Nested.nested;
             var payload = try target.stat.toPayload(.File, target.lenOr0());
-            if (target.hasTag()) {
+            if (target.tag != null) {
                 payload.type = payload.type | @intFromEnum(storage.FileType.SymbolicLink);
             }
-            if (locator != null and locator.?.instrumented) {
+            if (nested != null and nested.?.instrumented) {
                 payload.permission = .ReadOnly;
             }
             return payload;
@@ -457,24 +624,21 @@ fn statStorage(stor: anytype, locator: ?storage.Locator, nested: ?String) !stora
     }
 
     var payload = try dir_or_file[0].stat.toPayload(if (is_nesting) .Directory else .File, dir_or_file[0].lenOr0());
-    if (locator.?.name == .tagged) {
+    if (locator.? == .tagged) {
         payload.type = payload.type | @intFromEnum(storage.FileType.SymbolicLink);
-    }
-    if (locator.?.instrumented) {
-        payload.permission = .ReadOnly;
     }
     return payload;
 }
 
-pub fn stat(self: *@This(), locator: GenericLocator) !storage.StatPayload {
-    switch (locator) {
-        .sources => |sources| {
-            return statStorage(&self.Shaders, sources, null);
-        },
-        .programs => |programs| {
-            return statStorage(&self.Programs, programs.sub, programs.nested);
-        },
+pub fn stat(self: *@This(), locator: ResourceLocator) !storage.StatPayload {
+    var s = switch (locator) {
+        .sources => |sources| try statStorage(&self.Shaders, if (sources) |s| s.name else null, null),
+        .programs => |programs| try statStorage(&self.Programs, programs.program, programs.nested),
+    };
+    if (locator.isInstrumented()) {
+        s.permission = .ReadOnly;
     }
+    return s;
 }
 
 //
@@ -512,10 +676,34 @@ pub fn clearDataBreakpoints() void {
 }
 pub const CompileFunc = *const fn (program: Shader.Program, stage: usize, source: String) anyerror!void;
 
-/// Single running shader instance descriptor
-pub const RunningShader = struct {
-    /// native pointer to a ShaderLocator inside `Service.running`
-    id: usize,
+/// Single unique running shader instance descriptor payload for the debug adapter
+pub const Running = struct {
+    /// Shader identifier that is unique among all services (all contexts).
+    /// Contains information about the corresponding `Service` and shader.
+    pub const Locator = struct {
+        impl: usize,
+        pub fn parse(thread_id: usize) @This() {
+            return .{ .impl = thread_id };
+        }
+
+        pub fn service(self: *const @This()) !*Service {
+            const index = self.impl % 100;
+            if (index >= services.count()) return error.ServiceNotFound;
+            return &services.values()[index];
+        }
+
+        pub fn shader(self: *const @This()) usize {
+            return self.impl / 100;
+        }
+
+        pub fn from(serv: *const Service, shader_ref: usize) !@This() {
+            const service_index = services.getIndex(serv.context) orelse return error.ServiceNotFound;
+            std.debug.assert(service_index < 100);
+            return .{ .impl = shader_ref * 100 + service_index };
+        }
+    };
+
+    id: Locator,
     name: String,
     group_dim: []usize,
     group_count: ?[]usize,
@@ -530,7 +718,7 @@ pub const RunningShader = struct {
         try jw.objectField("name");
         try jw.write(self.name);
         try jw.objectField("id");
-        try jw.write(self.id);
+        try jw.write(self.id.impl);
         try jw.objectField("selectedThread"); // zig vs JSON case :)
         try jw.write(self.selected_thread);
 
@@ -568,7 +756,7 @@ pub const RunningShader = struct {
 };
 
 pub fn addBreakpoint(self: *@This(), locator: storage.Locator, bp: debug.SourceBreakpoint) !debug.Breakpoint {
-    const shader = try self.Shaders.getStoredByLocator(locator.name) orelse return error.TargetNotFound;
+    const shader = try self.Shaders.getStoredByLocator(locator.name);
     const new = try shader.*.addBreakpoint(bp);
     if (self.state.getPtr(shader.*.ref)) |state| {
         state.dirty = true;
@@ -582,12 +770,21 @@ const ProgramOrShader = struct {
         source: *Shader.SourcePart,
         part: usize,
     },
+
+    pub fn firstParent(self: *const @This()) !VirtualDir {
+        if (self.shader) |shader| {
+            if (shader.source.tag) |tag| {
+                return VirtualDir{ .Shader = tag.parent };
+            }
+        }
+        return error.NotTagged;
+    }
 };
 
-pub fn getResourcesByLocator(self: *@This(), locator: GenericLocator) !ProgramOrShader {
+pub fn getResourcesByLocator(self: *@This(), locator: ResourceLocator) !ProgramOrShader {
     return switch (locator) {
         .programs => |p| //
-        switch ((try self.Programs.getByLocator((p.sub orelse return error.TargetNotFound).name, p.nested) orelse return error.TargetNotFound).content) {
+        switch ((try self.Programs.getByLocator(p.program orelse return error.TargetNotFound, if (p.nested) |n| n.name else null)).content) {
             .Nested => |nested| .{
                 .program = nested.parent,
                 .shader = .{
@@ -604,7 +801,7 @@ pub fn getResourcesByLocator(self: *@This(), locator: GenericLocator) !ProgramOr
         .sources => |s| .{
             .program = null,
             .shader = .{
-                .source = (try self.Shaders.getStoredByLocator((s orelse return error.TargetNotFound).name) orelse return error.TargetNotFound),
+                .source = try self.Shaders.getStoredByLocator((s orelse return error.TargetNotFound).name),
                 .part = switch ((s orelse return error.TargetNotFound).name) {
                     .untagged => |comb| comb.part,
                     else => 0,
@@ -614,7 +811,14 @@ pub fn getResourcesByLocator(self: *@This(), locator: GenericLocator) !ProgramOr
     };
 }
 
-pub fn addBreakpointAlloc(self: *@This(), locator: GenericLocator, bp: debug.SourceBreakpoint, allocator: std.mem.Allocator) !debug.Breakpoint {
+pub fn getSourceByRLocator(self: *@This(), locator: ResourceLocator) !*Shader.SourcePart {
+    return switch (locator) {
+        .programs => |p| try self.Programs.getNestedByLocator(p.program orelse return error.TargetNotFound, (p.nested orelse return error.TargetNotFound).name),
+        .sources => |s| try self.Shaders.getStoredByLocator((s orelse return error.TargetNotFound).name),
+    };
+}
+
+pub fn addBreakpointAlloc(self: *@This(), locator: ResourceLocator, bp: debug.SourceBreakpoint, allocator: std.mem.Allocator) !debug.Breakpoint {
     const target = try self.getResourcesByLocator(locator);
     const shader = target.shader orelse return error.TargetNotFound;
     var new = try shader.source.addBreakpoint(bp);
@@ -630,21 +834,21 @@ pub fn fullPath(self: @This(), allocator: std.mem.Allocator, shader: *Shader.Sou
     const basename = try shader.basenameAlloc(allocator, part_index);
     defer allocator.free(basename);
     if (program) |p| {
-        if (p.firstTag()) |t| {
+        if (p.tag) |t| {
             const program_path = try t.fullPathAlloc(allocator, false);
             defer allocator.free(program_path);
-            return std.fmt.allocPrint(allocator, "/{x}" ++ GenericLocator.programs_path ++ "{s}/{s}", .{ @intFromPtr(self.context), program_path, basename });
+            return std.fmt.allocPrint(allocator, "/{s}" ++ ResourceLocator.programs_path ++ "{s}/{s}", .{ self.name, program_path, basename });
         } else {
-            return std.fmt.allocPrint(allocator, "/{x}" ++ GenericLocator.programs_path ++ storage.untagged_path ++ "/{x}/{s}", .{ @intFromPtr(self.context), p.ref, basename });
+            return std.fmt.allocPrint(allocator, "/{s}" ++ ResourceLocator.programs_path ++ storage.untagged_path ++ "/{x}/{s}", .{ self.name, p.ref, basename });
         }
     }
 
-    if (shader.firstTag()) |t| {
+    if (shader.tag) |t| {
         const source_path = try t.fullPathAlloc(allocator, false);
         defer allocator.free(source_path);
-        return std.fmt.allocPrint(allocator, "/{x}" ++ GenericLocator.sources_path ++ "{s}", .{ @intFromPtr(self.context), source_path });
+        return std.fmt.allocPrint(allocator, "/{s}" ++ ResourceLocator.sources_path ++ "{s}", .{ self.name, source_path });
     } else {
-        return std.fmt.allocPrint(allocator, "/{x}" ++ GenericLocator.sources_path ++ storage.untagged_path ++ "/{}{s}", .{ @intFromPtr(self.context), storage.Locator.Ref{ .ref = shader.ref, .part = part_index }, shader.toExtension() });
+        return std.fmt.allocPrint(allocator, "/{s}" ++ ResourceLocator.sources_path ++ storage.untagged_path ++ "/{}{s}", .{ self.name, storage.Locator.PartRef{ .ref = shader.ref, .part = part_index }, shader.toExtension() });
     }
 }
 
@@ -664,16 +868,15 @@ pub fn clearBreakpoints(self: *@This(), locator: storage.Locator) !void {
     }
 }
 
-pub fn runningShaders(self: *@This(), allocator: std.mem.Allocator, result: *std.ArrayListUnmanaged(RunningShader)) !void {
+pub fn runningShaders(self: *const @This(), allocator: std.mem.Allocator, result: *std.ArrayListUnmanaged(Running)) !void {
     var c_it = self.state.iterator();
     while (c_it.next()) |state_entry| {
         if (self.Shaders.all.get(state_entry.key_ptr.*)) |shader_parts| {
             const shader: *Shader.SourcePart = &shader_parts.items[0]; // TODO is it bad when the shader is dirty?
-            const entry = try running.getOrPut(.{ .service = self, .shader = shader.ref });
-            try result.append(allocator, RunningShader{
-                .id = @intFromPtr(entry.key_ptr),
+            try result.append(allocator, Running{
+                .id = try Running.Locator.from(self, shader.ref),
                 .type = @tagName(shader.stage),
-                .name = try shader.basenameAlloc(allocator, 0),
+                .name = try std.fmt.allocPrint(allocator, "{name}", .{Shader.SourcePart.WithIndex{ .source = shader, .part_index = 0 }}),
                 .group_dim = state_entry.value_ptr.outputs.group_dim,
                 .group_count = state_entry.value_ptr.outputs.group_count,
                 .selected_thread = state_entry.value_ptr.selected_thread,
@@ -691,10 +894,11 @@ pub fn invalidate(self: *@This()) void {
     }
 }
 
-pub fn selectThread(id: usize, thread: []usize, group: ?[]usize) !void {
-    const locator: *ShaderLocator = @ptrFromInt(id);
-    const state = locator.service.state.getPtr(locator.shader) orelse return error.NotInstrumented;
-    const shader = locator.service.Shaders.all.get(locator.shader) orelse return error.TargetNotFound;
+pub fn selectThread(shader_locator: usize, thread: []usize, group: ?[]usize) !void {
+    const locator = Running.Locator.parse(shader_locator);
+    const service = try locator.service();
+    const state = service.state.getPtr(locator.shader()) orelse return error.NotInstrumented;
+    const shader = service.Shaders.all.get(locator.shader()) orelse return error.TargetNotFound;
 
     for (0..thread.len) |i| {
         state.selected_thread[i] = thread[i];
@@ -712,11 +916,12 @@ pub fn selectThread(id: usize, thread: []usize, group: ?[]usize) !void {
 pub fn stackTrace(allocator: std.mem.Allocator, args: debug.StackTraceArguments) !debug.StackTraceResponse {
     const levels = args.levels orelse 1;
     var result = std.ArrayListUnmanaged(debug.StackFrame){};
-    const locator: *ShaderLocator = @ptrFromInt(args.threadId);
+    const locator = Running.Locator.parse(args.threadId);
+    const service = try locator.service();
 
-    const state = locator.service.state.get(locator.shader) orelse return error.NotInstrumented;
+    const state = service.state.get(locator.shader()) orelse return error.NotInstrumented;
     if (state.reached_step) |global_step| {
-        const shader = locator.service.Shaders.all.get(locator.shader) orelse return error.TargetNotFound;
+        const shader = service.Shaders.all.get(locator.shader()) orelse return error.TargetNotFound;
         const local = state.outputs.localStepOffset(global_step.id);
 
         if (local.offset) |o| {
@@ -726,7 +931,7 @@ pub fn stackTrace(allocator: std.mem.Allocator, args: debug.StackTraceArguments)
                 .line = s.line,
                 .column = s.character,
                 .name = "main",
-                .path = try locator.service.fullPath(allocator, &(shader).items[local.part], null, local.part),
+                .path = try service.fullPath(allocator, &(shader).items[local.part], null, local.part),
             });
             if (levels > 1) {
                 for (1..levels) |_| {
@@ -864,7 +1069,7 @@ fn instrumentOrGetCached(self: *@This(), program: *Shader.Program, params: *Stat
         const result = try Shader.instrument(self, sources, if (state) |s| s.target_step != null else false, params, &program.uniform_locations, &program.uniform_names);
         errdefer result.deinit(params.allocator);
         if (result.source) |s| {
-            if (sources[0].firstTag()) |tag| {
+            if (sources[0].tag) |tag| {
                 log.debug("Shader {x}:{s} instrumented source:\n{s}", .{ sources[0].ref, tag.name, s[0..result.length] });
             } else {
                 log.debug("Shader {x} instrumented source:\n{s}", .{ sources[0].ref, s[0..result.length] });
@@ -972,43 +1177,9 @@ pub fn instrument(self: *@This(), program: *Shader.Program, in_params: State.Par
                     // If any instrumentation was emitted,
                     // replace the shader source with the instrumented one on the host side
                     if (first_part.compileHost) |c| {
-                        const payload = decls.SourcesPayload{
-                            .ref = first_part.ref,
-                            .compile = first_part.compileHost,
-                            .contexts = blk: {
-                                var contexts = try params.allocator.alloc(?*const anyopaque, shader_parts.*.items.len);
-                                for (shader_parts.*.items, 0..) |part, i| {
-                                    contexts[i] = part.context;
-                                }
-                                break :blk contexts.ptr;
-                            },
-                            .count = shader_parts.*.items.len,
-                            .language = first_part.language,
-                            .lengths = blk: {
-                                var lengths = try params.allocator.alloc(usize, shader_parts.*.items.len);
-                                for (shader_parts.*.items, 0..) |part, i| {
-                                    lengths[i] = part.lenOr0();
-                                }
-                                break :blk lengths.ptr;
-                            },
-                            .sources = blk: {
-                                var sources = try params.allocator.alloc(CString, shader_parts.*.items.len);
-                                for (shader_parts.*.items, 0..) |part, i| {
-                                    sources[i] = try params.allocator.dupeZ(u8, part.getSource() orelse "");
-                                }
-                                break :blk sources.ptr;
-                            },
-                            .save = first_part.saveHost,
-                            .stage = first_part.stage,
-                        };
-                        defer {
-                            for (payload.sources.?[0..payload.count], payload.lengths.?[0..payload.count]) |s, l| {
-                                params.allocator.free(s[0 .. l + 1]); //also free the null terminator
-                            }
-                            params.allocator.free(payload.sources.?[0..payload.count]);
-                            params.allocator.free(payload.lengths.?[0..payload.count]);
-                            params.allocator.free(payload.contexts.?[0..payload.count]);
-                        }
+                        const payload = try Shader.SourcePart.toPayload(params.allocator, shader_parts.*.items);
+                        defer Shader.SourcePart.freePayload(payload, params.allocator);
+
                         const result = c(payload, instrumented_source, @intCast(new_result.length));
                         if (result != 0) {
                             log.err("Failed to compile instrumented shader {x}. Code {d}", .{ program.ref, result });
@@ -1061,6 +1232,7 @@ pub fn instrument(self: *@This(), program: *Shader.Program, in_params: State.Par
                             .max_buffers = params.max_buffers,
                             .max_xfb = params.max_xfb,
                             .screen = params.screen,
+                            .search_paths = params.search_paths,
                             .used_buffers = std.ArrayList(usize).fromOwnedSlice(params.allocator, try params.allocator.dupe(usize, params.used_buffers.items)),
                             .used_interface = std.ArrayList(usize).fromOwnedSlice(params.allocator, try params.allocator.dupe(usize, params.used_interface.items)),
                             .vertices = params.vertices,
@@ -1079,7 +1251,7 @@ pub fn instrument(self: *@This(), program: *Shader.Program, in_params: State.Par
     // Re-link the program
     if (re_link) {
         if (program.link) |l| {
-            const path = if (program.firstTag()) |t| try t.fullPathAlloc(params.allocator, true) else null;
+            const path = if (program.tag) |t| try t.fullPathAlloc(params.allocator, true) else null;
             defer if (path) |p|
                 params.allocator.free(p);
             const result = l(decls.ProgramPayload{
@@ -1113,6 +1285,7 @@ pub const InstrumentationResult = struct {
     state: std.AutoArrayHashMapUnmanaged(usize, *State),
 };
 
+/// Methods for working with a collection of `SourcePart`s
 pub const Shader = struct {
     pub const BreakpointSpecial = struct {
         condition: ?String,
@@ -1133,15 +1306,32 @@ pub const Shader = struct {
     };
 
     /// Class for interacting with a single source code part.
-    /// Implements Storage.Stored.
+    /// Implements `Storage.Stored`.
     pub const SourcePart = struct {
-        // Storage.Stored implementation
-        physical_connected: bool = false,
+        /// Can be used for formatting
+        pub const WithIndex = struct {
+            source: *const SourcePart,
+            part_index: usize,
+
+            pub fn format(self: @This(), comptime fmt_str: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+                if (comptime std.mem.eql(u8, fmt_str, "name")) {
+                    if (self.source.tag) |t| {
+                        try writer.writeAll(t.name);
+                    } else {
+                        try writer.print("{}{s}", .{ storage.Locator.PartRef{ .ref = self.source.ref, .part = self.part_index }, self.source.toExtension() });
+                    }
+                } else {
+                    @compileError("Unknown format string for Shader.SourcePart.WithIndex: {" ++ fmt_str ++ "}");
+                }
+            }
+        };
+
+        /// Special ref 0 means that this is source part is a named string (header file, not a standalone shader)
         ref: @TypeOf(SourcesPayload.ref) = 0,
         stat: storage.Stat,
 
         // SourcePart
-        tags: std.StringArrayHashMapUnmanaged(*Tag(@This())) = .{},
+        tag: ?*Tag(@This()) = null,
         stage: @TypeOf(SourcesPayload.stage) = @enumFromInt(0),
         language: @TypeOf(SourcesPayload.language) = @enumFromInt(0),
         /// Can be anything that is needed for the host application
@@ -1150,9 +1340,14 @@ pub const Shader = struct {
         compileHost: @TypeOf(SourcesPayload.compile) = null,
         saveHost: @TypeOf(SourcesPayload.save) = null,
         currentSourceHost: @TypeOf(SourcesPayload.currentSource) = null,
+        free: @TypeOf(SourcesPayload.free) = null,
+
+        program: ?*Program = null,
+        /// Does this source have #pragma deshader once
+        once: bool = false,
 
         allocator: std.mem.Allocator,
-        /// Contains a copy of the original passed string
+        /// Contains a copy of the original passed string. Must be allocated by the `allocator`
         source: ?String = null,
         /// Contains references (indexes) to `stops` in the source code
         breakpoints: std.AutoHashMapUnmanaged(usize, BreakpointSpecial) = .{},
@@ -1162,8 +1357,6 @@ pub const Shader = struct {
         tree: ?analyzer.parse.Tree = null,
         /// Possible breakpoint or debugging step locations. Access using `possibleSteps()`
         possible_steps: ?Steps = null,
-
-        pub usingnamespace Storage(@This(), void, true).TaggableMixin;
 
         pub const Steps = std.MultiArrayList(struct {
             pos: analyzer.lsp.Position,
@@ -1175,7 +1368,6 @@ pub const Shader = struct {
             if (self.source) |s| {
                 self.allocator.free(s);
             }
-            self.tags.deinit(self.allocator);
             var it = self.breakpoints.valueIterator();
             while (it.next()) |bp| {
                 bp.deinit(self.allocator);
@@ -1190,10 +1382,10 @@ pub const Shader = struct {
         }
 
         pub fn basenameAlloc(source: *const SourcePart, allocator: std.mem.Allocator, part_index: usize) !String {
-            if (source.firstTag()) |t| {
+            if (source.tag) |t| {
                 return try allocator.dupe(u8, t.name);
             } else {
-                return try std.fmt.allocPrint(allocator, "{}{s}", .{ storage.Locator.Ref{ .ref = source.ref, .part = part_index }, source.toExtension() });
+                return try std.fmt.allocPrint(allocator, "{}{s}", .{ storage.Locator.PartRef{ .ref = source.ref, .part = part_index }, source.toExtension() });
             }
         }
 
@@ -1227,6 +1419,56 @@ pub const Shader = struct {
         /// Returns the currently saved (not instrumented) shader source part
         pub fn getSource(self: *const @This()) ?String {
             return self.source;
+        }
+
+        pub fn instrumentedSource(self: *const @This()) !?String {
+            if (self.currentSourceHost) |c| {
+                const path = if (self.tag) |t| try t.fullPathAlloc(self.allocator, true) else null;
+                defer if (path) |p| self.allocator.free(p);
+                if (c(self.ref, if (path) |p| p.ptr else null, if (path) |p| p.len else 0)) |source| {
+                    return std.mem.span(source);
+                }
+            } else {
+                log.warn("No currentSourceHost function for shader {x}", .{self.ref});
+            }
+            return null;
+        }
+
+        // TODO do not include if it's fully enclosed in include guard
+        /// Flattens all included source parts into `result_parts` arraylist
+        pub fn flattenIncluded(self: *@This(), service: *Service, search_paths: []String, allocator: std.mem.Allocator, already_included: ?*std.StringHashMapUnmanaged(void), result_parts: *std.ArrayListUnmanaged(*SourcePart)) !void {
+            const tree = try self.parseTree();
+            const source = self.getSource().?;
+            for (tree.ignored()) |ignored| {
+                const line = source[ignored.start..ignored.end];
+                const directive = analyzer.parse.parsePreprocessorDirective(line) orelse continue;
+                switch (directive) {
+                    .include => |include| {
+                        const include_path = line[include.path.start..include.path.end];
+
+                        for (search_paths) |sp| {
+                            const absolute_path = try std.fs.path.join(allocator, &.{ sp, include_path });
+                            defer allocator.free(absolute_path);
+                            if (already_included) |a| if (a.contains(absolute_path)) {
+                                continue;
+                            };
+
+                            const included = service.Shaders.getStoredByPath(absolute_path) catch |err| {
+                                if (err == storage.Error.DirectoryNotFound or err == storage.Error.TargetNotFound) {
+                                    continue;
+                                }
+                                return err;
+                            };
+
+                            try included.flattenIncluded(service, search_paths, allocator, already_included, result_parts);
+
+                            try result_parts.append(allocator, included);
+                            if (already_included) |a| _ = try a.getOrPut(common.allocator, absolute_path);
+                        }
+                    },
+                    else => continue,
+                }
+            }
         }
 
         /// The old source will be freed if it exists. The new source will be copied and owned
@@ -1296,6 +1538,38 @@ pub const Shader = struct {
             }
         }
 
+        /// Fill `marked` with the insturmented version of the source part
+        pub fn instrument(part: *@This(), step_part_offset: *usize, prev_offset: *usize, marked: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator) !void {
+            const part_steps = try part.possibleSteps();
+            const part_source = part.getSource().?;
+
+            defer step_part_offset.* += part_steps.len;
+            for (part_steps.items(.offset), part_steps.items(.wrap_next), 0..) |offset, wrap, index| {
+                // insert the previous part
+                try marked.appendSlice(allocator, part_source[prev_offset.*..offset]);
+
+                const eol = std.mem.indexOfScalar(u8, part_source[offset..], '\n') orelse part_source.len;
+                const line = part_source[offset..][0..eol];
+
+                if (parsePragmaDeshader(line)) { //ignore pragma deshader (hide Deshader from the API)
+                    prev_offset.* += line.len;
+                } else {
+                    // insert the marker _step_(id, wrapped_code) into the line
+                    const global_id = step_part_offset.* + index;
+                    const writer = marked.writer(allocator);
+                    if (wrap > 0) {
+                        try writer.print(" {s}({d},{s}) ", .{ step_marker, global_id, part_source[offset .. offset + wrap] });
+                    }
+                    // note the spaces
+                    try writer.print(" {s}({d}) ", .{ step_marker, global_id });
+                    prev_offset.* = offset + wrap;
+                }
+            }
+
+            // Insert rest of the source
+            try marked.appendSlice(allocator, part_source[prev_offset.*..]);
+        }
+
         /// The result will have empty path field
         pub fn addBreakpoint(self: *@This(), bp: debug.SourceBreakpoint) !debug.Breakpoint {
             var new = debug.Breakpoint{
@@ -1360,13 +1634,53 @@ pub const Shader = struct {
             self.breakpoints.clearRetainingCapacity();
         }
 
-        pub fn save(self: *@This()) void {
-            self.saveHost();
-        }
-
         /// Including the dot
         pub fn toExtension(self: *const @This()) String {
             return self.stage.toExtension();
+        }
+
+        /// The result can be freed with `freePayload`
+        pub fn toPayload(allocator: std.mem.Allocator, parts: []Shader.SourcePart) !decls.SourcesPayload {
+            return decls.SourcesPayload{
+                .ref = parts[0].ref,
+                .compile = parts[0].compileHost,
+                // TODO .paths
+                .contexts = blk: {
+                    var contexts = try allocator.alloc(?*const anyopaque, parts.len);
+                    for (parts, 0..) |part, i| {
+                        contexts[i] = part.context;
+                    }
+                    break :blk contexts.ptr;
+                },
+                .count = parts.len,
+                .language = parts[0].language,
+                .lengths = blk: {
+                    var lengths = try allocator.alloc(usize, parts.len);
+                    for (parts, 0..) |part, i| {
+                        lengths[i] = part.lenOr0();
+                    }
+                    break :blk lengths.ptr;
+                },
+                .sources = blk: {
+                    var sources = try allocator.alloc(CString, parts.len);
+                    for (parts, 0..) |part, i| {
+                        sources[i] = try allocator.dupeZ(u8, part.getSource() orelse "");
+                    }
+                    break :blk sources.ptr;
+                },
+                .save = parts[0].saveHost,
+                .stage = parts[0].stage,
+            };
+        }
+
+        /// Free payload created by `toPayload`
+        pub fn freePayload(payload: decls.SourcesPayload, allocator: std.mem.Allocator) void {
+            for (payload.sources.?[0..payload.count], payload.lengths.?[0..payload.count]) |s, l| {
+                allocator.free(s[0 .. l + 1]); //also free the null terminator
+            }
+            allocator.free(payload.sources.?[0..payload.count]);
+            allocator.free(payload.lengths.?[0..payload.count]);
+            allocator.free(payload.contexts.?[0..payload.count]);
         }
     };
 
@@ -1400,26 +1714,38 @@ pub const Shader = struct {
         break :blk dummy.step_identifier;
     };
 
+    /// `SourcePart` collection must be insturmented together
     pub fn instrument(
-        service: *const Service,
-        parts: []SourcePart,
+        service: *Service,
+        source_parts: []SourcePart,
         stepping: bool,
         params: *State.Params, //includes allocator
         uniform_locations: *std.ArrayListUnmanaged(String),
         uniform_names: *std.StringHashMapUnmanaged(usize),
     ) !instrumentation.Result {
-        const info = toGLSLangStage(parts[0].stage); //the parts should all be of the same type
+        const info = toGLSLangStage(source_parts[0].stage); //the parts should all be of the same type
 
         var breakpoints = std.AutoHashMapUnmanaged(usize, void){};
         defer breakpoints.deinit(params.allocator);
-        var part_step_offsets = try params.allocator.alloc(usize, parts.len);
+
+        var part_step_offsets = try params.allocator.alloc(usize, source_parts.len);
+        var result_parts = try std.ArrayListUnmanaged(*SourcePart).initCapacity(params.allocator, source_parts.len);
+        var already_included = std.StringHashMapUnmanaged(void){};
+        defer already_included.deinit(params.allocator);
 
         const preprocessed = preprocess: {
             var total_code_len: usize = 0;
             var total_stops_count: usize = 0;
-            for (parts) |*part| {
-                total_code_len += part.lenOr0();
+            for (source_parts) |*part| {
+                const source = part.getSource() orelse "";
+                // Process #include directives
+                if (service.support.include) if (params.search_paths) |search_paths| if (search_paths.get(part.ref)) |sp| {
+                    try part.flattenIncluded(service, sp, params.allocator, if (part.once or service.support.all_once) &already_included else null, &result_parts);
+                };
+                try result_parts.append(common.allocator, part);
+
                 const part_stops = try part.possibleSteps();
+                total_code_len += source.len;
                 total_stops_count += part_stops.len;
             }
 
@@ -1428,44 +1754,17 @@ pub const Shader = struct {
 
             var stop_part_offset: usize = 0;
             var prev_offset: usize = 0;
-            for (parts, 0..) |*part, p| {
+            for (source_parts, 0..) |*part, p| {
                 prev_offset = 0;
-                const part_steps = try part.possibleSteps();
-                const part_source = part.getSource().?;
                 part_step_offsets[p] = stop_part_offset;
+                try part.instrument(&stop_part_offset, &prev_offset, &marked, params.allocator);
 
-                defer stop_part_offset += part_steps.len;
-                for (part_steps.items(.offset), part_steps.items(.wrap_next), 0..) |offset, wrap, index| {
-                    // insert the previous part
-                    try marked.appendSlice(params.allocator, part_source[prev_offset..offset]);
-
-                    const eol = std.mem.indexOfScalar(u8, part_source[offset..], '\n') orelse part_source.len;
-                    const line = part_source[offset..][0..eol];
-
-                    const hasPragma = parsePragmaDeshader(line);
-                    if (hasPragma) { //ignore pragma deshader
-                        prev_offset += line.len;
-                    } else {
-                        // insert the marker _step_(id, wrapped_code) into the line
-                        const global_id = stop_part_offset + index;
-                        const writer = marked.writer(params.allocator);
-                        if (wrap > 0) {
-                            try std.fmt.format(writer, " {s}({d},{s}) ", .{ step_marker, global_id, part_source[offset .. offset + wrap] });
-                        }
-                        // note the spaces
-                        try std.fmt.format(writer, " {s}({d}) ", .{ step_marker, global_id });
-                        prev_offset = offset + wrap;
-                    }
-                }
                 var it = part.breakpoints.keyIterator();
                 while (it.next()) |b| {
                     try breakpoints.put(params.allocator, b.* + stop_part_offset, {});
                 }
             }
 
-            // Insert rest of the last line
-            const last_source = if (parts.len > 0) parts[parts.len - 1].getSource() orelse "" else "";
-            try marked.appendSlice(params.allocator, last_source[prev_offset..]);
             try marked.append(params.allocator, 0); // null terminator
 
             // Preprocess the shader code with the breakpoint markers
@@ -1519,9 +1818,10 @@ pub const Shader = struct {
                     glslang.GLSLANG_STAGE_FRAGMENT => params.max_attachments,
                     else => params.max_xfb, // do not care about stages without xfb support, because it will be 0 for them
                 },
+                .parts = result_parts,
                 .part_stops = part_step_offsets,
                 .stepping = stepping,
-                .shader_stage = parts[0].stage,
+                .shader_stage = source_parts[0].stage,
                 .single_thread_mode = single_pause_mode,
                 .uniform_names = uniform_names,
                 .uniform_locations = uniform_locations,
@@ -1539,7 +1839,7 @@ pub const Shader = struct {
         const DirOrStored = Storage(@This(), Shader.SourcePart, false).DirOrStored;
 
         ref: @TypeOf(ProgramPayload.ref) = 0,
-        tags: std.StringArrayHashMapUnmanaged(*Tag(@This())) = .{},
+        tag: ?*Tag(@This()) = null,
         /// Ref and sources
         stages: ShadersRefMap,
         context: @TypeOf(ProgramPayload.context) = null,
@@ -1551,10 +1851,7 @@ pub const Shader = struct {
         uniform_locations: std.ArrayListUnmanaged(String) = .{}, //will be filled by the instrumentation routine
         uniform_names: std.StringHashMapUnmanaged(usize) = .{}, //inverse to uniform_locations
 
-        pub usingnamespace Storage(@This(), SourcePart, false).TaggableMixin;
-
         pub fn deinit(self: *@This()) void {
-            self.tags.deinit(self.stages.allocator);
             self.stages.deinit();
         }
 
@@ -1601,7 +1898,7 @@ pub const Shader = struct {
                         const source = part.getSource();
                         sources[i] = try allocator.dupeZ(u8, source orelse "");
                         lengths[i] = if (source) |s| s.len else 0;
-                        paths[i] = if (part.firstTag()) |t| blk: {
+                        paths[i] = if (part.tag) |t| blk: {
                             has_paths = true;
                             break :blk try t.fullPathAlloc(allocator, true);
                         } else null;
@@ -1636,7 +1933,7 @@ pub const Shader = struct {
             }
             // Link the program
             if (self.link) |linkFunc| {
-                const path = if (self.firstTag()) |t| try t.fullPathAlloc(allocator, true) else null;
+                const path = if (self.tag) |t| try t.fullPathAlloc(allocator, true) else null;
                 defer if (path) |p| allocator.free(p);
                 const result = linkFunc(decls.ProgramPayload{
                     .context = self.context,
@@ -1663,42 +1960,44 @@ pub const Shader = struct {
             };
         }
 
-        /// accepts `Locator.programs.nested` or the basename inside `Locator.programs.sub`
+        /// accepts `ResourceLocator.programs.nested` or the basename inside `ResourceLocator.programs.sub`
         pub fn getNested(
             self: *const @This(),
-            name: String,
-        ) !DirOrStored {
+            name: storage.Locator.Name,
+        ) storage.Error!DirOrStored {
             // try tagged // TODO something better than linear scan
-            var iter = self.stages.valueIterator();
-            while (iter.next()) |stage_parts| {
-                for (stage_parts.*.items, 0..) |*stage, part| {
-                    if (stage.tags.contains(name)) {
+            switch (name) {
+                .tagged => |tag| {
+                    var iter = self.stages.valueIterator();
+                    while (iter.next()) |stage_parts| {
+                        for (stage_parts.*.items, 0..) |*stage, part| {
+                            if (stage.tag) |t| if (std.mem.eql(u8, t.name, tag)) {
+                                return DirOrStored{
+                                    .content = .{ .Nested = .{
+                                        .parent = self,
+                                        .nested = stage,
+                                        .part = part,
+                                    } },
+                                    .is_new = false,
+                                };
+                            };
+                        }
+                    }
+                },
+                .untagged => |combined| {
+                    if (self.stages.get(combined.ref)) |stage| {
                         return DirOrStored{
                             .content = .{ .Nested = .{
                                 .parent = self,
-                                .nested = stage,
-                                .part = part,
+                                .nested = &stage.items[combined.part],
+                                .part = combined.part,
                             } },
                             .is_new = false,
                         };
                     }
-                }
+                },
             }
-            // try untagged
-            var withoutExtension = std.mem.splitScalar(u8, name, '.');
-            if (storage.Locator.Ref.parse(withoutExtension.first())) |combined| {
-                if (self.stages.get(combined.ref)) |stage| {
-                    return DirOrStored{
-                        .content = .{ .Nested = .{
-                            .parent = self,
-                            .nested = &stage.items[combined.part],
-                            .part = combined.part,
-                        } },
-                        .is_new = false,
-                    };
-                }
-            } else |_| {}
-            return error.TargetNotFound;
+            return storage.Error.TargetNotFound;
         }
 
         // naming scheme:
@@ -1721,16 +2020,15 @@ pub const Shader = struct {
             current_parts: ?[]SourcePart,
             part_index: usize = 0,
 
-            /// Returns the next shader source name and its object. The name is allocated with the allocator
-            pub fn nextAlloc(self: *ShaderIterator, allocator: std.mem.Allocator) error{OutOfMemory}!?struct { name: []const u8, source: *const Shader.SourcePart } {
+            pub fn next(self: *ShaderIterator) ?SourcePart.WithIndex {
                 var stage: *const SourcePart = undefined;
                 var found_part: usize = undefined;
                 var found = false;
                 while (!found) {
                     if (self.current_parts == null or self.current_parts.?.len <= self.part_index) {
-                        while (self.shaders.next()) |next| { // find the first non-empty source
-                            if (next.*.capacity > 0) {
-                                self.current_parts = next.*.items;
+                        while (self.shaders.next()) |n| { // find the first non-empty source
+                            if (n.*.capacity > 0) {
+                                self.current_parts = n.*.items;
                                 self.part_index = 0;
                                 found_part = self.part_index;
                                 break;
@@ -1746,8 +2044,8 @@ pub const Shader = struct {
                     }
                 }
 
-                return .{
-                    .name = try stage.basenameAlloc(allocator, found_part),
+                return SourcePart.WithIndex{
+                    .part_index = found_part,
                     .source = stage,
                 };
             }
@@ -1776,9 +2074,123 @@ pub fn sourceSource(service: *Service, sources: decls.SourcesPayload, replace: b
             if (item.getSource() == null or replace) {
                 if (sources.lengths) |l| {
                     try item.replaceSource(sources.sources.?[i][0..l[i]]);
+                    try scanForPragmaDeshader(service, item, i);
                 } else {
                     try item.replaceSource(std.mem.span(sources.sources.?[i]));
+                    try scanForPragmaDeshader(service, item, i);
                 }
+            }
+        }
+    }
+}
+
+fn scanForPragmaDeshader(service: *Service, shader: *Shader.SourcePart, index: usize) !void {
+    const source = shader.source orelse return error.NoSource;
+    var it = std.mem.splitScalar(u8, source, '\n');
+    var in_block_comment = false;
+    var line_i: usize = 0;
+    while (it.next()) |line| : (line_i += 1) {
+        // GLSL cannot have strings so we can just search for uncommented pragma
+        var pragma_found: usize = std.math.maxInt(usize);
+        var comment_found: usize = std.math.maxInt(usize);
+        const pragma_text = "#pragma deshader";
+        if (std.ascii.indexOfIgnoreCase(line, pragma_text)) |i| {
+            pragma_found = i;
+        }
+        if (std.mem.indexOf(u8, line, "/*")) |i| {
+            if (i < pragma_found) {
+                in_block_comment = true;
+                comment_found = @min(comment_found, i);
+            }
+        }
+        if (std.mem.indexOf(u8, line, "*/")) |_| {
+            in_block_comment = false;
+        }
+        if (std.mem.indexOf(u8, line, "//")) |i| {
+            if (i < pragma_found) {
+                comment_found = @min(comment_found, i);
+            }
+        }
+        if (pragma_found != std.math.maxInt(usize)) {
+            if (comment_found > pragma_found and !in_block_comment) {
+                var arg_iter = common.CliArgsIterator{ .s = line, .i = pragma_found + pragma_text.len };
+                // skip leading whitespace
+                while (line[arg_iter.i] == ' ' or line[arg_iter.i] == '\t') {
+                    arg_iter.i += 1;
+                }
+                var ec = argsm.ErrorCollection.init(common.allocator);
+                defer ec.deinit();
+                if (argsm.parseWithVerb(
+                    struct {},
+                    Pragmas,
+                    &arg_iter,
+                    common.allocator,
+                    argsm.ErrorHandling{ .collect = &ec },
+                )) |opts| {
+                    defer opts.deinit();
+                    if (opts.verb) |v| {
+                        switch (v) {
+                            // Workspace include
+                            .workspace => {
+                                try service.mapPhysicalToVirtual(opts.positionals[0], .{ .sources = .{ .name = .{ .tagged = opts.positionals[1] } } });
+                            },
+                            .source => {
+                                _ = try service.Shaders.assignTag(shader.ref, index, opts.positionals[0], .Error);
+                            },
+                            .@"source-link" => {
+                                _ = try service.Shaders.assignTag(shader.ref, index, opts.positionals[0], .Link);
+                            },
+                            .@"source-purge-previous" => {
+                                _ = try service.Shaders.assignTag(shader.ref, index, opts.positionals[0], .Overwrite);
+                            },
+                            .breakpoint, .print, .@"breakpoint-if", .@"breakpoint-after", .@"breakpoint-if-after", .@"print-if" => {
+                                const condition_pos: usize = if (v == .@"breakpoint-after" or v == .@"breakpoint-if" or v == .@"print-if") 1 else 0;
+                                const new = debug.SourceBreakpoint{
+                                    .line = line_i + 1,
+                                    .logMessage = if (v == .print or v == .@"print-if")
+                                        std.mem.join(common.allocator, " ", opts.positionals[condition_pos..]) catch null
+                                    else
+                                        null,
+                                    .condition = switch (v) {
+                                        .@"breakpoint-if", .@"breakpoint-if-after", .@"print-if" => opts.positionals[condition_pos],
+                                        else => null,
+                                    },
+                                    .hitCondition = switch (v) {
+                                        .@"breakpoint-after" => opts.positionals[condition_pos],
+                                        .@"breakpoint-if-after" => opts.positionals[condition_pos + 1],
+                                        else => null,
+                                    },
+                                }; // The breakpoint is in fact targeted on the next line
+                                const bp = try service.addBreakpoint(.{ .name = .{ .untagged = .{ .ref = shader.ref, .part = index } } }, new);
+                                if (bp.id) |stop_id| { // if verified
+                                    log.debug("Shader {x} part {d}: breakpoint at line {d}, column {?d}", .{ shader.ref, index, line_i, bp.column });
+                                    // push an event to the debugger
+                                    if (commands.instance != null and commands.instance.?.hasClient()) {
+                                        commands.instance.?.sendEvent(.breakpoint, debug.BreakpointEvent{ .breakpoint = bp, .reason = .new }) catch {};
+                                    } else {
+                                        service.dirty_breakpoints.append(service.allocator, .{ shader.ref, index, stop_id }) catch {};
+                                    }
+                                } else {
+                                    log.warn("Breakpoint at line {d} for shader {x} part {d} could not be placed.", .{ line_i, shader.ref, index });
+                                }
+                                if (new.logMessage) |l| {
+                                    common.allocator.free(l);
+                                }
+                            },
+                            .once => shader.once = true,
+                            .@"all-once" => service.support.all_once = true,
+                        }
+                    } else {
+                        log.warn("Unknown pragma: {s}", .{line});
+                    }
+                } else |err| {
+                    log.warn("Failed to parse pragma in shader source: {s}, because of {}", .{ line, err });
+                }
+                for (ec.errors()) |err| {
+                    log.info("Pragma parsing: {} at {s}", .{ err.kind, err.option });
+                }
+            } else {
+                log.debug("Ignoring pragma in shader source: {s}, because is at {d} and comment at {d}, block: {any}", .{ line, pragma_found, comment_found, in_block_comment });
             }
         }
     }
@@ -1818,10 +2230,76 @@ pub fn sourceContext(service: *Service, ref: usize, source_index: usize, context
         return error.TargetNotFound;
     }
 }
+/// Save source code physically.
+/// New source will be copied and owned by the SourcePart.
+pub fn saveSource(service: *Service, locator: ResourceLocator, new: String, compile: bool, link: bool) !void {
+    const shader = try service.getSourceByRLocator(locator);
+
+    const newZ = try shader.allocator.dupeZ(u8, new);
+    // TODO more effective than getting it twice
+    const index = common.indexOfSliceMember(Shader.SourcePart, service.Shaders.all.get(shader.ref).?.items, shader).?;
+    const physical = try service.resolvePhysicalByVirtual(locator) orelse return error.NotPhysical;
+    var success = true;
+    if (shader.saveHost) |s| {
+        const result = s(shader.ref, index, newZ, new.len, physical);
+        if (result != 0) {
+            success = false;
+            log.err("Probably failed to save shader {x} (code {d})", .{ shader.ref, result });
+        }
+    } else log.warn("No save function for shader {x}", .{shader.ref});
+    try service.setSource(shader, try shader.allocator.realloc(newZ[0..new.len], new.len), compile, link);
+    if (!success) {
+        return error.Unexpected;
+    }
+}
+
+pub fn setSourceByLocator(service: *Service, locator: ResourceLocator, new: String) !void {
+    return service.setSource(try service.getSourceByRLocator(locator) orelse return error.TargetNotFound, new, true, true);
+}
+
+pub fn setSourceByLocator2(service: *Service, locator: ResourceLocator, new: String, compile: bool, link: bool) !void {
+    return service.setSource(try service.getSourceByRLocator(locator), new, compile, link);
+}
+
+pub fn setSource(service: *Service, shader: *Shader.SourcePart, new: String, compile: bool, link: bool) !void {
+    if (shader.source) |s| {
+        shader.allocator.free(s);
+    }
+    shader.source = new;
+    shader.invalidate();
+    if (compile)
+        if (shader.compileHost) |c| {
+            const parts = service.Shaders.all.get(shader.ref).?;
+            const payload = try Shader.SourcePart.toPayload(service.allocator, parts.items);
+            defer Shader.SourcePart.freePayload(payload, service.allocator);
+            var result = c(payload, "", 0);
+            var success = true;
+            if (result != 0) {
+                log.err("Failed to compile shader {x} (code {d})", .{ shader.ref, result });
+                success = false;
+            }
+
+            if (link) if (shader.program) |program| if (program.link) |lnk| {
+                result = lnk(decls.ProgramPayload{
+                    .context = program.context,
+                    .link = program.link,
+                    .ref = program.ref,
+                    // TODO .path
+                });
+                if (result != 0) {
+                    log.err("Failed to link program {x} (code {d})", .{ program.ref, result });
+                    success = false;
+                }
+            };
+            if (!success) {
+                return error.Unexpected;
+            }
+        };
+}
 
 /// With sources
 pub fn programCreateUntagged(service: *Service, program: decls.ProgramPayload) !void {
-    const new = try service.Programs.appendUntagged(program.ref);
+    const new = try service.Programs.createUntagged(program.ref);
     new.* = Shader.Program{
         .ref = program.ref,
         .context = program.context,
@@ -1842,6 +2320,7 @@ pub fn programAttachSource(service: *Service, ref: usize, source: usize) !void {
     if (service.Shaders.all.getEntry(source)) |existing_source| {
         if (service.Programs.all.get(ref)) |program| {
             try program.stages.put(existing_source.key_ptr.*, existing_source.value_ptr.*);
+            for (existing_source.value_ptr.*.items) |*part| part.program = program;
         } else {
             return error.TargetNotFound;
         }
@@ -1852,11 +2331,32 @@ pub fn programAttachSource(service: *Service, ref: usize, source: usize) !void {
 
 pub fn programDetachSource(service: *Service, ref: usize, source: usize) !void {
     if (service.Programs.all.get(ref)) |program| {
-        if (program.stages.remove(source)) {
+        if (program.stages.fetchRemove(source)) |s| {
+            for (s.value.items) |*item| {
+                item.program = null;
+            }
             return;
         }
     }
     return error.TargetNotFound;
+}
+
+pub fn untag(service: *Service, path: ResourceLocator) !void {
+    switch (path) {
+        .programs => |p| {
+            if (p.nested) |n| {
+                const nested = try service.Programs.getNestedByLocator(p.program orelse return storage.Error.InvalidPath, n.name);
+                nested.tag.?.remove();
+            } else {
+                const program_path = p.program orelse return storage.Error.InvalidPath;
+                try service.Programs.untag(program_path.tagged, true);
+            }
+        },
+        .sources => |s| {
+            const source_name = s orelse return storage.Error.InvalidPath;
+            try service.Shaders.untag(source_name.name.tagged, true);
+        },
+    }
 }
 
 /// Must be called from the drawing thread

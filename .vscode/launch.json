@@ -2,15 +2,16 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "GDB - Launcher GLFW",
+            "name": "GDB - Launcher Hidden & GLFW",
             "type": "gdb",
             "request": "launch",
             "cwd": "${workspaceRoot}",
-            "target": "./zig-out/bin/deshader-run",
-            "preLaunchTask": "Build Launcher",
-            "arguments": "-y -e zig-out/bin/deshader-examples/glfw",
+            "target": "./zig-out/bin/deshader-examples/glfw",
+            "preLaunchTask": "Start Editor Server",
             "env": {
                 "DESHADER_LIB": "zig-out/lib/libdeshader.so",
+                "DESHADER_PROCESS": "glfw",
+                "LD_PRELOAD": "${workspaceRoot}/zig-out/lib/libdeshader.so",
             },
         },
         {
@@ -30,10 +31,10 @@
             "name": "GDB - Launcher Editor",
             "type": "gdb",
             "request": "launch",
-            "cwd": "${workspaceRoot}/..",
-            "target": "./deshader/zig-out/bin/deshader-run",
+            "cwd": "${workspaceRoot}",
+            "target": "./zig-out/bin/deshader-run",
             "env": {
-                "DESHADER_LIB": "deshader/zig-out/lib",
+                "DESHADER_LIB": "zig-out/lib",
                 "DESHADER_IGNORE_PROCESS": "gdb:zsh:llvm-symbolizer:code",
             },
         },

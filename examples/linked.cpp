@@ -3,6 +3,8 @@
 
 int main(int argc, char** argv) {
     std::cerr << "Show Deshader Library version from C++ code" << std::endl;
-    std::cout << deshaderVersion() << std::endl;
+    unsigned char* version;
+    deshaderVersion(&version);
+    std::cout << version << std::endl;
     return 0;
 }

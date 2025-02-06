@@ -99,7 +99,9 @@ pub const Stage = enum(c_int) {
 /// Used for communicating through ABI boundaries
 pub const SourcesPayload = extern struct {
     /// Graphics API level shader reference.
-    /// Will be GLuint for OpenGL, pointer to VkShaderModule on Vulkan
+    /// Will be GLuint for OpenGL, pointer to VkShaderModule on Vulkan.
+    ///
+    /// Special ref 0 means that this is source part is a named string (not a standalone shader)
     ref: usize = 0,
     /// Shader tag/virtual paths list. Has the size of 'count'.
     /// Paths are copied when stored by Deshader.
@@ -129,13 +131,16 @@ pub const SourcesPayload = extern struct {
     ///
     /// length is the length of the `instrumented` source. If it is 0, then there is no instrumented source.
     /// The instrumented source is also always null-terminated.
-    /// Should return 0 when there is no error
+    /// Should return `0` when there is no error.
     compile: ?*const fn (source: SourcesPayload, instrumented: CString, length: i32) callconv(.C) u8 = null,
-    // Deshader executes this function when it wants to get the instrumented version of the source code.
-    // Deshader does not store the instrumented source code, because it is always stored by the host application.
-    currentSource: ?*const fn (ref: usize) callconv(.C) ?CString = null,
+    /// Deshader executes this function when it wants to get the instrumented version of the source code.
+    /// Deshader does not store the instrumented source code, because it is always stored by the host application.
+    currentSource: ?*const fn (ref: usize, path: ?CString, length: usize) callconv(.C) ?CString = null,
+    /// Free the memory returned by `currentSource`
+    free: ?*const fn (ref: usize, context: *const anyopaque, string: CString) callconv(.C) void = null,
     /// Function to execute when user wants to save a source in the Deshader editor. Set to override the default behavior.
-    save: ?*const fn (source: SourcesPayload, physical: ?CString) callconv(.C) u8 = null,
+    /// The function must return 0 if there is no error.
+    save: ?*const fn (ref: usize, index: usize, content: CString, length: usize, physical: ?CString) callconv(.C) u8 = null,
 
     pub fn toString(self: *const @This()) []const u8 {
         return self.stage.toExtension();
@@ -149,6 +154,9 @@ pub const ProgramPayload = extern struct {
     shaders: ?[*]usize = null,
     count: usize = 0,
     context: ?*const anyopaque = null,
-    /// If count is 0, the function will only link the program. Otherwise it will attach the shaders in the order they are stored in the payload.
-    link: ?*const fn (self: ProgramPayload) callconv(.C) u8,
+    /// If `ProgramPayload.count` is 0, the function will only link the program. Otherwise it will attach the shaders in the order they are stored in the payload.
+    /// The function must return 0 if there is no error.
+    ///
+    /// If the program was already linked in the past, the function must also re-set all the uniforms and attributes to their original values.
+    link: ?*const fn (self: ProgramPayload) callconv(.C) u8 = null,
 };

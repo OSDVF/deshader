@@ -2,6 +2,14 @@ const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("log.zig").DeshaderLog;
 
+const String = []const u8;
+
+const c = @cImport({
+    if (builtin.os.tag == .windows) {
+        @cInclude("processthreadsapi.h"); // for GetThreadDescription
+    } else if (builtin.os.tag == .linux) {}
+});
+
 /// Blocks until child process terminates and then cleans up all resources.
 pub fn waitNoFail(self: *std.process.Child) !std.process.Child.Term {
     const term = if (builtin.os.tag == .windows)
@@ -202,4 +210,35 @@ fn statusToTerm(status: u32) std.process.Child.Term {
         std.process.Child.Term{ .Stopped = std.posix.W.STOPSIG(status) }
     else
         std.process.Child.Term{ .Unknown = status };
+}
+
+pub fn getSelfThreadId() if (builtin.os.tag == .windows) std.os.windows.HANDLE else std.c.pthread_t {
+    if (builtin.os.tag == .windows) {
+        return std.os.windows.GetCurrentThread();
+    } else {
+        return std.c.pthread_self();
+    }
+}
+
+pub fn getSelfThreadName(allocator: std.mem.Allocator) !String {
+    var result_buffer: [std.Thread.max_name_len:0]u8 = undefined; // On POSIX, thread names are restricted to 16 bytes
+    const thread_id = getSelfThreadId();
+    if (builtin.os.tag == .windows) {
+        var buffer: [std.Thread.max_name_len:0]std.os.windows.WCHAR = undefined;
+        const result = c.GetThreadDescription(thread_id, &buffer);
+        if (result == 0) {
+            return std.os.windows.unexpectedError(std.os.windows.kernel32.GetLastError());
+        }
+        defer std.os.windows.kernel32.LocalFree(buffer);
+        const len = try std.unicode.wtf16LeToWtf8(&result_buffer, buffer);
+
+        return allocator.dupe(u8, result_buffer[0..len]);
+    } else {
+        const err = std.c.pthread_getname_np(thread_id, @ptrCast(&result_buffer), @intCast(result_buffer.len + 1)); //including the null terminator
+        switch (err) {
+            .SUCCESS => return allocator.dupe(u8, result_buffer[0..(std.mem.indexOfScalar(u8, &result_buffer, 0) orelse 0) :0]),
+            .RANGE => unreachable,
+            else => |e| return std.posix.unexpectedErrno(e),
+        }
+    }
 }
