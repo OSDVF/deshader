@@ -3,18 +3,19 @@ Shaders are often shiny but sometimes also shady, fishy and stinky!
 > What if I could just step-debug that shader as I do with my CPU programs?
 
 Now you can!
-Deshader intercepts OpenGL calls and adds instrumentation code to your shaders (so you don't need to write your own visualizations to debug shader execution process anymore).
-You can also:
+Deshader intercepts OpenGL calls and adds *instrumentation* code to your shaders (so you don't need to write your own visualizations for debugging shader code anymore).
+
 # Features
-- Step through the shader execution (...breakpoints, logging, conditional bps...)
-- Arrange shaders in a virtual filesystem (`#include` friendly!)
-- Track variable values for different output primitives and pixels
-- Incrementally visualise primitive and pixel output (so you can fix that weird vertex!)
-- Open the integrated editor (VSCode in a separate window or in your browser - at `localhost:8080/index.html` by default)
+- Stepping through shader execution (...breakpoints, logging, conditional bps...)
+- Organizing shaders in a virtual filesystem (`#include` friendly!)
+- Tracking variable values for different output primitives and pixels
+- Incremental visualisation of primitive and pixel output (so you can fix that weird vertex!)
+- GUI (VSCode extension)
+- [Launcher application](./guide/GUI.md) with embedded VSCode editor
 - Runs on Linux, Windows and macOS
 
 # Goals
-- Compatibility between OpenGL vendor implementations (ICDs)
+- Agnostic to OpenGL vendor implementation (ICD)
 - Flexibility
 - Broader API support than [GLIntercept](https://github.com/dtrebilco/glintercept), different features than [ApiTrace](https://github.com/apitrace/apitrace)
 
