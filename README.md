@@ -14,27 +14,6 @@ Deshader intercepts OpenGL calls and adds *instrumentation* code to your shaders
 - [Launcher application](./guide/GUI.md) with embedded VSCode editor
 - Runs on Linux, Windows and macOS
 
-# Goals
-- Agnostic to OpenGL vendor implementation (ICD)
-- Flexibility
-- Broader API support than [GLIntercept](https://github.com/dtrebilco/glintercept), different features than [ApiTrace](https://github.com/apitrace/apitrace)
-
-## Non-goals
-...and some dead ends, which have been encountered.
-- Debugging other languages than GLSL (feel free to fork and add your own language)
-- Using vendor-specific GPU APIs and instructions
-- Assembly (ISA) or pseudo-assembly (SPIR-V) level debugging
-- Profiling
-- [Custom WebView profile data directory](https://github.com/webview/webview/issues/719)
-- Cross compilation for macOS
-
-## Possible future goals
-- View assembly
-    - SPIR-V (compile by GLSLang)
-    - ISA level ([nvdisasm](https://developer.download.nvidia.com/compute/cuda/redist/cuda_nvdisasm/), [nvcachetools](https://github.com/therontarigo/nvcachetools), [envytools](https://github.com/envytools/envytools/))
-
-Feel free to fork and add your own goals or even better, break the non-goals!
-
 # Installation
 ### Prebuilt packages
 [![packages](https://github.com/OSDVF/deshader/actions/workflows/packages.yml/badge.svg?event=push)](https://github.com/OSDVF/deshader/actions/workflows/packages.yml)
@@ -58,6 +37,27 @@ Display the Launcher GUI:
 deshader-run
 ```
 Advanced instructions are contained in [Deshader Manual](./guide/README.md).
+
+# Goals
+- Agnostic to OpenGL vendor implementation (ICD)
+- Flexibility
+- Broader API support than [GLIntercept](https://github.com/dtrebilco/glintercept), different features than [ApiTrace](https://github.com/apitrace/apitrace)
+
+## Non-goals
+...and some dead ends, which have been encountered.
+- Debugging other languages than GLSL (feel free to fork and add your own language)
+- Using vendor-specific GPU APIs and instructions
+- Assembly (ISA) or pseudo-assembly (SPIR-V) level debugging
+- Profiling
+- [Custom WebView profile data directory](https://github.com/webview/webview/issues/719)
+- Cross compilation for macOS
+
+## Possible future goals
+- View assembly
+    - SPIR-V (compile by GLSLang)
+    - ISA level ([nvdisasm](https://developer.download.nvidia.com/compute/cuda/redist/cuda_nvdisasm/), [nvcachetools](https://github.com/therontarigo/nvcachetools), [envytools](https://github.com/envytools/envytools/))
+
+Feel free to fork and add your own goals or even better, break the non-goals!
 
 # Build
 ## Components
