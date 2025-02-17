@@ -230,7 +230,7 @@ pub fn selfDllPathAlloc(a: std.mem.Allocator, concat_with: String) !String {
         _ = c.dl_iterate_phdr(callback, null);
     } else {
         var info: c.Dl_info = undefined;
-        if (c.dladdr(&options.version, &info) == 0) {
+        if (c.dladdr(@ptrCast(&options.version), &info) == 0) {
             return error.DlAddr;
         } else {
             return a.dupe(u8, std.mem.span(info.dli_fname));
@@ -248,7 +248,7 @@ pub fn selfExePath() !String {
     {
         var arg = try std.process.argsWithAllocator(allocator);
         defer arg.deinit();
-        self_exe = allocator.dupe(u8, arg.next().?);
+        self_exe = try allocator.dupe(u8, arg.next().?);
     } else {
         self_exe = try std.fs.selfExePathAlloc(allocator);
     }
@@ -402,4 +402,18 @@ pub fn indexOfSliceMember(comptime T: type, slice: []const T, needle: *T) ?usize
 
 pub fn nullishEq(a: anytype, b: anytype) bool {
     return (a == null) == (b == null);
+}
+
+pub fn noTrailingSlash(path: String) String {
+    return if (path[path.len - 1] == '/') path[0 .. path.len - 1] else path;
+}
+
+pub fn resize(allocat: std.mem.Allocator, array: anytype, new_size: usize) !@TypeOf(array) {
+    if (allocat.resize(array, new_size)) {
+        return array[0..new_size];
+    } else {
+        const new = try allocat.realloc(array, new_size);
+        @memcpy(new, array);
+        return new;
+    }
 }

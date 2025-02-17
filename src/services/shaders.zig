@@ -109,8 +109,8 @@ name: String,
 /// TODO watch the filesystem
 physical_to_virtual: ArrayBufMap(VirtualDir.Set) = undefined,
 
-Shaders: Storage(Shader.SourcePart, void, true),
-Programs: Storage(Shader.Program, Shader.SourcePart, false),
+Shaders: Shader.SourcePart.StorageT,
+Programs: Shader.Program.StorageT,
 allocator: std.mem.Allocator,
 revert_requested: bool = false, // set by the command listener thread, read by the drawing thread
 /// Instrumentation and debugging state for each stage
@@ -219,7 +219,7 @@ pub fn allContexts() []*const anyopaque {
     return services.keys();
 }
 
-pub fn namesIterate() @TypeOf(services_by_name).KeyIterator {
+pub fn serviceNames() @TypeOf(services_by_name).KeyIterator {
     return services_by_name.keyIterator();
 }
 
@@ -267,7 +267,8 @@ pub const ServiceLocator = struct {
     service: *Service,
     resource: ?ResourceLocator,
 
-    /// /abcdef/programs/...
+    /// `/abcdef/programs/...`
+    ///
     /// Returns `null` for root
     pub fn parse(path: String) !?ServiceLocator {
         var it = try std.fs.path.ComponentIterator(.posix, u8).init(path);
@@ -282,60 +283,73 @@ pub const ServiceLocator = struct {
         }
         return null;
     }
+
+    pub fn format(self: @This(), comptime _: String, _: std.fmt.FormatOptions, writer: anytype) !void {
+        try writer.writeAll(self.service.name);
+        if (self.resource) |r| {
+            try writer.print("/{}", .{r});
+        }
+    }
 };
 
 /// Represents a virtual resource or directory path inside a service.
 pub const ResourceLocator = union(enum) {
-    programs: struct {
-        /// (un)tagged program, tagged dir, (un)tagged nested under tagged program, or programs root (`null`)
-        program: ?storage.Locator.Name,
-        /// Basename of source nested under untagged program
-        nested: ?storage.Locator,
-    },
+    programs: storage.Locator.Nesting,
     /// Shader source part.
-    /// `null` means untagged root
-    sources: ?storage.Locator,
+    sources: storage.Locator,
 
     pub const sources_path = "/sources";
     pub const programs_path = "/programs";
 
     pub fn parse(path: String) !ResourceLocator {
         if (std.mem.startsWith(u8, path, programs_path)) {
-            if (path.len == programs_path.len) return .{ .programs = .{ .program = .{ .tagged = "" }, .nested = null } };
-            if (std.mem.lastIndexOfScalar(u8, path[programs_path.len..], '/')) |last_slash| {
-                if (last_slash < path.len - programs_path.len) {
-                    // theoretically can be (un)tagged program with nested (un)tagged source
-                    if (try storage.Locator.parse(path[programs_path.len..][0..last_slash])) |with_nested| {
-                        return @This(){ .programs = .{
-                            .program = with_nested.name,
-                            .nested = try storage.Locator.parse(path[programs_path.len..][last_slash + 1 ..]),
-                        } };
-                    }
-                }
-            }
-
-            return @This(){ .programs = .{
-                .program = if (try storage.Locator.parse(path[programs_path.len..])) |l| l.name else null,
-                .nested = null,
-            } };
+            return @This(){
+                .programs = try storage.Locator.Nesting.parse(path[programs_path.len..]),
+            };
         } else if (std.mem.startsWith(u8, path, sources_path)) {
-            if (path.len == sources_path.len) return .{ .sources = .{ .name = .{ .tagged = "" } } };
-            return .{ .sources = try storage.Locator.parse(path[sources_path.len..]) };
+            return @This(){ .sources = try storage.Locator.parse(path[sources_path.len..]) };
         } else return storage.Error.InvalidPath;
     }
 
     pub fn isInstrumented(self: @This()) bool {
         return switch (self) {
-            .programs => |p| if (p.nested) |n| n.instrumented else false,
-            .sources => |s| s.?.instrumented,
+            .programs => |p| p.nested.instrumented,
+            .sources => |s| s.instrumented,
         };
     }
 
     pub fn isTagged(self: @This()) bool {
         return switch (self) {
-            .programs => |p| p.program.? == .tagged,
-            .sources => |s| s.?.name == .tagged,
+            .programs => |p| p.name == .tagged,
+            .sources => |s| s.name == .tagged,
         };
+    }
+
+    pub fn name(self: @This()) String {
+        return switch (self) {
+            .programs => |p| p.fullPath,
+            .sources => |s| s.name,
+        };
+    }
+
+    pub fn toTagged(self: @This(), allocator: std.mem.Allocator, basename: String) !@This() {
+        return switch (self) {
+            .programs => |p| .{ .programs = try p.toTagged(allocator, basename) },
+            .sources => |s| .{ .sources = try s.toTagged(basename) },
+        };
+    }
+
+    pub fn format(self: @This(), comptime _: String, _: std.fmt.FormatOptions, writer: anytype) !void {
+        switch (self) {
+            .programs => |p| {
+                try writer.writeAll(programs_path[1..]);
+                try writer.print("/{}", .{p});
+            },
+            .sources => |s| {
+                try writer.writeAll(sources_path[1..]);
+                try writer.print("/{}", .{s});
+            },
+        }
     }
 };
 
@@ -425,8 +439,8 @@ const State = struct {
 
 pub fn getDirByLocator(service: *@This(), locator: ResourceLocator) !VirtualDir {
     return switch (locator) {
-        .sources => |s| .{ .Shader = try service.Shaders.getDirByPath((s orelse return error.TargetNotFound).name.tagged) },
-        .programs => |p| .{ .Program = try service.Programs.getDirByPath((p.program orelse return error.TargetNotFound).tagged) },
+        .sources => |s| .{ .Shader = try service.Shaders.getDirByPath(s.name.tagged) },
+        .programs => |p| .{ .Program = try service.Programs.getDirByPath(p.name.tagged) },
     };
 }
 
@@ -542,12 +556,12 @@ pub fn isNesting(comptime t: type) bool {
     return @hasDecl(ChildOrT(t), "getNested");
 }
 
-fn statStorage(stor: anytype, locator: ?storage.Locator.Name, nested: ?storage.Locator) !storage.StatPayload {
+fn statStorage(stor: anytype, locator: storage.Locator.Name, nested: ?storage.Locator) !storage.StatPayload {
     // {target, ?remaining_iterator}
     var dir_or_file = blk: {
-        switch (locator orelse storage.Locator.Name{ .untagged = .{ .ref = 0, .part = 0 } }) {
-            .untagged => |combined| if (locator == null)
-                return try storage.Stat.now().toPayload(.Directory, 0)
+        switch (locator) {
+            .untagged => |combined| if (combined.isRoot())
+                return try storage.Stat.now().toPayload(.Directory, 0) // TODO: untagged root not always dirty
             else if (stor.all.get(combined.ref)) |parts| {
                 const item = if (@TypeOf(stor.*).isParted) &parts.items[combined.part] else parts;
                 break :blk .{ item, null };
@@ -555,7 +569,7 @@ fn statStorage(stor: anytype, locator: ?storage.Locator.Name, nested: ?storage.L
             .tagged => |tagged| {
                 var path_it = std.mem.splitScalar(u8, tagged, '/');
                 var dir = stor.tagged_root;
-                if (std.mem.eql(u8, tagged, "")) return dir.stat.toPayload(.Directory, 0);
+                if (std.mem.eql(u8, tagged, "")) return dir.stat.toPayload(.Directory, 0); // TODO: tagged root not always dirty
                 var last_part = path_it.first();
 
                 var last_was_dir = false;
@@ -609,22 +623,31 @@ fn statStorage(stor: anytype, locator: ?storage.Locator.Name, nested: ?storage.L
     blk: {
         if (is_nesting) {
             const stage = try if (dir_or_file[1]) |remaining_iterator|
-                dir_or_file[0].getNested((try storage.Locator.parse(remaining_iterator.rest()) orelse return storage.Error.InvalidPath).name)
-            else if (nested) |n| dir_or_file[0].getNested(n.name) else break :blk;
-            const target = stage.content.Nested.nested;
-            var payload = try target.stat.toPayload(.File, target.lenOr0());
-            if (target.tag != null) {
-                payload.type = payload.type | @intFromEnum(storage.FileType.SymbolicLink);
+                dir_or_file[0].getNested(((try storage.Locator.parse(remaining_iterator.rest())).file() orelse return storage.Error.InvalidPath).name)
+            else if (nested) |n| if (n.file()) |nf|
+                dir_or_file[0].getNested(nf.name)
+            else
+                break :blk else break :blk;
+
+            if (stage.Nested.nested) |target| {
+                // Nested file
+                var payload = try target.stat.toPayload(.File, target.lenOr0());
+                if (target.tag != null) {
+                    payload.type = payload.type | @intFromEnum(storage.FileType.SymbolicLink);
+                }
+                if (nested != null and nested.?.instrumented) {
+                    payload.permission = .ReadOnly;
+                }
+                return payload;
+            } else {
+                // Nested untagged root
+                return stage.Nested.parent.stat.toPayload(.Directory, 0);
             }
-            if (nested != null and nested.?.instrumented) {
-                payload.permission = .ReadOnly;
-            }
-            return payload;
         }
     }
 
     var payload = try dir_or_file[0].stat.toPayload(if (is_nesting) .Directory else .File, dir_or_file[0].lenOr0());
-    if (locator.? == .tagged) {
+    if (locator == .tagged) {
         payload.type = payload.type | @intFromEnum(storage.FileType.SymbolicLink);
     }
     return payload;
@@ -632,8 +655,8 @@ fn statStorage(stor: anytype, locator: ?storage.Locator.Name, nested: ?storage.L
 
 pub fn stat(self: *@This(), locator: ResourceLocator) !storage.StatPayload {
     var s = switch (locator) {
-        .sources => |sources| try statStorage(&self.Shaders, if (sources) |s| s.name else null, null),
-        .programs => |programs| try statStorage(&self.Programs, programs.program, programs.nested),
+        .sources => |sources| try statStorage(&self.Shaders, sources.name, null),
+        .programs => |programs| try statStorage(&self.Programs, programs.name, programs.nested),
     };
     if (locator.isInstrumented()) {
         s.permission = .ReadOnly;
@@ -784,11 +807,11 @@ const ProgramOrShader = struct {
 pub fn getResourcesByLocator(self: *@This(), locator: ResourceLocator) !ProgramOrShader {
     return switch (locator) {
         .programs => |p| //
-        switch ((try self.Programs.getByLocator(p.program orelse return error.TargetNotFound, if (p.nested) |n| n.name else null)).content) {
+        switch (try self.Programs.getByLocator(p.name, p.nested.name)) {
             .Nested => |nested| .{
                 .program = nested.parent,
                 .shader = .{
-                    .source = nested.nested,
+                    .source = nested.nested orelse return error.DirExists,
                     .part = nested.part,
                 },
             },
@@ -801,8 +824,8 @@ pub fn getResourcesByLocator(self: *@This(), locator: ResourceLocator) !ProgramO
         .sources => |s| .{
             .program = null,
             .shader = .{
-                .source = try self.Shaders.getStoredByLocator((s orelse return error.TargetNotFound).name),
-                .part = switch ((s orelse return error.TargetNotFound).name) {
+                .source = try self.Shaders.getStoredByLocator(s.name),
+                .part = switch (s.name) {
                     .untagged => |comb| comb.part,
                     else => 0,
                 },
@@ -813,8 +836,8 @@ pub fn getResourcesByLocator(self: *@This(), locator: ResourceLocator) !ProgramO
 
 pub fn getSourceByRLocator(self: *@This(), locator: ResourceLocator) !*Shader.SourcePart {
     return switch (locator) {
-        .programs => |p| try self.Programs.getNestedByLocator(p.program orelse return error.TargetNotFound, (p.nested orelse return error.TargetNotFound).name),
-        .sources => |s| try self.Shaders.getStoredByLocator((s orelse return error.TargetNotFound).name),
+        .programs => |p| try self.Programs.getNestedByLocator(p.name, p.nested.name),
+        .sources => |s| try self.Shaders.getStoredByLocator(s.name),
     };
 }
 
@@ -909,7 +932,7 @@ pub fn selectThread(shader_locator: usize, thread: []usize, group: ?[]usize) !vo
         };
 
     for (shader.items) |*s| {
-        s.dirty = true;
+        s.i_dirty = true;
     }
 }
 
@@ -972,7 +995,7 @@ pub fn @"continue"(self: *@This(), shader_ref: usize) !void {
     }
 
     for (shader.items) |*s| {
-        s.dirty = true;
+        s.i_dirty = true;
     }
 }
 
@@ -996,7 +1019,7 @@ pub fn advanceStepping(self: *@This(), shader_ref: usize, target: ?u32) !void {
     }
 
     for (shader.items) |*s| {
-        s.dirty = true;
+        s.i_dirty = true;
     }
 }
 
@@ -1154,9 +1177,9 @@ pub fn instrument(self: *@This(), program: *Shader.Program, in_params: State.Par
         const first_part = shader_parts.*.items[0];
 
         for (shader_parts.*.items) |*sp| {
-            if (sp.dirty) {
+            if (sp.i_dirty) {
                 invalidated_uniforms = true;
-                sp.dirty = false; // clear
+                sp.i_dirty = false; // clear
             }
         }
 
@@ -1308,6 +1331,7 @@ pub const Shader = struct {
     /// Class for interacting with a single source code part.
     /// Implements `Storage.Stored`.
     pub const SourcePart = struct {
+        const StorageT = Storage(@This(), void, true);
         /// Can be used for formatting
         pub const WithIndex = struct {
             source: *const SourcePart,
@@ -1352,7 +1376,7 @@ pub const Shader = struct {
         /// Contains references (indexes) to `stops` in the source code
         breakpoints: std.AutoHashMapUnmanaged(usize, BreakpointSpecial) = .{},
         /// A flag for the platform interface (e.g. `gl_shaders`) for setting the required uniforms for source-stepping
-        dirty: bool = true, // TODO where to clear this?
+        i_dirty: bool = true, // TODO where to clear this?
         /// Syntax tree of the original shader source code. Used for breakpoint location calculation
         tree: ?analyzer.parse.Tree = null,
         /// Possible breakpoint or debugging step locations. Access using `possibleSteps()`
@@ -1378,6 +1402,26 @@ pub const Shader = struct {
             }
             if (self.tree) |*t| {
                 t.deinit(self.allocator);
+            }
+        }
+
+        pub fn touch(self: *@This()) void {
+            self.stat.touch();
+            if (self.tag) |t| {
+                t.parent.touch();
+            }
+            if (self.program) |p| {
+                p.touch();
+            }
+        }
+
+        pub fn dirty(self: *@This()) void {
+            self.stat.dirty();
+            if (self.tag) |t| {
+                t.parent.dirty();
+            }
+            if (self.program) |p| {
+                p.dirty();
             }
         }
 
@@ -1477,6 +1521,7 @@ pub const Shader = struct {
             if (self.source) |s| {
                 self.allocator.free(s);
             }
+            self.dirty();
             self.source = try self.allocator.dupe(u8, source);
         }
 
@@ -1836,7 +1881,8 @@ pub const Shader = struct {
     }
 
     pub const Program = struct {
-        const DirOrStored = Storage(@This(), Shader.SourcePart, false).DirOrStored;
+        const StorageT = Storage(@This(), Shader.SourcePart, false);
+        const DirOrStored = StorageT.DirOrStored;
 
         ref: @TypeOf(ProgramPayload.ref) = 0,
         tag: ?*Tag(@This()) = null,
@@ -1853,6 +1899,20 @@ pub const Shader = struct {
 
         pub fn deinit(self: *@This()) void {
             self.stages.deinit();
+        }
+
+        pub fn dirty(self: *@This()) void {
+            self.stat.dirty();
+            if (self.tag) |t| {
+                t.parent.dirty();
+            }
+        }
+
+        pub fn touch(self: *@This()) void {
+            self.stat.touch();
+            if (self.tag) |t| {
+                t.parent.touch();
+            }
         }
 
         pub fn eql(self: *const @This(), other: *const @This()) bool {
@@ -1960,11 +2020,66 @@ pub const Shader = struct {
             };
         }
 
+        /// List entities under `Stored`: virtual directories and `Nested` items
+        ///
+        /// `untagged` - list untagged sources, list tagged ones otherwise (disjoint), `null` for both.
+        /// Returns `true` if the `Stored` has some untagged `Nested` items
+        pub fn listNested(self: *const @This(), allocator: std.mem.Allocator, prepend: String, nested_postfix: ?String, untagged: ?bool, result: *std.ArrayListUnmanaged(CString)) !bool {
+            if (self.stages.count() == 0) {
+                return false;
+            }
+            var shader_iter = self.listFiles();
+            var has_untagged = false;
+            while (shader_iter.next()) |part| {
+                if (part.source.tag == null) has_untagged = true;
+                if (untagged == null or (part.source.tag == null) == untagged.?)
+                    try result.append(allocator, try std.fmt.allocPrintZ(
+                        allocator,
+                        "{s}{s}{s}{name}{s}",
+                        .{
+                            if (prepend.len == 0)
+                                prepend
+                            else
+                                common.noTrailingSlash(prepend),
+                            if (prepend.len == 0)
+                                prepend
+                            else
+                                "/",
+                            if (part.source.tag == null and untagged == null //recursive
+                            ) storage.untagged_path[1..] ++ "/" else "",
+                            part,
+                            nested_postfix orelse "",
+                        },
+                    ));
+            }
+            return has_untagged;
+        }
+
+        pub fn format(value: @This(), comptime fmt_str: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+            if (comptime std.mem.eql(u8, fmt_str, "name")) {
+                if (value.tag) |t| {
+                    return writer.writeAll(t.name);
+                }
+                return writer.print("{x}", .{value.ref});
+            } else {
+                @compileError("Unknown format string for Shader.Program: {" ++ fmt_str ++ "}");
+            }
+        }
+
+        pub fn hasUntaggedNested(self: *const @This()) bool {
+            var iter = self.stages.valueIterator();
+            while (iter.next()) |parts| {
+                const shader = parts.items[0];
+                if (shader.tag == null) return true;
+            }
+            return false;
+        }
+
         /// accepts `ResourceLocator.programs.nested` or the basename inside `ResourceLocator.programs.sub`
         pub fn getNested(
             self: *const @This(),
             name: storage.Locator.Name,
-        ) storage.Error!DirOrStored {
+        ) storage.Error!DirOrStored.Content {
             // try tagged // TODO something better than linear scan
             switch (name) {
                 .tagged => |tag| {
@@ -1972,13 +2087,12 @@ pub const Shader = struct {
                     while (iter.next()) |stage_parts| {
                         for (stage_parts.*.items, 0..) |*stage, part| {
                             if (stage.tag) |t| if (std.mem.eql(u8, t.name, tag)) {
-                                return DirOrStored{
-                                    .content = .{ .Nested = .{
+                                return DirOrStored.Content{
+                                    .Nested = .{
                                         .parent = self,
                                         .nested = stage,
                                         .part = part,
-                                    } },
-                                    .is_new = false,
+                                    },
                                 };
                             };
                         }
@@ -1986,13 +2100,12 @@ pub const Shader = struct {
                 },
                 .untagged => |combined| {
                     if (self.stages.get(combined.ref)) |stage| {
-                        return DirOrStored{
-                            .content = .{ .Nested = .{
+                        return DirOrStored.Content{
+                            .Nested = .{
                                 .parent = self,
                                 .nested = &stage.items[combined.part],
                                 .part = combined.part,
-                            } },
-                            .is_new = false,
+                            },
                         };
                     }
                 },
@@ -2267,6 +2380,7 @@ pub fn setSource(service: *Service, shader: *Shader.SourcePart, new: String, com
     }
     shader.source = new;
     shader.invalidate();
+    shader.dirty();
     if (compile)
         if (shader.compileHost) |c| {
             const parts = service.Shaders.all.get(shader.ref).?;
@@ -2344,17 +2458,15 @@ pub fn programDetachSource(service: *Service, ref: usize, source: usize) !void {
 pub fn untag(service: *Service, path: ResourceLocator) !void {
     switch (path) {
         .programs => |p| {
-            if (p.nested) |n| {
-                const nested = try service.Programs.getNestedByLocator(p.program orelse return storage.Error.InvalidPath, n.name);
-                nested.tag.?.remove();
+            if (p.nested.isRoot()) {
+                try service.Programs.untag(p.name.tagged, true);
             } else {
-                const program_path = p.program orelse return storage.Error.InvalidPath;
-                try service.Programs.untag(program_path.tagged, true);
+                const nested = try service.Programs.getNestedByLocator(p.name, p.nested.name);
+                nested.tag.?.remove();
             }
         },
         .sources => |s| {
-            const source_name = s orelse return storage.Error.InvalidPath;
-            try service.Shaders.untag(source_name.name.tagged, true);
+            try service.Shaders.untag(s.name.tagged, true);
         },
     }
 }

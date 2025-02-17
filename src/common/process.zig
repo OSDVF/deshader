@@ -22,26 +22,29 @@ pub fn waitNoFail(self: *std.process.Child) !std.process.Child.Term {
     return term;
 }
 
-pub fn wailNoFailReport(process: *std.process.Child) void {
-    switch (waitNoFail(process) catch |err| {
+pub fn wailNoFailReport(process: *std.process.Child) ?std.process.Child.Term {
+    if (waitNoFail(process)) |term| {
+        switch (term) {
+            .Exited => |status| {
+                if (status != 0) {
+                    log.err("Process {} exited with status {d}", .{ process.id, status });
+                }
+            },
+            .Signal => |signal| {
+                log.err("Process {} terminated with signal {d}", .{ process.id, signal });
+            },
+            .Stopped => |signal| {
+                log.err("Process {} stopped with signal {d}", .{ process.id, signal });
+            },
+            .Unknown => |result| {
+                log.err("Process {} terminated with unknown result {d}", .{ process.id, result });
+            },
+        }
+        return term;
+    } else |err| {
         log.err("Failed to wait for process {}: {}", .{ process.id, err });
-        return;
-    }) {
-        .Exited => |status| {
-            if (status != 0) {
-                log.err("Process {} exited with status {d}", .{ process.id, status });
-            }
-        },
-        .Signal => |signal| {
-            log.err("Process {} terminated with signal {d}", .{ process.id, signal });
-        },
-        .Stopped => |signal| {
-            log.err("Process {} stopped with signal {d}", .{ process.id, signal });
-        },
-        .Unknown => |result| {
-            log.err("Process {} terminated with unknown result {d}", .{ process.id, result });
-        },
     }
+    return null;
 }
 
 fn waitpid(pid: std.posix.pid_t, flags: u32) !std.posix.WaitPidResult {

@@ -323,10 +323,6 @@ pub const intercepted = blk: {
 };
 pub const all_exported_names = _known_gl_loaders ++ intercepted.names;
 
-fn withoutTrailingSlash(path: String) String {
-    return if (path[path.len - 1] == '/') path[0 .. path.len - 1] else path;
-}
-
 pub fn loadGlLib() !void {
     if (builtin.os.tag == .windows) { // Assuming loadGlLib is called before loadVkLib
         renamed_libs = std.ArrayList(String).init(common.allocator);
@@ -375,7 +371,7 @@ pub fn loadGlLib() !void {
         for (gl_lib.names) |lib_name| {
             // add '?' to mark this as not intercepted on POSIX systems
             const full_lib_name = if (builtin.os.tag == .windows) lib_name else try std.mem.concat(common.allocator, u8, if (specified_library_root) |root|
-                &.{ withoutTrailingSlash(root), std.fs.path.sep_str, std.fs.path.basename(lib_name), "?" }
+                &.{ common.noTrailingSlash(root), std.fs.path.sep_str, std.fs.path.basename(lib_name), "?" }
             else
                 &.{ lib_name, "?" });
             defer if (builtin.os.tag != .windows) common.allocator.free(full_lib_name);

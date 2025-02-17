@@ -138,6 +138,7 @@
                     "DESHADER_GUI": "hidden"
                 }
             },
+            "detail": "Must be terminated before another debugging session is started.",
             "isBackground": true,
             "problemMatcher": [
                 {

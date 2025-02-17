@@ -52,7 +52,7 @@ pub const State = struct {
 
         if (self.running) { // If the target is still running (termination was requested), kill it
             if (builtin.os.tag == .windows) {
-                _ = try self.target.kill();
+                _ = self.target.kill() catch {};
             } else {
                 std.posix.kill(-self.target.id, std.posix.SIG.TERM) catch |err| {
                     log.err("Failed to terminate target: {}", .{err});
@@ -126,7 +126,7 @@ pub const State = struct {
 
         var run_thread = try std.Thread.spawn(.{}, struct {
             fn r(st: *State) !void {
-                common.process.wailNoFailReport(&st.target);
+                _ = common.process.wailNoFailReport(&st.target);
 
                 if (st.run_seq.len > 0) {
                     st.view.@"return"(st.run_seq, .{

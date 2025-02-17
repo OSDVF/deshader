@@ -22,9 +22,11 @@ const log = common.log;
 
 const String = []const u8;
 const CString = [*:0]const u8;
+const ZString = [:0]const u8;
 
 const Shader = shaders.Shader;
 const root_name: String = "";
+const storage = @This();
 
 /// # Deshader virtual storage
 /// All detected shaders are stored here with their tags or refs.
@@ -47,12 +49,12 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime parted: bo
         pub const Self = @This();
         pub const StoredDir = Dir(Stored);
         pub const StoredTag = Tag(Stored);
-        // The capacity is 8 by default so it is no such a big deal to treat it as a hash-list hybrid
         /// Stores a list of untagged shader parts
         pub const StoredOrList = if (parted) std.ArrayListUnmanaged(Stored) else Stored;
         pub const StoredPtrOrArray = if (parted) []Stored else *Stored;
         pub const RefMap = std.AutoHashMapUnmanaged(usize, *StoredOrList);
         pub const isParted = parted;
+        pub const Locator = if (Nested == void) storage.Locator else storage.Locator.Nesting;
         /// programs / source parts mapped by tag
         tagged_root: StoredDir,
         /// programs / source parts list corresponding to the same shader. Mapped by ref
@@ -93,40 +95,55 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime parted: bo
             }
         };
 
+        const not_nested_only = struct {
+            pub fn list(self: *const Self, allocator: std.mem.Allocator, locator: Self.Locator, recursive: bool, physical: bool) ![]CString {
+                return self.listLocator(allocator, locator, recursive, physical, null);
+            }
+        };
+
         const nested_only = struct {
-            pub fn getNestedByLocator(self: *Self, locator: Locator.Name, nested: Locator.Name) (std.mem.Allocator.Error || Error)!*Nested {
-                switch ((try self.getByLocator(locator, nested)).content) {
-                    .Nested => |n| return n.nested,
+            pub fn getNestedByLocator(self: *Self, locator: storage.Locator.Name, nested: storage.Locator.Name) (std.mem.Allocator.Error || Error)!*Nested {
+                switch (try self.getByLocator(locator, nested)) {
+                    .Nested => |n| return n.nested orelse Error.DirExists,
                     else => return Error.DirExists,
                 }
             }
 
-            pub fn getByLocator(self: *Self, locator: Locator.Name, nested: ?Locator.Name) (std.mem.Allocator.Error || Error)!DirOrStored {
+            pub fn getByLocator(self: *Self, locator: storage.Locator.Name, nested: ?storage.Locator.Name) (std.mem.Allocator.Error || Error)!DirOrStored.Content {
                 if (Stored == void) {
                     @compileError("This storage stores void");
                 }
-                const ptr = blk: {
-                    switch (locator) {
-                        .untagged => |combined| {
-                            const var_or_list = self.all.get(combined.ref) orelse return Error.TargetNotFound;
-                            const untagged = if (parted) &var_or_list.items[combined.part] else var_or_list;
-                            if (nested) |n| {
-                                break :blk try untagged.getNested(n);
-                            } else {
-                                return Error.InvalidPath;
-                            }
-                        },
-                        .tagged => |tagged| {
-                            break :blk try self.makePathRecursive(tagged, false, false, false);
-                        },
-                    }
-                };
-                return ptr;
+                switch (locator) {
+                    .untagged => |combined| {
+                        const var_or_list = self.all.get(combined.ref) orelse return Error.TargetNotFound;
+                        const untagged = if (parted) &var_or_list.items[combined.part] else var_or_list;
+                        if (nested) |n| if (n.isRoot()) {
+                            return Error.InvalidPath;
+                        } else {
+                            return try untagged.getNested(n);
+                        } else return DirOrStored.Content{
+                            .Nested = .{
+                                .parent = var_or_list,
+                            },
+                        };
+                    },
+                    .tagged => |tagged| {
+                        return (try self.makePathRecursive(tagged, false, false, false)).content;
+                    },
+                }
+            }
+
+            pub fn nestedUntagged(allocator: std.mem.Allocator, path: String) !CString {
+                return try std.fs.path.joinZ(allocator, &.{ path, untagged_path[1..] ++ "/" });
+            }
+
+            pub fn list(self: *const Self, allocator: std.mem.Allocator, locator: Self.Locator, recursive: bool, physical: bool, nested_postfix: ?String) ![]CString {
+                return self.listLocator(allocator, locator, recursive, physical, nested_postfix);
             }
         };
 
         pub usingnamespace if (parted) parted_only else struct {};
-        pub usingnamespace if (Nested != void) nested_only else struct {};
+        pub usingnamespace if (Nested == void) not_nested_only else nested_only;
 
         fn getInnerType(comptime t: type) type {
             var result = t;
@@ -171,22 +188,10 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime parted: bo
                 self.pool.deinit();
         }
 
-        fn fileSetToSpan(set: *std.StringArrayHashMapUnmanaged(void), allocator: std.mem.Allocator) ![]CString {
-            const result = try allocator.alloc(CString, set.count());
-            for (set.keys(), 0..) |key, i| {
-                result[i] = try allocator.dupeZ(u8, key);
-                //self.allocator.free(key);
-            }
-            set.deinit(allocator);
-            return result;
-        }
-
         /// Lists existing tags and directories
         /// the returned paths are relative to `path`
-        pub fn listTagged(self: *const @This(), allocator: std.mem.Allocator, path: String, recursive: bool, physical: bool, postfix: ?String) ![]CString {
+        pub fn listDir(self: *const @This(), allocator: std.mem.Allocator, path: String, recursive: bool, physical: bool, nested_postfix: ?String) !std.ArrayListUnmanaged(CString) {
             log.debug("Listing path {?s} recursive:{?}", .{ path, recursive });
-
-            var result = std.StringArrayHashMapUnmanaged(void){};
 
             // print tagged
             var buffer: [std.fs.MAX_PATH_BYTES]u8 = undefined;
@@ -196,7 +201,7 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime parted: bo
             defer current_path.deinit();
 
             const DirStackItem = struct {
-                dir: *StoredDir,
+                content: DirOrStored.Content,
                 prev_len: usize, // parent directory path length
             };
             var stack = std.ArrayListUnmanaged(DirStackItem){};
@@ -205,64 +210,89 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime parted: bo
             // when no overwrite and create flags are set, we can safely assume that `self` won't be modified
             const root = try @constCast(self).makePathRecursive(path, false, false, true);
             //DFS print of directory tree
-            try stack.append(allocator, .{ .dir = root.content.Dir, .prev_len = 0 });
-            while (stack.popOrNull()) |current_dir| {
-                if (current_dir.dir.name.len > 0) {
-                    current_path.shrinkRetainingCapacity(current_dir.prev_len);
-                }
+            try stack.append(allocator, .{ .content = root.content, .prev_len = 0 });
 
-                if (stack.items.len > 1) {
-                    try current_path.appendSlice(current_dir.dir.name); // add current directory, but not the requested root
-                }
-                try current_path.append('/');
-
-                var subdirs = current_dir.dir.dirs.iterator();
-                while (subdirs.next()) |subdir| {
-                    if (recursive) {
-                        try stack.append(allocator, .{ .dir = subdir.value_ptr, .prev_len = current_path.items.len });
+            var result = std.ArrayListUnmanaged(CString){};
+            while (stack.popOrNull()) |current| {
+                if (Nested != void and current.content == .Nested) {
+                    const nested = current.content.Nested;
+                    if (nested.nested) |_| {
+                        return Error.DirectoryNotFound;
                     } else {
-                        // just print the directory
-                        _ = try result.getOrPut(allocator, try std.fmt.allocPrint(allocator, "{s}{s}/{s}", .{ current_path.items, subdir.key_ptr.*, postfix orelse "" }));
+                        // list the untagged root
+                        _ = try nested.parent.listNested(allocator, current_path.items, nested_postfix, true, &result);
                     }
-                }
-                var files = current_dir.dir.files.iterator();
-                while (files.next()) |file| {
-                    if (Nested == void) { // Normal non-nested storage
-                        var this_result = std.ArrayListUnmanaged(u8){};
-                        try this_result.appendSlice(allocator, current_path.items);
-                        try this_result.appendSlice(allocator, file.value_ptr.name);
-                        if (postfix) |p| {
-                            try this_result.appendSlice(allocator, p);
-                        }
-                        _ = try result.getOrPut(allocator, @ptrCast(try this_result.toOwnedSlice(allocator)));
-                    } else {
-                        const program_links: ?*Shader.Program = file.value_ptr.target; // programs should be always only one in a file (no symlinks)
-                        if (program_links) |program| {
-                            if (program.stages.count() == 0) {
-                                continue;
-                            }
-                            var shader_iter = program.listFiles();
-                            while (shader_iter.next()) |part| {
-                                if (part.source.tag) |_| {
-                                    _ = try result.getOrPut(allocator, try std.fmt.allocPrint(allocator, "{s}{s}/{name}{s}", .{ current_path.items, file.value_ptr.name, part, postfix orelse "" }));
-                                } else {
-                                    _ = try result.getOrPut(allocator, try std.fmt.allocPrint(allocator, "{s}{s}" ++ untagged_path ++ "/{name}{s}", .{ current_path.items, file.value_ptr.name, part, postfix orelse "" }));
-                                }
-                            }
+                } else if (current.content == .Dir) {
+                    const dir = current.content.Dir;
+                    if (dir.name.len > 0) {
+                        current_path.shrinkRetainingCapacity(current.prev_len);
+                    }
+
+                    if (stack.items.len > 1) {
+                        try current_path.appendSlice(dir.name); // add current directory, but not the requested root
+                    }
+                    try current_path.append('/');
+
+                    var files = dir.files.iterator();
+                    while (files.next()) |file| {
+                        try result.append(allocator, try std.mem.concatWithSentinel(allocator, u8, &.{ current_path.items, file.value_ptr.name, if (Nested == void) "" else "/" }, 0));
+                        if (Nested != void and recursive) {
+                            try stack.append(allocator, .{ .content = .{ .Tag = file.value_ptr }, .prev_len = current_path.items.len });
                         }
                     }
-                }
-                if (physical) {
-                    try current_dir.dir.listPhysical(allocator, &result, current_path.items, recursive);
+
+                    var subdirs = dir.dirs.iterator();
+                    while (subdirs.next()) |subdir| {
+                        if (recursive) {
+                            try stack.append(allocator, .{ .content = .{ .Dir = subdir.value_ptr }, .prev_len = current_path.items.len });
+                        } else {
+                            // just print the directory
+                            try result.append(allocator, try std.fmt.allocPrintZ(allocator, "{s}{s}/", .{ current_path.items, subdir.key_ptr.* }));
+                        }
+                    }
+
+                    if (physical) {
+                        try dir.listPhysical(allocator, &result, current_path.items, recursive);
+                    }
+                } else if (current.content == .Tag) {
+                    const tag = current.content.Tag;
+                    if (Nested == void) {
+                        return Error.DirectoryNotFound;
+                    }
+                    try current_path.appendSlice(tag.name);
+                    try current_path.append('/');
+                    const has_untagged = try tag.target.listNested(allocator, current_path.items, nested_postfix, if (recursive) null else false, &result);
+                    if (has_untagged) {
+                        // add untagged root
+                        try result.append(allocator, try nested_only.nestedUntagged(allocator, current_path.items));
+                    }
                 }
             }
 
-            return try fileSetToSpan(&result, allocator);
+            return result;
+        }
+
+        fn listLocator(self: *const Self, allocator: std.mem.Allocator, locator: Self.Locator, recursive: bool, physical: bool, nested_postfix: ?String) ![]CString {
+            switch (locator.name) {
+                .tagged => |path| {
+                    if (Nested != void and !locator.nested.isRoot()) {
+                        return Error.DirectoryNotFound;
+                    }
+                    var result = try self.listDir(allocator, if (Nested == void) path else locator.fullPath, recursive, physical, nested_postfix);
+                    if (path.len == 0 or std.mem.eql(u8, path, "/")) {
+                        try result.append(allocator, try common.allocator.dupeZ(u8, storage.untagged_path ++ "/")); // add the virtual /untagged/ directory
+                    }
+                    return try result.toOwnedSlice(allocator);
+                },
+                .untagged => |ref| {
+                    return self.listUntagged(allocator, ref.ref, nested_postfix, if (Nested == void) false else locator.nested.isUntagged());
+                },
+            }
         }
 
         /// If `ref_or_root == 0` this function lists all untagged objects.
         /// Otherwise it lists nested objects under this untagged resource.
-        pub fn listUntagged(self: *const @This(), allocator: std.mem.Allocator, ref_or_root: usize, nested_postfix: ?String) ![]CString {
+        pub fn listUntagged(self: *const @This(), allocator: std.mem.Allocator, ref_or_root: usize, nested_postfix: ?String, nested_untagged: ?bool) ![]CString {
             var result = try std.ArrayListUnmanaged(CString).initCapacity(allocator, self.all.count());
             if (ref_or_root == 0) {
                 var iter = self.all.iterator();
@@ -273,9 +303,9 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime parted: bo
                                 continue;
                             }
                             try result.append(allocator, try if (Nested == void) // Directories have trailing slash
-                                std.fmt.allocPrintZ(allocator, "{}{s}", .{ Locator.PartRef{ .ref = item.ref, .part = index }, item.toExtension() })
+                                std.fmt.allocPrintZ(allocator, "{}{s}", .{ storage.Locator.PartRef{ .ref = item.ref, .part = index }, item.toExtension() })
                             else
-                                std.fmt.allocPrintZ(allocator, "{}/", .{Locator.PartRef{ .ref = item.ref, .part = index }}));
+                                std.fmt.allocPrintZ(allocator, "{}/", .{storage.Locator.PartRef{ .ref = item.ref, .part = index }}));
                         }
                     } else {
                         const item = items.value_ptr.*;
@@ -283,37 +313,37 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime parted: bo
                             continue;
                         }
                         try result.append(allocator, try if (Nested == void) // Directories have trailing slash
-                            std.fmt.allocPrintZ(allocator, "{}{s}", .{ Locator.PartRef{ .ref = item.ref, .part = 0 }, item.toExtension() })
+                            std.fmt.allocPrintZ(allocator, "{}{s}", .{ storage.Locator.PartRef{ .ref = item.ref, .part = 0 }, item.toExtension() })
                         else
-                            std.fmt.allocPrintZ(allocator, "{}/", .{Locator.PartRef{ .ref = item.ref, .part = 0 }}));
+                            std.fmt.allocPrintZ(allocator, "{}/", .{storage.Locator.PartRef{ .ref = item.ref, .part = 0 }}));
                     }
                 }
             } else {
-                const item = self.all.get(ref_or_root) orelse return Error.TargetNotFound;
                 if (Nested != void) { //Specialization
-                    if (!parted or item.len > 0) {
-                        var iter2: shaders.Shader.Program.ShaderIterator = (if (parted) item.items[0] else item).listFiles();
-                        while (iter2.next()) |shader| {
-                            // Nested files should be always symlinks
-                            if (shader.source.tag) |_| {
-                                try result.append(allocator, try std.fmt.allocPrintZ(allocator, "{name}{s}", .{ shader, nested_postfix orelse "" }));
-                            } else {
-                                try result.append(allocator, try std.fmt.allocPrintZ(allocator, untagged_path[1..] ++ "/{name}{s}", .{ shader, nested_postfix orelse "" }));
-                            }
+                    const stored_parts = self.all.get(ref_or_root) orelse return Error.TargetNotFound;
+                    if (!parted or stored_parts.items.len > 0) {
+                        const stored = if (parted) stored_parts.items[0] else stored_parts;
+                        const has_untagged = try stored.listNested(allocator, "", nested_postfix, nested_untagged, &result);
+                        if (has_untagged and nested_untagged != null and !nested_untagged.?) {
+                            try result.append(allocator, try nested_only.nestedUntagged(allocator, ""));
                         }
                     }
                 } else {
-                    for (item.items, 0..) |part, i| try result.append(allocator, try std.fmt.allocPrintZ(allocator, "{}{s}{s}", .{ Locator.PartRef{ .ref = ref_or_root, .part = i }, part.toExtension(), nested_postfix orelse "" }));
+                    return error.DirectoryNotFound;
                 }
             }
             return result.toOwnedSlice(allocator);
         }
 
-        pub fn renameByLocator(self: *Self, locator: Locator.Name, to: String) !DirOrStored.Content {
+        pub fn renameByLocator(self: *Self, locator: storage.Locator.Name, to: String) !DirOrStored.Content {
             return switch (locator) {
                 .tagged => |path| try self.renamePath(path, to),
                 .untagged => |ref| .{ .Tag = try self.assignTag(ref.ref, ref.part, to, .Error) },
             };
+        }
+
+        fn protectedError(path: String) void {
+            log.err("InvalidPath: Cannot rename {s}. It is protected.", .{path});
         }
 
         /// Rename a directory or a tagged file
@@ -325,7 +355,11 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime parted: bo
             const rename_only_base = common.nullishEq(std.fs.path.dirnamePosix(from), target_dirname);
             if (Nested != void and existing.content == .Nested) { // renaming a shader under program can be done only on basename basis
                 if (rename_only_base) {
-                    try existing.content.Nested.nested.tag.?.rename(target_basename);
+                    const n = existing.content.Nested.nested orelse {
+                        protectedError(from);
+                        return Error.InvalidPath;
+                    };
+                    try n.tag.?.rename(target_basename);
                     return existing.content;
                 } else {
                     return Error.InvalidPath;
@@ -348,9 +382,10 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime parted: bo
                         self.allocator.free(old.value.name);
 
                         const target_parent = try self.makePathRecursive(target_dirname orelse "", true, false, true);
-                        const new = try target_parent.content.Dir.dirs.getOrPut(self.allocator, target_basename);
+                        const target_dupe = try self.allocator.dupe(u8, target_basename);
+                        const new = try target_parent.content.Dir.dirs.getOrPut(self.allocator, target_dupe);
                         new.value_ptr.* = old.value;
-                        new.value_ptr.name = try self.allocator.dupe(u8, target_basename);
+                        new.value_ptr.name = target_dupe;
                         return .{ .Dir = new.value_ptr };
                     }
                 },
@@ -431,7 +466,10 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime parted: bo
         pub fn untag(self: *Self, path: String, recursive: bool) (std.mem.Allocator.Error || Error)!void {
             const ptr = try self.makePathRecursive(path, false, false, false); // also checks for existence
             if (Nested != void and ptr.content == .Nested) {
-                ptr.content.Nested.nested.tag.?.remove();
+                (ptr.content.Nested.nested orelse {
+                    protectedError(path);
+                    return Error.InvalidPath;
+                }).tag.?.remove();
             } else switch (ptr.content) {
                 .Dir => |content_dir| {
                     if (!recursive) {
@@ -512,7 +550,7 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime parted: bo
         }
 
         /// NOTE: incosistency: if you want to stat a shader under a program, use 'tagged' locator with the untagged source 'path'
-        pub fn stat(self: *@This(), locator: Locator.Name) !StatPayload {
+        pub fn stat(self: *@This(), locator: storage.Locator.Name) !StatPayload {
             if (Stored == void) {
                 @compileError("Stat is not possible for void Storages");
             }
@@ -576,8 +614,9 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime parted: bo
                 Tag: *Tag(Stored),
                 Nested: struct {
                     parent: *const Stored,
-                    nested: *Nested,
-                    part: usize,
+                    /// `null` => Nested untagged root
+                    nested: ?*Nested = null,
+                    part: usize = 0,
                 },
                 Dir: *Dir(Stored),
             } else union(enum) {
@@ -588,7 +627,7 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime parted: bo
             content: Content,
         };
 
-        pub fn getStoredByLocator(self: *@This(), locator: Locator.Name) !*Stored {
+        pub fn getStoredByLocator(self: *@This(), locator: storage.Locator.Name) !*Stored {
             return switch (locator) {
                 .tagged => |path| try self.getStoredByPath(path),
                 .untagged => |combined| if (parted) if (self.all.get(combined.ref)) |s| &s.items[combined.part] else Error.TargetNotFound else if (self.all.getPtr(combined.ref)) |s| s else Error.TargetNotFound,
@@ -698,26 +737,31 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime parted: bo
                 dir.stat.access();
                 if (Nested != void and in_dir.subpath.len > 0) {
                     existing_file.value_ptr.target.stat.access();
-                    return existing_file.value_ptr.target.getNested((try Locator.parse(in_dir.subpath) orelse return Error.InvalidPath).name);
+                    const nested_locator = try storage.Locator.parse(in_dir.subpath);
+                    return .{ .content = if (nested_locator.file()) |n|
+                        try existing_file.value_ptr.target.getNested(n.name)
+                    else
+                        .{ .Nested = .{ .parent = existing_file.value_ptr.target } }, .is_new = false };
                 }
                 if (Nested == void or in_dir.subpath.len == 0) {
                     if (overwrite) {
                         if (create_as_dir) {
                             return Error.TagExists;
                         }
-                        dir.stat.touch();
+                        dir.touch();
 
                         // Remove old / overwrite
                         const old_content = existing_file.value_ptr.target;
-                        old_content.stat.touch();
+                        old_content.dirty();
                         log.debug("Overwriting tag {s} from source {x} with {s}", .{ existing_file.value_ptr.name, old_content.ref, name });
                         // remove existing tag
                         existing_file.value_ptr.remove();
                         // overwrite tag and content
-                        const new_file = try dir.files.getOrPut(dir.allocator, name);
+                        const name_dupe = try self.allocator.dupe(u8, name);
+                        const new_file = try dir.files.getOrPut(dir.allocator, name_dupe);
                         std.debug.assert(new_file.found_existing == false);
                         new_file.value_ptr.* = StoredTag{
-                            .name = try self.allocator.dupe(u8, name),
+                            .name = name_dupe,
                             .parent = dir,
                             .target = if (Stored == void) {} else old_content,
                         };
@@ -756,11 +800,12 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime parted: bo
                     }
 
                     log.debug("Making new tag file {s}", .{name});
-                    const new_file = try dir.files.getOrPut(dir.allocator, name);
+                    const name_dupe = try self.allocator.dupe(u8, name);
+                    const new_file = try dir.files.getOrPut(dir.allocator, name_dupe);
                     std.debug.assert(new_file.found_existing == false);
                     dir.stat.touch();
                     new_file.value_ptr.* = StoredTag{
-                        .name = try self.allocator.dupe(u8, name),
+                        .name = name_dupe,
                         .parent = dir,
                         .target = if (Stored == void) {} else undefined,
                     };
@@ -818,6 +863,11 @@ pub const Stat = struct {
     pub fn touch(self: *@This()) void {
         const time = std.time.milliTimestamp();
         self.accessed = time;
+    }
+
+    pub fn dirty(self: *@This()) void {
+        const time = std.time.milliTimestamp();
+        self.accessed = time;
         self.modified = time;
     }
 };
@@ -863,11 +913,12 @@ pub fn Dir(comptime Taggable: type) type {
         physical: ?String = null,
 
         fn createIn(allocator: std.mem.Allocator, parent: *@This(), name: String) !*@This() {
-            const result = try parent.dirs.getOrPut(parent.allocator, name);
+            const name_dupe = try allocator.dupe(u8, name);
+            const result = try parent.dirs.getOrPut(parent.allocator, name_dupe);
             parent.stat.touch();
             result.value_ptr.* = @This(){
                 .allocator = allocator,
-                .name = try allocator.dupe(u8, name),
+                .name = name_dupe,
                 .parent = parent,
                 .stat = Stat.now(),
             };
@@ -889,9 +940,12 @@ pub fn Dir(comptime Taggable: type) type {
             self.allocator.free(self.name);
         }
 
-        pub fn listPhysical(self: *@This(), allocator: std.mem.Allocator, result: *std.StringArrayHashMapUnmanaged(void), subpath: String, recursive: bool) !void {
+        pub fn listPhysical(self: *@This(), allocator: std.mem.Allocator, result: *std.ArrayListUnmanaged(CString), subpath: String, recursive: bool) !void {
             if (Taggable != void)
                 self.stat.accessed = std.time.milliTimestamp();
+
+            var already = std.StringHashMapUnmanaged(void){};
+            defer already.deinit(allocator);
 
             if (self.physical) |path| {
                 var physical_dir = try std.fs.openDirAbsolute(path, .{});
@@ -908,21 +962,25 @@ pub fn Dir(comptime Taggable: type) type {
                     defer current.close();
                     var current_it = current.iterate();
                     while (try current_it.next()) |dir_entry| {
-                        const item_path: ?String = blk: {
+                        const item_path: ?ZString = blk: {
                             switch (dir_entry.kind) {
                                 .directory => {
                                     if (recursive)
                                         try stack.append(allocator, try current.openDir(dir_entry.name, .{}));
-                                    break :blk try std.mem.concat(allocator, u8, &.{ current_path.items, "/", dir_entry.name, "/" });
+                                    break :blk try std.mem.concatWithSentinel(allocator, u8, &.{ current_path.items, "/", dir_entry.name, "/" }, 0);
                                 },
                                 .file, .sym_link, .named_pipe, .character_device, .block_device, .unknown => {
-                                    break :blk try std.mem.concat(allocator, u8, &.{ current_path.items, "/", dir_entry.name });
+                                    break :blk try std.mem.concatWithSentinel(allocator, u8, &.{ current_path.items, "/", dir_entry.name }, 0);
                                 },
                                 else => break :blk null,
                             }
                         };
                         if (item_path) |p| {
-                            _ = try result.getOrPut(allocator, p); // effectivelly means 'put' for set-like hashmaps
+                            const has = try already.getOrPut(allocator, p);
+                            if (has.found_existing) {
+                                continue;
+                            }
+                            try result.append(allocator, p.ptr);
                         }
                     }
                 }
@@ -938,16 +996,27 @@ pub fn Dir(comptime Taggable: type) type {
 
         pub fn rename(self: *@This(), new_name: String) !void {
             if (self.parent) |p| {
+                const new_name_dupe = try p.allocator.dupe(u8, new_name);
                 const old_name = self.name;
-                const result = try p.dirs.getOrPut(p.allocator, new_name);
+                const result = try p.dirs.getOrPut(p.allocator, new_name_dupe);
                 result.value_ptr.* = self.*;
                 self.allocator.free(self.name);
-                result.value_ptr.name = try p.allocator.dupe(u8, new_name);
+                result.value_ptr.name = new_name_dupe;
                 // TODO: all refs freed?
                 std.debug.assert(p.dirs.remove(old_name));
             } else {
                 return error.InvalidPath; // root cannot be renamed (root is the only dir without parent)
             }
+        }
+
+        pub fn touch(self: *@This()) void {
+            self.stat.touch();
+            if (self.parent) |p| p.touch();
+        }
+
+        pub fn dirty(self: *@This()) void {
+            self.stat.dirty();
+            if (self.parent) |p| p.dirty();
         }
     };
 }
@@ -966,9 +1035,11 @@ pub fn Tag(comptime Taggable: type) type {
         backlinks: std.ArrayListUnmanaged(*Tag(Taggable)) = .{},
 
         pub fn deinit(self: *@This()) void {
-            self.removeAllThatBacklinks();
-            self.backlinks.deinit(self.parent.allocator);
-            self.parent.allocator.free(self.name);
+            const parent = self.parent;
+            const name = self.name;
+            self.backlinks.deinit(parent.allocator);
+            std.debug.assert(parent.files.remove(name));
+            parent.allocator.free(name);
         }
 
         pub fn fullPathAlloc(self: *@This(), allocator: std.mem.Allocator, comptime sentinel: bool) !if (sentinel) [:0]const u8 else String {
@@ -1003,7 +1074,7 @@ pub fn Tag(comptime Taggable: type) type {
 
         /// Remove a record from the tagged storage
         pub fn remove(self: *@This()) void {
-            std.debug.assert(self.parent.files.remove(self.name));
+            self.removeAllThatBacklinks();
             self.deinit();
         }
 
@@ -1022,14 +1093,15 @@ pub fn Tag(comptime Taggable: type) type {
         }
 
         pub fn rename(self: *@This(), new_name: String) !void {
+            const new_name_dupe = try self.parent.allocator.dupe(u8, new_name);
             const old_name = self.name;
-            const result = try self.parent.files.getOrPut(self.parent.allocator, new_name);
-            result.value_ptr.* = self.*; // TODO: may memory corruption
-            self.parent.allocator.free(self.name);
-            result.value_ptr.name = try self.parent.allocator.dupe(u8, new_name);
+            const result = try self.parent.files.getOrPut(self.parent.allocator, new_name_dupe);
+            result.value_ptr.* = self.*;
+            result.value_ptr.name = new_name_dupe;
 
             self.removeAllThatBacklinks(); // TODO: want to keep the backlinks?
-            std.debug.assert(self.parent.files.remove(old_name));
+            std.debug.assert(self.parent.files.remove(self.name));
+            result.value_ptr.parent.allocator.free(old_name);
         }
     };
 }
@@ -1043,29 +1115,103 @@ pub const Locator = struct {
     const INSTRUMENTED_EXT = ".instrumented";
 
     pub const Name = union(enum) {
+        /// If zero length, it means tagged root
         tagged: String,
         untagged: PartRef,
 
+        pub const untagged_root = Name{ .untagged = PartRef.root };
+        pub const tagged_root = Name{ .tagged = "" };
+
+        pub fn isRoot(self: @This()) bool {
+            switch (self) {
+                .tagged => |s| {
+                    return s.len == 0 or s[0] == '/';
+                },
+                .untagged => |ref| {
+                    return ref.isRoot();
+                },
+            }
+        }
+
+        pub fn isUntaggedRoot(self: @This()) bool {
+            switch (self) {
+                .untagged => |ref| {
+                    return ref.isRoot();
+                },
+                else => {},
+            }
+            return false;
+        }
+
+        /// Returns `null` if the `Name` represents a (un)tagged root instead of a file
+        pub fn file(name: @This()) ?@This() {
+            return if (name.isRoot()) null else name;
+        }
+
         /// `combined` is a path under /untagged
-        pub fn parseUntagged(combined: String) !Name {
+        pub fn parseUntagged(path: String) !Name {
+            var combined = path;
+            if (path.len > 0 and path[0] == '/') {
+                // remove leading slash
+                combined = path[1..];
+            }
+            if (combined.len == 0) {
+                return Name{ .untagged = PartRef.root };
+            }
             return Name{ .untagged = try PartRef.parse(combined) };
+        }
+
+        pub fn parse(path: String) !Name {
+            if (std.mem.startsWith(u8, path, untagged_path)) {
+                if (path.len == untagged_path.len or (path[untagged_path.len] == '/' and path.len == untagged_path.len + 1)) {
+                    return Name{ .untagged = PartRef.root };
+                }
+                const last_dot = std.mem.lastIndexOfScalar(u8, path, '.') orelse path.len;
+                return try Name.parseUntagged(path[untagged_path.len + 1 .. last_dot]);
+            } else {
+                return Name{ .tagged = path };
+            }
+        }
+
+        pub fn toTagged(self: @This(), name: String) !@This() {
+            return switch (self) {
+                .tagged => |_| Error.AlreadyTagged,
+                .untagged => |_| {
+                    return @This(){
+                        .tagged = name,
+                    };
+                },
+            };
+        }
+
+        pub fn format(self: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+            switch (self) {
+                .tagged => |s| {
+                    try writer.writeAll(s);
+                },
+                .untagged => |ref| {
+                    try writer.print(untagged_path[1..] ++ "/{}", .{ref});
+                },
+            }
         }
     };
 
     pub const PartRef = struct {
         const SEPARATOR = '_';
         // TODO Vulkan uses 64bit handles even on 32bit platforms
+        /// If zero, it means untagged root
         ref: usize,
         part: usize,
 
+        pub const root = @This(){ .ref = 0, .part = 0 };
         pub fn isRoot(self: @This()) bool {
             return self.part == 0 and self.ref == 0;
         }
         pub fn parse(combined: String) Error!PartRef {
             var parts = std.mem.splitScalar(u8, combined, SEPARATOR);
             return PartRef{
-                .ref = try std.fmt.parseUnsigned(usize, parts.next() orelse return Error.InvalidPath, 16),
-                .part = try std.fmt.parseUnsigned(usize, parts.next() orelse return Error.InvalidPath, 16),
+                .ref = std.fmt.parseUnsigned(usize, parts.next() orelse return Error.InvalidPath, 16) catch |e| return if (e == std.fmt.ParseIntError.InvalidCharacter) Error.InvalidPath else e,
+                .part = std.fmt.parseUnsigned(usize, parts.next() orelse return Error.InvalidPath, 16) catch |e| return if (e == std.fmt.ParseIntError.InvalidCharacter) Error.InvalidPath else e,
             };
         }
 
@@ -1074,8 +1220,92 @@ pub const Locator = struct {
         }
     };
 
-    /// returns null for untagged root
-    pub fn parse(subpath: String) !?Locator {
+    pub const Nesting = struct {
+        /// (un)tagged program / tagged dir / (un)tagged nested under tagged program / (un) tagged program roots.
+        name: Name,
+        /// Sources nested under (un)tagged program (or their roots).
+        nested: Locator,
+        /// Full path, including both the name and optional nested resource.
+        fullPath: String,
+
+        pub const untagged_root = @This(){ .name = Name.untagged_root, .nested = Locator.untagged_root };
+        pub const tagged_root = @This(){ .name = Name.tagged_root, .nested = Locator.tagged_root };
+
+        pub fn parse(path: String) !@This() {
+            var without_instr = path;
+            var instr = false;
+            if (std.ascii.eqlIgnoreCase(std.fs.path.extension(path), INSTRUMENTED_EXT)) {
+                without_instr = path[0 .. path.len - INSTRUMENTED_EXT.len];
+                instr = true;
+            }
+
+            if (std.mem.lastIndexOf(u8, without_instr, untagged_path)) |nested_untagged| {
+                if (nested_untagged != 0) {
+                    // Nested untagged under (un)tagged
+                    return @This(){
+                        .fullPath = without_instr,
+                        .name = try Name.parse(without_instr[0..nested_untagged]),
+                        .nested = Locator{
+                            .instrumented = instr,
+                            .name = try Name.parseUntagged(without_instr[nested_untagged + untagged_path.len .. std.mem.lastIndexOfScalar(
+                                u8,
+                                without_instr,
+                                '.',
+                            ) orelse without_instr.len]),
+                        },
+                    };
+                }
+            }
+
+            const last_slash = if (std.mem.lastIndexOfScalar(u8, without_instr, '/')) |last_slash| blk: {
+                if (last_slash < without_instr.len - 1) { // Not the very last character
+                    // Nested tagged under (un) tagged
+                    return @This(){
+                        .fullPath = without_instr,
+                        .name = try Name.parse(without_instr[0..last_slash]),
+                        .nested = Locator{
+                            .instrumented = instr,
+                            .name = try Name.parse(without_instr[last_slash + 1 ..]),
+                        },
+                    };
+                }
+                break :blk last_slash;
+            } else null;
+
+            return @This(){
+                .fullPath = without_instr,
+                .name = try Name.parse(without_instr[0 .. last_slash orelse without_instr.len]),
+                .nested = Locator{
+                    .instrumented = instr,
+                    .name = try Name.parse(without_instr[last_slash orelse (without_instr.len) ..]), // tagged nested (or root)
+                },
+            };
+        }
+
+        pub fn toTagged(self: @This(), allocator: std.mem.Allocator, name: String) !@This() {
+            return if (self.nested.isRoot())
+                @This(){
+                    .name = try self.name.toTagged(name),
+                    .nested = Locator.tagged_root,
+                    .fullPath = name,
+                }
+            else
+                @This(){
+                    .name = self.name,
+                    .nested = try self.nested.toTagged(name),
+                    .fullPath = try std.fmt.allocPrint(allocator, "{}", .{self}),
+                };
+        }
+
+        pub fn format(self: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+            try writer.print("{}/{}", .{ self.name, self.nested });
+        }
+    };
+
+    pub const untagged_root = Locator{ .name = Name.untagged_root };
+    pub const tagged_root = Locator{ .name = Name.tagged_root };
+
+    pub fn parse(subpath: String) !Locator {
         var without_instr = subpath;
         var instr = false;
         if (std.ascii.eqlIgnoreCase(std.fs.path.extension(subpath), INSTRUMENTED_EXT)) {
@@ -1083,17 +1313,40 @@ pub const Locator = struct {
             instr = true;
         }
 
-        const n = name: {
-            if (std.mem.startsWith(u8, without_instr, untagged_path)) {
-                if (without_instr.len == untagged_path.len or (without_instr[untagged_path.len] == '/' and without_instr.len == untagged_path.len + 1)) {
-                    return null; //root
-                }
-                const last_dot = std.mem.lastIndexOfScalar(u8, without_instr, '.') orelse without_instr.len;
-                break :name try Name.parseUntagged(subpath[untagged_path.len + 1 .. last_dot]);
-            } else {
-                break :name Name{ .tagged = subpath };
-            }
+        return Locator{
+            .instrumented = instr,
+            .name = try Name.parse(without_instr),
         };
-        return Locator{ .instrumented = instr, .name = n };
+    }
+
+    /// Returns `null` if the `Locator` represents (un)tagged root instead of a file resource
+    pub fn file(locator: @This()) ?@This() {
+        return if (locator.name.isRoot()) null else locator;
+    }
+
+    pub fn format(self: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+        try writer.print("{}", .{self.name});
+        if (self.instrumented) {
+            try writer.writeAll(INSTRUMENTED_EXT);
+        }
+    }
+
+    pub fn isUntaggedRoot(locator: @This()) bool {
+        return locator.name.isUntaggedRoot();
+    }
+
+    pub fn isRoot(locator: @This()) bool {
+        return locator.name.isRoot();
+    }
+
+    pub fn isUntagged(locator: @This()) bool {
+        return locator.name == .untagged;
+    }
+
+    pub fn toTagged(self: @This(), name: String) !@This() {
+        return @This(){
+            .instrumented = self.instrumented,
+            .name = try self.name.toTagged(name),
+        };
     }
 };

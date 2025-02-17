@@ -11,8 +11,11 @@
             "env": {
                 "DESHADER_LIB": "zig-out/lib/libdeshader.so",
                 "DESHADER_PROCESS": "glfw",
-                "LD_PRELOAD": "${workspaceRoot}/zig-out/lib/libdeshader.so",
             },
+            "autorun": [
+                "set environment LD_PRELOAD ${workspaceRoot}/zig-out/lib/libdeshader.so",
+                "set environment DYLD_INSERT_LIBRARIES ${workspaceRoot}/zig-out/lib/libdeshader.dylib",
+            ]
         },
         {
             "name": "GDB - Launcher GLFW Hidden",

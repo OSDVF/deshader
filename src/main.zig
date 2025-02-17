@@ -53,26 +53,26 @@ pub export fn deshaderFreeList(list: [*]const [*:0]const u8, count: usize) void 
 }
 
 pub export fn deshaderListPrograms(path: [*:0]const u8, recursive: bool, count: *usize, physical: bool, postfix: ?[*:0]const u8) ?[*]const [*:0]const u8 {
-    const result = gl_shaders.current.Programs.listTagged(common.allocator, std.mem.span(path), recursive, physical, if (postfix) |n| std.mem.span(n) else null) catch return null;
-    count.* = result.len;
-    return result.ptr;
+    var result = gl_shaders.current.Programs.listDir(common.allocator, std.mem.span(path), recursive, physical, if (postfix) |n| std.mem.span(n) else null) catch return null;
+    count.* = result.items.len;
+    return (result.toOwnedSlice(common.allocator) catch return null).ptr;
 }
 
 pub export fn deshaderListSources(path: [*:0]const u8, recursive: bool, count: *usize, physical: bool, postfix: ?[*:0]const u8) ?[*]const [*:0]const u8 {
-    const result = gl_shaders.current.Shaders.listTagged(common.allocator, std.mem.span(path), recursive, physical, if (postfix) |n| std.mem.span(n) else null) catch return null;
-    count.* = result.len;
-    return result.ptr;
+    var result = gl_shaders.current.Shaders.listDir(common.allocator, std.mem.span(path), recursive, physical, if (postfix) |n| std.mem.span(n) else null) catch return null;
+    count.* = result.items.len;
+    return (result.toOwnedSlice(common.allocator) catch return null).ptr;
 }
 
 /// If `program` == 0, then list all programs. Else list shader stages of a particular program
 pub export fn deshaderListProgramsUntagged(count: *usize, ref_or_root: usize, nested_postfix: ?[*:0]const u8) ?[*]const [*:0]const u8 {
-    const result = gl_shaders.current.Programs.listUntagged(common.allocator, ref_or_root, if (nested_postfix) |n| std.mem.span(n) else null) catch return null;
+    const result = gl_shaders.current.Programs.listUntagged(common.allocator, ref_or_root, if (nested_postfix) |n| std.mem.span(n) else null, null) catch return null;
     count.* = result.len;
     return @ptrCast(result);
 }
 
 pub export fn deshaderListSourcesUntagged(count: *usize, ref_or_root: usize, nested_postfix: ?[*:0]const u8) ?[*]const [*:0]const u8 {
-    const result = gl_shaders.current.Shaders.listUntagged(common.allocator, ref_or_root, if (nested_postfix) |n| std.mem.span(n) else null) catch return null;
+    const result = gl_shaders.current.Shaders.listUntagged(common.allocator, ref_or_root, if (nested_postfix) |n| std.mem.span(n) else null, null) catch return null;
     count.* = result.len;
     return @ptrCast(result);
 }

@@ -1,13 +1,28 @@
 # Debugging Shaders using GUI
 
-## From VSCode
-
-
 ## Launcher Tool
-When Launcher is started without arguments, it will show a GUI for starting an application with Deshader injected.
+When Launcher is started without arguments, it will show Deshader Editor (based on VSCode), which can be used to connect to a running Deshader-injected program.
 ```sh
-./zig-out/bin/deshader-run
+deshader-run
+```
+To inject Deshader into a program, do
+```sh
+deshader-run ./your-program
+```
+or use the (Renderdoc-like) GUI helper to select your application and show the Editor window automatically
+```sh
+deshader-run -g
 ```
 
-### Integrated Editor
-VSCode GUI can be shown by setting the `DESHADER_GUI` environment variable to `1` before running the application, or by sending the `editorWindowShow` command to the [command server](Commands.md). Alternatively `editorServerStart` can be used to start the GUI server and open the editor in a web browser (default port is `8080`).
+### Launcher Features
+- configuring Deshader Library before injecting into a program
+- embedded Deshader Editor (VSCode)
+- daemon mode (for viewing Deshader Editor in a web browser)
+
+Refer to `deshader-run --help` for the most precise information.
+
+
+## Using VSCode and the extension
+You can install `deshader-vscode` extension to any VSCode instance to use Deshader features. 
+
+The extension uses Deshader Launcher or at least the Deshader Library internally, so you need to have it installed. You can install them system-wide or specify the path to them in the extension settings (`deshader.launcher` and `deshader.path`).

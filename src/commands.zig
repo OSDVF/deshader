@@ -291,7 +291,14 @@ pub const MutliListener = struct {
                         writer = try context.response.writer();
                     }
 
-                    const result = try std.fmt.allocPrint(provider.allocator, "Error while executing command {s}: {} at\n{?}", .{ name, err, if (setting_vars.stackTraces) @errorReturnTrace() else &common.null_trace });
+                    const fmt = "Error while executing command {s}: {} at\n{?}";
+                    const stack = if (setting_vars.stackTraces) blk: {
+                        const s = @errorReturnTrace();
+                        DeshaderLog.err(fmt, .{ name, err, s });
+                        break :blk s;
+                    } else &common.null_trace;
+
+                    const result = try std.fmt.allocPrint(provider.allocator, fmt, .{ name, err, stack });
                     defer provider.allocator.free(result);
                     DeshaderLog.err("{s}", .{result});
                     try writer.writeAll(result);
@@ -378,17 +385,17 @@ pub const MutliListener = struct {
                         try self.writeAll(.text, &.{ accepted, command_echo, "\n" });
                     },
                     String => {
-                        try self.writeAll(.text, &.{ accepted, command_echo, "\n", result, "\n" });
+                        try self.writeAll(if (std.unicode.utf8ValidateSlice(result)) .text else .binary, &.{ accepted, command_echo, "\n", result, "\n" });
                     },
                     []const CString => {
                         const flattened = try common.joinInnerZ(common.allocator, "\n", result);
                         defer common.allocator.free(flattened);
-                        try self.writeAll(.text, &.{ accepted, command_echo, "\n", flattened, "\n" });
+                        try self.writeAll(if (std.unicode.utf8ValidateSlice(flattened)) .text else .binary, &.{ accepted, command_echo, "\n", flattened, "\n" });
                     },
                     []const String => {
                         const flattened = try std.mem.join(common.allocator, "\n", result);
                         defer common.allocator.free(flattened);
-                        try self.writeAll(.text, &.{ accepted, command_echo, "\n", flattened, "\n" });
+                        try self.writeAll(if (std.unicode.utf8ValidateSlice(flattened)) .text else .binary, &.{ accepted, command_echo, "\n", flattened, "\n" });
                     },
                     serve.HttpStatusCode => {
                         try self.writeAll(.text, &.{
@@ -672,11 +679,11 @@ pub const MutliListener = struct {
                         if (context.resource) |r| {
                             switch (r) {
                                 .programs => |locator| {
-                                    const shader = try context.service.Programs.getNestedByLocator(locator.program orelse return error.TargetNotFound, (locator.nested orelse return error.TargetNotFound).name);
+                                    const shader = try context.service.Programs.getNestedByLocator(locator.name, locator.nested.name);
                                     return shader.clearBreakpoints();
                                 },
                                 .sources => |locator| {
-                                    const shader = try context.service.Shaders.getStoredByLocator((locator orelse return error.TargetNotFound).name);
+                                    const shader = try context.service.Shaders.getStoredByLocator(locator.name);
                                     return shader.clearBreakpoints();
                                 },
                             }
@@ -819,11 +826,11 @@ pub const MutliListener = struct {
                 if (context.resource) |r| {
                     switch (r) {
                         .programs => |locator| {
-                            const shader = try context.service.Programs.getNestedByLocator(locator.program orelse return error.TargetNotFound, (locator.nested orelse return error.TargetNotFound).name);
+                            const shader = try context.service.Programs.getNestedByLocator(locator.name, locator.nested.name);
                             positions = (try shader.possibleSteps()).items(.pos);
                         },
                         .sources => |locator| {
-                            const shader = try context.service.Shaders.getStoredByLocator((locator orelse return error.TargetNotFound).name);
+                            const shader = try context.service.Shaders.getStoredByLocator(locator.name);
                             positions = (try shader.*.possibleSteps()).items(.pos);
                         },
                     }
@@ -918,7 +925,7 @@ pub const MutliListener = struct {
                         if (!remaining.remove(id)) { // this is a new breakpoint
                             if (i_state) |st| {
                                 st.dirty = true;
-                                shader.dirty = true;
+                                shader.i_dirty = true;
                             }
                         }
                     }
@@ -930,14 +937,14 @@ pub const MutliListener = struct {
                     try shader.removeBreakpoint(i.*);
                     if (i_state) |st| {
                         st.dirty = true;
-                        shader.dirty = true;
+                        shader.i_dirty = true;
                     }
                 }
             } else {
                 shader.clearBreakpoints();
                 if (i_state) |st| {
                     st.dirty = true;
-                    shader.dirty = true;
+                    shader.i_dirty = true;
                 }
             }
 
@@ -1039,21 +1046,6 @@ pub const MutliListener = struct {
         }
 
         const ListArgs = struct { path: String, recursive: ?bool, physical: ?bool };
-        fn listStorage(stor: anytype, locator: ?storage.Locator.Name, args: ListArgs, postfix: ?String) ![]CString {
-            switch (locator orelse storage.Locator.Name{ .untagged = .{ .ref = 0, .part = 0 } }) {
-                .tagged => |path| {
-                    var result = try stor.listTagged(common.allocator, path, args.recursive orelse false, args.physical orelse true, postfix);
-                    if (path.len == 0 or std.mem.eql(u8, path, "/")) {
-                        result = try common.allocator.realloc(result, result.len + 1);
-                        result[result.len - 1] = try common.allocator.dupeZ(u8, storage.untagged_path ++ "/"); // add the virtual /untagged/ directory
-                    }
-                    return result;
-                },
-                .untagged => |ref| {
-                    return try stor.listUntagged(common.allocator, ref.ref, ">");
-                },
-            }
-        }
 
         //
         // Virtual filesystem commands
@@ -1066,8 +1058,8 @@ pub const MutliListener = struct {
             if (try shaders.ServiceLocator.parse(in_args.path)) |context| {
                 if (context.resource) |res| {
                     const lines = try switch (res) {
-                        .programs => |locator| listStorage(&context.service.Programs, locator.program, in_args, ">"), //indicate that sources under programs are "symlinks"
-                        .sources => |locator| listStorage(&context.service.Shaders, if (locator) |l| l.name else null, in_args, null),
+                        .programs => |locator| context.service.Programs.list(common.allocator, locator, in_args.recursive orelse false, in_args.physical orelse true, ">"), //indicate that sources under programs are "symlinks"
+                        .sources => |locator| context.service.Shaders.list(common.allocator, locator, in_args.recursive orelse false, in_args.physical orelse true),
                     };
                     defer {
                         for (lines) |line| {
@@ -1081,7 +1073,7 @@ pub const MutliListener = struct {
                 }
             } else {
                 shaders.lockServices();
-                var it = shaders.namesIterate();
+                var it = shaders.serviceNames();
                 const c = shaders.servicesCount();
                 var result = std.ArrayListUnmanaged(u8){};
                 var i: usize = 0;
@@ -1103,14 +1095,13 @@ pub const MutliListener = struct {
             const locator = try shaders.ServiceLocator.parse(args_result.path) orelse return error.Protected;
             switch (locator.resource orelse return error.Protected) {
                 .programs => |p| {
-                    if (p.nested) |_| {
+                    if (!p.nested.isRoot()) { // Nested should be "root" >= no nested
                         return error.InvalidPath;
                     }
-                    _ = try locator.service.Programs.mkdir((p.program orelse return error.InvalidPath).tagged);
+                    _ = try locator.service.Programs.mkdir(p.name.tagged);
                 },
                 .sources => |s| {
-                    const source = s orelse return error.InvalidPath;
-                    _ = try locator.service.Shaders.mkdir(source.name.tagged);
+                    _ = try locator.service.Shaders.mkdir(s.name.tagged);
                 },
             }
         }
@@ -1149,13 +1140,31 @@ pub const MutliListener = struct {
             return savePhysical(args) catch |err| if (err == error.NotPhysical) saveVirtual(args);
         }
 
-        /// Rename a file or directory. Sources under programs can be renamed only by basename (no moving outside the program or between them).
-        pub fn rename(args: ?ArgumentsMap) !void {
+        /// Rename a file or directory.
+        ///
+        /// Sources under program directories can be renamed only by basename (no moving outside the program or between them).
+        /// When untagged file is renamed, it becomes a tagged file.
+        ///
+        /// Returns the new full path for the file. This can be different than the `to` parameter (e.g. when renaming untagged file).
+        pub fn rename(args: ?ArgumentsMap) !String {
             const args_result = try parseArgs(struct { from: String, to: String }, args);
-            const basename_only = common.nullishEq(std.fs.path.dirname(args_result.from), std.fs.path.dirname(args_result.to));
+            const to_unslash = common.noTrailingSlash(args_result.to);
+            const basename_only = common.nullishEq(std.fs.path.dirname(common.noTrailingSlash(args_result.from)), std.fs.path.dirname(to_unslash));
+
             const from = try shaders.ServiceLocator.parse(args_result.from) orelse return error.InvalidPath;
             const from_res = from.resource orelse return error.InvalidPath;
-            const to = try shaders.ServiceLocator.parse(args_result.to) orelse return error.InvalidPath;
+            const from_untagged = basename_only and !from_res.isTagged();
+
+            const to = if (from_untagged) blk: {
+                var tagged = from;
+                tagged.resource = try tagged.resource.?.toTagged(common.allocator, std.fs.path.basename(to_unslash));
+                break :blk tagged;
+            } else try shaders.ServiceLocator.parse(args_result.to) orelse return error.InvalidPath;
+            defer if (from_untagged) switch (to.resource.?) {
+                .programs => |p| common.allocator.free(p.fullPath),
+                else => {},
+            };
+
             const to_res = to.resource orelse return error.InvalidPath;
             if (from.service != to.service) {
                 return error.ContextMismatch;
@@ -1167,15 +1176,16 @@ pub const MutliListener = struct {
             }
             switch (from_res) {
                 .sources => |source| {
-                    const s = source orelse return error.Protected;
-                    _ = try from.service.Shaders.renameByLocator(s.name, to_res.sources.?.name.tagged);
+                    _ = try from.service.Shaders.renameByLocator(source.name, to_res.sources.name.tagged);
                 },
                 .programs => |program| {
-                    const p = program.program orelse return error.Protected;
-                    if (program.nested) |n| {
+                    const p = program.name.file() orelse return error.Protected;
+                    if (program.nested.isRoot()) {
+                        _ = try from.service.Programs.renameByLocator(p, to_res.programs.name.tagged);
+                    } else {
                         if (basename_only) {
-                            const s = try from.service.Programs.getNestedByLocator(p, n.name);
-                            const name = to_res.programs.nested.?.name.tagged;
+                            const s = try from.service.Programs.getNestedByLocator(p, program.nested.name);
+                            const name = to_res.programs.nested.name.tagged;
                             if (s.tag) |t| {
                                 try t.rename(name);
                             } else {
@@ -1185,9 +1195,9 @@ pub const MutliListener = struct {
                             return error.TypeMismatch;
                         }
                     }
-                    _ = try from.service.Programs.renameByLocator(p, to_res.programs.program.?.tagged);
                 },
             }
+            return std.fmt.allocPrint(common.allocator, "{}", .{to});
         }
 
         // Remove a tag record of a file or a directory
@@ -1294,7 +1304,7 @@ pub const MutliListener = struct {
                 return values;
             }
             var iter = args.?.keyIterator();
-            var results = std.ArrayList(String).init(common.allocator);
+            var results = std.ArrayListUnmanaged(String){};
             // For each setting name in the request
             while (iter.next()) |key| {
                 const value = args.?.get(key.*);
@@ -1325,9 +1335,9 @@ pub const MutliListener = struct {
                         return error.UnknownSettingName;
                     }
                 }.setAny(key.*, value);
-                try results.append(try std.fmt.allocPrint(common.allocator, "{s} = {?s}", .{ key.*, value }));
+                try results.append(common.allocator, try std.fmt.allocPrint(common.allocator, "{s} = {?s}", .{ key.*, value }));
             }
-            return results.items;
+            return results.toOwnedSlice(common.allocator);
         }
 
         pub fn version() !String {
@@ -1360,6 +1370,7 @@ pub const MutliListener = struct {
         const possibleBreakpoints = stringReturning;
         const getStepInTargets = stringReturning;
         const readMemory = stringReturning;
+        const rename = stringReturning;
         const runningShaders = stringReturning;
         //const scopes = stringReturning;
         const setDataBreakpoint = stringReturning;

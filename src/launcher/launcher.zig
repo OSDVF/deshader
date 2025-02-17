@@ -132,7 +132,7 @@ pub fn main() !u8 {
                 \\  -w, --whitelist <y/n>   Whitelist the target process for Deshader operation (default)
                 \\  -y, --replace           Answer yes to all library replacement questions
                 \\
-            , .{ common.default_lsp_url, common.default_ws_url });
+            , .{ common.default_ws_url, common.default_lsp_url });
             return 0;
         }
 
@@ -331,7 +331,7 @@ pub fn main() !u8 {
             var terminate_mutex = std.Thread.Mutex{};
             var target_watcher = try std.Thread.spawn(.{}, struct {
                 fn spawn(ch: *std.process.Child, co: *std.Thread.Condition, m: *std.Thread.Mutex, r: *bool) !void {
-                    common.process.wailNoFailReport(ch);
+                    _ = common.process.wailNoFailReport(ch);
                     r.* = false;
                     m.lock();
                     defer m.unlock();

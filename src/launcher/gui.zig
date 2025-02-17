@@ -323,7 +323,13 @@ pub fn editorShow(port: u16, commands_host: ?String, lsp_host: ?String) !void {
                 if (builtin.os.tag == .windows) {
                     _ = try gui_process.?.wait();
                 } else {
-                    common.process.wailNoFailReport(&gui_process.?);
+                    if (common.process.wailNoFailReport(&gui_process.?)) |term| {
+                        if (term == .Exited and term.Exited == 0) {
+                            if (global_provider) |gp| {
+                                gp.allocator.free(base_url);
+                            }
+                        }
+                    }
                 }
                 gui_process = null;
             }
@@ -357,7 +363,7 @@ pub fn editorWait() !void {
             gui_shutdown.wait(&gui_mutex);
             gui_mutex.unlock();
         } else {
-            common.process.wailNoFailReport(p);
+            _ = common.process.wailNoFailReport(p);
         }
     } else {
         log.err("Editor not running", .{});

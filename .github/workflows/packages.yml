@@ -39,9 +39,12 @@ jobs:
         with:
             version: 0.13.0
 
-      - uses: oven-sh/setup-bun@v1
+      - uses: oven-sh/setup-bun@v2
         with:
             bun-version: latest
+
+      - name: Inject secrets
+        run: echo '${{ secrets.ENV }}' > editor/deshader-vscode/.env
 
       - name: Install Makedeb
         run: bash -c "$(wget -qO - 'https://shlink.makedeb.org/install')"
@@ -72,7 +75,7 @@ jobs:
         with:
             version: 0.13.0
 
-      - uses: oven-sh/setup-bun@v1
+      - uses: oven-sh/setup-bun@v2
         with:
             bun-version: latest
 
@@ -187,7 +190,7 @@ jobs:
         with:
             version: 0.13.0
 
-      - uses: oven-sh/setup-bun@v1
+      - uses: oven-sh/setup-bun@v2
         with:
             bun-version: latest
 

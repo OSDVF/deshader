@@ -1,0 +1,31 @@
+const std = @import("std");
+pub const Level = enum { err, warn, info, debug, default }; //cannot use std.log.Level because it gets corrupted in options generated file
+
+pub const Options = struct {
+    custom_library: ?[]const []const u8,
+    editor: bool,
+    ignore_missing: bool,
+    include: ?[]const u8,
+    lib_assert: bool,
+    lib_debug: bool,
+    lib_dir: ?[]const u8,
+    lib_linkage: std.builtin.LinkMode,
+    linkage: std.builtin.LinkMode,
+    log_intercept: bool,
+    log_level: Level,
+    memory_frames: u32,
+    sanitize: bool,
+    sdk: ?[]const u8,
+    stack_check: bool,
+    stack_protector: bool,
+    strip: bool,
+    system_glew: bool,
+    system_glfw: bool,
+    system_glslang: bool,
+    system_nfd: bool,
+    system_wolfssl: bool,
+    traces: bool,
+    triplet: ?[]const u8,
+    valgrind: bool,
+    unwind: bool,
+};
