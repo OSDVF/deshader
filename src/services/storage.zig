@@ -61,10 +61,14 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime parted: bo
         all: RefMap = .{},
         allocator: std.mem.Allocator,
         pool: if (Stored == void) void else std.heap.MemoryPool(StoredOrList), // for storing all the Stored objects
+        bus: common.Bus(StoredTag.Event, false),
+        nested_bus: if (Nested != void) *common.Bus(Tag(Nested).Event, false) else void,
 
-        pub fn init(alloc: std.mem.Allocator) @This() {
+        pub fn init(alloc: std.mem.Allocator, nested_bus: if (Nested == void) void else *common.Bus(Tag(Nested).Event, false)) @This() {
             return @This(){
                 .allocator = alloc,
+                .bus = common.Bus(StoredTag.Event, false).init(alloc),
+                .nested_bus = nested_bus,
                 .tagged_root = StoredDir{
                     .allocator = alloc,
                     .name = root_name,
@@ -157,6 +161,7 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime parted: bo
         }
 
         pub fn deinit(self: *@This(), args: anytype) void {
+            self.bus.deinit();
             self.tagged_root.deinit();
             {
                 var it = self.all.valueIterator();
@@ -352,24 +357,29 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime parted: bo
             std.debug.assert(existing.is_new == false);
             const target_dirname = std.fs.path.dirnamePosix(to);
             const target_basename = std.fs.path.basenamePosix(to);
-            const rename_only_base = common.nullishEq(std.fs.path.dirnamePosix(from), target_dirname);
+            const rename_only_base = common.nullishEq(String, std.fs.path.dirnamePosix(from), target_dirname);
             if (Nested != void and existing.content == .Nested) { // renaming a shader under program can be done only on basename basis
                 if (rename_only_base) {
                     const n = existing.content.Nested.nested orelse {
                         protectedError(from);
                         return Error.InvalidPath;
                     };
+                    self.nested_bus.dispatchNoThrow(Tag(Nested).Event{ .action = .Remove, .tag = n.tag.? });
                     try n.tag.?.rename(target_basename);
+                    self.nested_bus.dispatchNoThrow(Tag(Nested).Event{ .action = .Assign, .tag = n.tag.? });
                     return existing.content;
                 } else {
                     return Error.InvalidPath;
                 }
             } else switch (existing.content) {
                 .Tag => |tag| if (rename_only_base) {
+                    self.bus.dispatchNoThrow(StoredTag.Event{ .action = .Remove, .tag = tag });
                     try tag.rename(target_basename);
+                    self.bus.dispatchNoThrow(StoredTag.Event{ .action = .Assign, .tag = tag });
                     return .{ .Tag = tag };
                 } else {
                     const f = tag.fetchRemove();
+                    self.bus.dispatchNoThrow(StoredTag.Event{ .action = .Remove, .tag = tag });
                     return .{ .Tag = try self.assignTagTo(f, to, .Error) };
                 },
                 else => |dir| {
@@ -418,12 +428,14 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime parted: bo
             }
             if (Stored != void) {
                 // assign "reverse pointer" (from the content to the tag)
+                target.content.Tag.target = stored;
                 if (stored.tag == null or if_exists == .Overwrite) {
                     stored.tag = target.content.Tag;
+                    self.bus.dispatchNoThrow(StoredTag.Event{ .action = .Assign, .tag = target.content.Tag });
                 } else if (if_exists == .Link) {
                     try target.content.Tag.backlinks.append(self.allocator, target.content.Tag);
+                    // TODO: also dispatch event here?
                 } else unreachable; // error should be already thrown at self.makePathRecursive
-                target.content.Tag.target = stored;
             }
             return target.content.Tag;
         }
@@ -489,6 +501,7 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime parted: bo
                     }
                 },
                 else => |content_tag| { // a single file
+                    self.bus.dispatchNoThrow(StoredTag.Event{ .action = .Remove, .tag = content_tag.Tag });
                     content_tag.Tag.remove();
                 },
             }
@@ -508,9 +521,10 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime parted: bo
                         };
                     }
                 } else {
-                    if (removed.value.tag) |t| for (t.backlinks.items) |tag| {
-                        tag.remove();
-                    };
+                    if (removed.value.tag) |t| {
+                        self.bus.dispatchNoThrow(StoredTag.Event{ .action = .Remove, .tag = t });
+                        t.remove();
+                    }
                 }
             } else {
                 return Error.TargetNotFound;
@@ -522,6 +536,7 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime parted: bo
             const contents_maybe = self.all.get(ref);
             if (contents_maybe) |contents| {
                 if (if (parted) contents.items[index].tag else contents.tag) |tag| {
+                    self.bus.dispatchNoThrow(StoredTag.Event{ .action = .Remove, .tag = tag });
                     tag.remove();
                 } else {
                     return Error.NotTagged;
@@ -536,10 +551,9 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime parted: bo
             const contents_maybe = self.all.get(ref);
             if (contents_maybe) |contents| {
                 for (contents.items) |item| {
-                    if (item.tag) |t| {
-                        for (t.backlinks.items) |tag| {
-                            tag.remove();
-                        }
+                    if (item.tag) |tag| {
+                        self.bus.dispatchNoThrow(StoredTag.Event{ .action = .Remove, .tag = tag });
+                        tag.remove();
                     } else {
                         return Error.NotTagged;
                     }
@@ -549,7 +563,6 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime parted: bo
             }
         }
 
-        /// NOTE: incosistency: if you want to stat a shader under a program, use 'tagged' locator with the untagged source 'path'
         pub fn stat(self: *@This(), locator: storage.Locator.Name) !StatPayload {
             if (Stored == void) {
                 @compileError("Stat is not possible for void Storages");
@@ -588,22 +601,24 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime parted: bo
                             .size = if (ptr.content.Tag.target) |t| if (t.*.getSource()) |sr| sr.len else 0 else 0,
                         };
                     } else if (ptr.content == .Nested) {
-                        return if (ptr.content.Nested) |n| StatPayload{
-                            .type = @intFromEnum(FileType.File),
-                            .accessed = n.stat.accessed,
-                            .created = n.stat.created,
-                            .modified = n.stat.modified,
-                            .size = if (ptr.content.Nested.nested.getSource()) |s| s.len else 0,
+                        if (ptr.content.Nested.nested) |n| {
+                            return StatPayload{
+                                .type = @intFromEnum(FileType.File),
+                                .accessed = n.stat.accessed,
+                                .created = n.stat.created,
+                                .modified = n.stat.modified,
+                                .size = if (n.getSource()) |s| s.len else 0,
+                            };
                         } else {
                             const now = Stat.now();
                             return StatPayload{
-                                .type = @intFromEnum(FileType.File),
+                                .type = @intFromEnum(FileType.Directory),
                                 .accessed = now.accessed,
                                 .created = now.created,
                                 .modified = now.modified,
-                                .size = if (ptr.content.Nested.nested.getSource()) |s| s.len else 0,
+                                .size = 0,
                             };
-                        };
+                        }
                     }
                 },
             }
@@ -716,7 +731,7 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime parted: bo
             };
         }
 
-        /// Tag's target will be undefined if new
+        /// Tag's `target` will be undefined if new
         fn makePathEntry(
             self: *@This(),
             in_dir: if (Nested != void) struct { dir: *Dir(Stored), subpath: String } else *Dir(Stored),
@@ -1034,6 +1049,12 @@ pub fn Tag(comptime Taggable: type) type {
         /// Owned by the tag.
         backlinks: std.ArrayListUnmanaged(*Tag(Taggable)) = .{},
 
+        /// Fired when an action is performed on the tag
+        pub const Event = struct {
+            action: Action,
+            tag: *Tag(Taggable),
+        };
+
         pub fn deinit(self: *@This()) void {
             const parent = self.parent;
             const name = self.name;
@@ -1349,4 +1370,11 @@ pub const Locator = struct {
             .name = try self.name.toTagged(name),
         };
     }
+};
+
+pub const Action = enum {
+    /// After the tag is assigned to a file
+    Assign,
+    /// Before the tag is removed
+    Remove,
 };

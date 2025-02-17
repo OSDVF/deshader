@@ -1149,7 +1149,7 @@ pub const MutliListener = struct {
         pub fn rename(args: ?ArgumentsMap) !String {
             const args_result = try parseArgs(struct { from: String, to: String }, args);
             const to_unslash = common.noTrailingSlash(args_result.to);
-            const basename_only = common.nullishEq(std.fs.path.dirname(common.noTrailingSlash(args_result.from)), std.fs.path.dirname(to_unslash));
+            const basename_only = common.nullishEq(String, std.fs.path.dirname(common.noTrailingSlash(args_result.from)), std.fs.path.dirname(to_unslash));
 
             const from = try shaders.ServiceLocator.parse(args_result.from) orelse return error.InvalidPath;
             const from_res = from.resource orelse return error.InvalidPath;
@@ -1214,6 +1214,7 @@ pub const MutliListener = struct {
         pub fn stat(args: ?ArgumentsMap) !String {
             const args_result = try parseArgs(StatRequest, args);
 
+            // TODO: supress the long stack trace when targeting invalid path?
             const context = try shaders.ServiceLocator.parse(args_result.path);
             const now = std.time.milliTimestamp();
             // Used for root

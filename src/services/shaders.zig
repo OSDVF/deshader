@@ -112,6 +112,8 @@ physical_to_virtual: ArrayBufMap(VirtualDir.Set) = undefined,
 Shaders: Shader.SourcePart.StorageT,
 Programs: Shader.Program.StorageT,
 allocator: std.mem.Allocator,
+/// Async event queue. Should be processed by the drawing thread.
+bus: common.Bus(ResourceLocator.TagEvent, true),
 revert_requested: bool = false, // set by the command listener thread, read by the drawing thread
 /// Instrumentation and debugging state for each stage
 state: std.AutoHashMapUnmanaged(usize, State) = .{},
@@ -139,6 +141,7 @@ pub fn deinitStatic() void {
 }
 
 pub fn deinit(service: *@This()) void {
+    service.bus.deinit();
     service.Programs.deinit(.{});
     service.Shaders.deinit(.{});
     service.physical_to_virtual.deinit();
@@ -159,15 +162,52 @@ pub fn getOrAddService(context: *const anyopaque, allocator: std.mem.Allocator) 
         try services_by_name.put(allocator, name, result.value_ptr);
 
         result.value_ptr.* = Service{
-            .physical_to_virtual = ArrayBufMap(VirtualDir.Set).init(allocator),
-            .Shaders = @TypeOf(result.value_ptr.Shaders).init(allocator),
-            .Programs = @TypeOf(result.value_ptr.Programs).init(allocator),
             .allocator = allocator,
+            .bus = common.Bus(ResourceLocator.TagEvent, true).init(allocator),
+            .physical_to_virtual = ArrayBufMap(VirtualDir.Set).init(allocator),
+            .Shaders = @TypeOf(result.value_ptr.Shaders).init(allocator, {}),
+            .Programs = undefined,
             .context = context,
             .name = name,
         };
+        result.value_ptr.Programs = @TypeOf(result.value_ptr.Programs).init(allocator, &result.value_ptr.Shaders.bus);
+
+        try result.value_ptr.Shaders.bus.addListener(&shaderTagEvent, result.value_ptr);
+        try result.value_ptr.Programs.bus.addListener(&programTagEvent, result.value_ptr);
     }
     return result;
+}
+
+fn programTagEvent(m_self: ?*anyopaque, event: Shader.Program.StorageT.StoredTag.Event, _: std.mem.Allocator) anyerror!void {
+    const self: *@This() = @alignCast(@ptrCast(m_self.?));
+    var arena = std.heap.ArenaAllocator.init(self.allocator);
+    const name = try std.fmt.allocPrint(arena.allocator(), "{}", .{event.tag});
+    try self.bus.dispatchAsync(ResourceLocator.TagEvent{
+        .action = event.action,
+        .locator = ResourceLocator{ .programs = storage.Locator.Nesting{
+            .name = .{
+                .tagged = name,
+            },
+            .fullPath = name,
+            .nested = storage.Locator.tagged_root,
+        } },
+        .ref = event.tag.target.ref,
+    }, arena);
+}
+
+fn shaderTagEvent(m_self: ?*anyopaque, event: Shader.SourcePart.StorageT.StoredTag.Event, _: std.mem.Allocator) anyerror!void {
+    const self: *@This() = @alignCast(@ptrCast(m_self.?));
+    var arena = std.heap.ArenaAllocator.init(self.allocator);
+    const name = try std.fmt.allocPrint(arena.allocator(), "{}", .{event.tag});
+    try self.bus.dispatchAsync(ResourceLocator.TagEvent{
+        .action = event.action,
+        .locator = ResourceLocator{ .sources = storage.Locator{
+            .name = .{
+                .tagged = name,
+            },
+        } },
+        .ref = event.tag.target.ref,
+    }, arena);
 }
 
 pub fn getServiceByName(name: String) ?*Service {
@@ -301,6 +341,12 @@ pub const ResourceLocator = union(enum) {
     pub const sources_path = "/sources";
     pub const programs_path = "/programs";
 
+    pub const TagEvent = struct {
+        locator: ResourceLocator,
+        ref: Ref,
+        action: storage.Action,
+    };
+
     pub fn parse(path: String) !ResourceLocator {
         if (std.mem.startsWith(u8, path, programs_path)) {
             return @This(){
@@ -325,10 +371,13 @@ pub const ResourceLocator = union(enum) {
         };
     }
 
-    pub fn name(self: @This()) String {
+    pub fn name(self: @This()) ?String {
         return switch (self) {
             .programs => |p| p.fullPath,
-            .sources => |s| s.name,
+            .sources => |s| switch (s.name) {
+                .tagged => |t| t,
+                else => null,
+            },
         };
     }
 
@@ -1331,7 +1380,7 @@ pub const Shader = struct {
     /// Class for interacting with a single source code part.
     /// Implements `Storage.Stored`.
     pub const SourcePart = struct {
-        const StorageT = Storage(@This(), void, true);
+        pub const StorageT = Storage(@This(), void, true);
         /// Can be used for formatting
         pub const WithIndex = struct {
             source: *const SourcePart,
@@ -1881,7 +1930,7 @@ pub const Shader = struct {
     }
 
     pub const Program = struct {
-        const StorageT = Storage(@This(), Shader.SourcePart, false);
+        pub const StorageT = Storage(@This(), Shader.SourcePart, false);
         const DirOrStored = StorageT.DirOrStored;
 
         ref: @TypeOf(ProgramPayload.ref) = 0,

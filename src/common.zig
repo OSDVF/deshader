@@ -20,6 +20,7 @@ const options = @import("options");
 pub const logging = @import("common/log.zig");
 pub const env = @import("common/env.zig");
 pub const process = @import("common/process.zig");
+pub const Bus = @import("common/event.zig").Bus;
 
 const c = @cImport({
     if (builtin.os.tag == .windows) {
@@ -400,8 +401,11 @@ pub fn indexOfSliceMember(comptime T: type, slice: []const T, needle: *T) ?usize
     return null;
 }
 
-pub fn nullishEq(a: anytype, b: anytype) bool {
-    return (a == null) == (b == null);
+pub fn nullishEq(comptime T: type, maybe_a: ?T, maybe_b: ?T) bool {
+    return if (maybe_a) |a| if (maybe_b) |b| switch (@typeInfo(T)) {
+        .Pointer => |s| std.mem.eql(s.child, a, b),
+        else => a == b,
+    } else false else maybe_b == null;
 }
 
 pub fn noTrailingSlash(path: String) String {

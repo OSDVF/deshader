@@ -1050,178 +1050,182 @@ fn restoreState() !void {
     }
 }
 
-// TODO
-// pub export fn glDispatchComputeGroupSizeARB(num_groups_x: gl.uint, num_groups_y: gl.uint, num_groups_z: gl.uint, group_size_x: gl.uint, group_size_y: gl.uint, group_size_z: gl.uint) void {
-//     if (shaders.instance.checkDebuggingOrRevert()) {
-//         dispatchDebug(instrumentCompute, .{ .{[_]usize{ @intCast(num_groups_x), @intCast(num_groups_y), @intCast(num_groups_z) }},gl.DispatchComputeGroupSizeARB,.{num_groups_x, num_groups_y, num_groups_z, group_size_x, group_size_y, group_size_z});
-//     } else gl.DispatchComputeGroupSizeARB(num_groups_x, num_groups_y, num_groups_z, group_size_x, group_size_y, group_size_z);
-// }
+// Drawing functions
+pub usingnamespace struct {
 
-pub export fn glDispatchCompute(num_groups_x: gl.uint, num_groups_y: gl.uint, num_groups_z: gl.uint) void {
-    if (current.checkDebuggingOrRevert()) {
-        dispatchDebug(instrumentCompute, .{[_]usize{ @intCast(num_groups_x), @intCast(num_groups_y), @intCast(num_groups_z) }}, gl.DispatchCompute, .{ num_groups_x, num_groups_y, num_groups_z });
-    } else gl.DispatchCompute(num_groups_x, num_groups_y, num_groups_z);
-}
+    // TODO
+    // pub export fn glDispatchComputeGroupSizeARB(num_groups_x: gl.uint, num_groups_y: gl.uint, num_groups_z: gl.uint, group_size_x: gl.uint, group_size_y: gl.uint, group_size_z: gl.uint) void {
+    //     if (shaders.instance.checkDebuggingOrRevert()) {
+    //         dispatchDebug(instrumentCompute, .{ .{[_]usize{ @intCast(num_groups_x), @intCast(num_groups_y), @intCast(num_groups_z) }},gl.DispatchComputeGroupSizeARB,.{num_groups_x, num_groups_y, num_groups_z, group_size_x, group_size_y, group_size_z});
+    //     } else gl.DispatchComputeGroupSizeARB(num_groups_x, num_groups_y, num_groups_z, group_size_x, group_size_y, group_size_z);
+    // }
 
-const IndirectComputeCommand = extern struct {
-    num_groups_x: gl.uint,
-    num_groups_y: gl.uint,
-    num_groups_z: gl.uint,
-};
-pub export fn glDispatchComputeIndirect(address: gl.intptr) void {
-    if (current.checkDebuggingOrRevert()) {
-        var command = IndirectComputeCommand{ .num_groups_x = 1, .num_groups_y = 1, .num_groups_z = 1 };
-        //check GL_DISPATCH_INDIRECT_BUFFER
-        var buffer: gl.int = 0;
-        gl.GetIntegerv(gl.DISPATCH_INDIRECT_BUFFER_BINDING, @ptrCast(&buffer));
-        if (buffer != 0) {
-            gl.GetNamedBufferSubData(@intCast(buffer), address, @sizeOf(IndirectComputeCommand), &command);
-        }
-
-        dispatchDebug(instrumentCompute, .{[_]usize{ @intCast(command.num_groups_x), @intCast(command.num_groups_y), @intCast(command.num_groups_z) }}, gl.DispatchComputeIndirect, .{address});
-    } else gl.DispatchComputeIndirect(address);
-}
-
-pub export fn glDrawArrays(mode: gl.@"enum", first: gl.int, count: gl.sizei) void {
-    if (current.checkDebuggingOrRevert()) {
-        dispatchDebugDraw(instrumentDraw, .{ count, 1 }, gl.DrawArrays, .{ mode, first, count });
-    } else gl.DrawArrays(mode, first, count);
-}
-
-pub export fn glDrawArraysInstanced(mode: gl.@"enum", first: gl.int, count: gl.sizei, instanceCount: gl.sizei) void {
-    if (current.checkDebuggingOrRevert()) {
-        dispatchDebugDraw(instrumentDraw, .{ count, instanceCount }, gl.DrawArraysInstanced, .{ mode, first, count, instanceCount });
-    } else gl.DrawArraysInstanced(mode, first, count, instanceCount);
-}
-
-pub export fn glDrawElements(mode: gl.@"enum", count: gl.sizei, _type: gl.@"enum", indices: usize) void {
-    if (current.checkDebuggingOrRevert()) {
-        dispatchDebugDraw(instrumentDraw, .{ count, 1 }, gl.DrawElements, .{ mode, count, _type, indices });
-    } else gl.DrawElements(mode, count, _type, indices);
-}
-
-pub export fn glDrawElementsInstanced(mode: gl.@"enum", count: gl.sizei, _type: gl.@"enum", indices: ?*const anyopaque, instanceCount: gl.sizei) void {
-    if (current.checkDebuggingOrRevert()) {
-        dispatchDebugDraw(instrumentDraw, .{ count, instanceCount }, gl.DrawElementsInstanced, .{ mode, count, _type, indices, instanceCount });
-    } else gl.DrawElementsInstanced(mode, count, _type, indices, instanceCount);
-}
-
-pub export fn glDrawElementsBaseVertex(mode: gl.@"enum", count: gl.sizei, _type: gl.@"enum", indices: ?*const anyopaque, basevertex: gl.int) void {
-    if (current.checkDebuggingOrRevert()) {
-        dispatchDebugDraw(instrumentDraw, .{ count, 1 }, gl.DrawElementsBaseVertex, .{ mode, count, _type, indices, basevertex });
-    } else gl.DrawElementsBaseVertex(mode, count, _type, indices, basevertex);
-}
-
-pub export fn glDrawElementsInstancedBaseVertex(mode: gl.@"enum", count: gl.sizei, _type: gl.@"enum", indices: ?*const anyopaque, instanceCount: gl.sizei, basevertex: gl.int) void {
-    if (current.checkDebuggingOrRevert()) {
-        dispatchDebugDraw(instrumentDraw, .{ count, instanceCount }, gl.DrawElementsInstancedBaseVertex, .{ mode, count, _type, indices, instanceCount, basevertex });
-    } else gl.DrawElementsInstancedBaseVertex(mode, count, _type, indices, instanceCount, basevertex);
-}
-
-pub export fn glDrawRangeElements(mode: gl.@"enum", start: gl.uint, end: gl.uint, count: gl.sizei, _type: gl.@"enum", indices: ?*const anyopaque) void {
-    if (current.checkDebuggingOrRevert()) {
-        dispatchDebugDraw(instrumentDraw, .{ count, 1 }, gl.DrawRangeElements, .{ mode, start, end, count, _type, indices });
-    } else gl.DrawRangeElements(mode, start, end, count, _type, indices);
-}
-
-pub export fn glDrawRangeElementsBaseVertex(mode: gl.@"enum", start: gl.uint, end: gl.uint, count: gl.sizei, _type: gl.@"enum", indices: ?*const anyopaque, basevertex: gl.int) void {
-    if (current.checkDebuggingOrRevert()) {
-        dispatchDebugDraw(instrumentDraw, .{ count, 1 }, gl.DrawRangeElementsBaseVertex, .{ mode, start, end, count, _type, indices, basevertex });
-    } else gl.DrawRangeElementsBaseVertex(mode, start, end, count, _type, indices, basevertex);
-}
-
-pub export fn glDrawElementsInstancedBaseVertexBaseInstance(mode: gl.@"enum", count: gl.sizei, _type: gl.@"enum", indices: ?*const anyopaque, instanceCount: gl.sizei, basevertex: gl.int, baseInstance: gl.uint) void {
-    if (current.checkDebuggingOrRevert()) {
-        dispatchDebugDraw(instrumentDraw, .{ count, instanceCount }, gl.DrawElementsInstancedBaseVertexBaseInstance, .{ mode, count, _type, indices, instanceCount, basevertex, baseInstance });
-    } else gl.DrawElementsInstancedBaseVertexBaseInstance(mode, count, _type, indices, instanceCount, basevertex, baseInstance);
-}
-
-pub export fn glDrawElementsInstancedBaseInstance(mode: gl.@"enum", count: gl.sizei, _type: gl.@"enum", indices: ?*const anyopaque, instanceCount: gl.sizei, baseInstance: gl.uint) void {
-    if (current.checkDebuggingOrRevert()) {
-        dispatchDebugDraw(instrumentDraw, .{ count, instanceCount }, gl.DrawElementsInstancedBaseInstance, .{ mode, count, _type, indices, instanceCount, baseInstance });
-    } else gl.DrawElementsInstancedBaseInstance(mode, count, _type, indices, instanceCount, baseInstance);
-}
-
-const IndirectCommand = extern struct {
-    count: gl.uint, //again opengl mismatch GLuint vs GLint
-    instanceCount: gl.uint,
-    first: gl.uint,
-    baseInstance: gl.uint,
-};
-pub fn parseIndirect(indirect: ?*const IndirectCommand) IndirectCommand {
-    // check if GL_DRAW_INDIRECT_BUFFER is bound
-    var buffer: gl.uint = 0;
-    gl.GetIntegerv(gl.DRAW_INDIRECT_BUFFER_BINDING, @ptrCast(&buffer));
-    if (buffer != 0) {
-        // get the data from the buffer
-        var data: IndirectCommand = undefined;
-        gl.GetBufferSubData(gl.DRAW_INDIRECT_BUFFER, @intCast(@intFromPtr(indirect)), @intCast(@sizeOf(IndirectCommand)), &data);
-
-        return data;
+    pub export fn glDispatchCompute(num_groups_x: gl.uint, num_groups_y: gl.uint, num_groups_z: gl.uint) void {
+        if (everyFrame()) {
+            dispatchDebug(instrumentCompute, .{[_]usize{ @intCast(num_groups_x), @intCast(num_groups_y), @intCast(num_groups_z) }}, gl.DispatchCompute, .{ num_groups_x, num_groups_y, num_groups_z });
+        } else gl.DispatchCompute(num_groups_x, num_groups_y, num_groups_z);
     }
 
-    return if (indirect) |i| i.* else IndirectCommand{ .count = 0, .instanceCount = 1, .first = 0, .baseInstance = 0 };
-}
+    const IndirectComputeCommand = extern struct {
+        num_groups_x: gl.uint,
+        num_groups_y: gl.uint,
+        num_groups_z: gl.uint,
+    };
+    pub export fn glDispatchComputeIndirect(address: gl.intptr) void {
+        if (everyFrame()) {
+            var command = IndirectComputeCommand{ .num_groups_x = 1, .num_groups_y = 1, .num_groups_z = 1 };
+            //check GL_DISPATCH_INDIRECT_BUFFER
+            var buffer: gl.int = 0;
+            gl.GetIntegerv(gl.DISPATCH_INDIRECT_BUFFER_BINDING, @ptrCast(&buffer));
+            if (buffer != 0) {
+                gl.GetNamedBufferSubData(@intCast(buffer), address, @sizeOf(IndirectComputeCommand), &command);
+            }
 
-pub export fn glDrawArraysIndirect(mode: gl.@"enum", indirect: ?*const IndirectCommand) void {
-    if (current.checkDebuggingOrRevert()) {
-        const i = parseIndirect(indirect);
-        dispatchDebugDraw(instrumentDraw, .{ @as(gl.sizei, @intCast(i.count)), @as(gl.sizei, @intCast(i.instanceCount)) }, gl.DrawArraysIndirect, .{ mode, indirect });
-    } else gl.DrawArraysIndirect(mode, indirect);
-}
+            dispatchDebug(instrumentCompute, .{[_]usize{ @intCast(command.num_groups_x), @intCast(command.num_groups_y), @intCast(command.num_groups_z) }}, gl.DispatchComputeIndirect, .{address});
+        } else gl.DispatchComputeIndirect(address);
+    }
 
-pub export fn glDrawElementsIndirect(mode: gl.@"enum", _type: gl.@"enum", indirect: ?*const IndirectCommand) void {
-    if (current.checkDebuggingOrRevert()) {
-        const i = parseIndirect(indirect);
-        dispatchDebugDraw(instrumentDraw, .{ @as(gl.sizei, @intCast(i.count)), @as(gl.sizei, @intCast(i.instanceCount)) }, gl.DrawElementsIndirect, .{ mode, _type, indirect });
-    } else gl.DrawElementsIndirect(mode, _type, indirect);
-}
+    pub export fn glDrawArrays(mode: gl.@"enum", first: gl.int, count: gl.sizei) void {
+        if (everyFrame()) {
+            dispatchDebugDraw(instrumentDraw, .{ count, 1 }, gl.DrawArrays, .{ mode, first, count });
+        } else gl.DrawArrays(mode, first, count);
+    }
 
-pub export fn glDrawArraysInstancedBaseInstance(mode: gl.@"enum", first: gl.int, count: gl.sizei, instanceCount: gl.sizei, baseInstance: gl.uint) void {
-    if (current.checkDebuggingOrRevert()) {
-        dispatchDebugDraw(instrumentDraw, .{ count, instanceCount }, gl.DrawArraysInstancedBaseInstance, .{ mode, first, count, instanceCount, baseInstance });
-    } else gl.DrawArraysInstancedBaseInstance(mode, first, count, instanceCount, baseInstance);
-}
+    pub export fn glDrawArraysInstanced(mode: gl.@"enum", first: gl.int, count: gl.sizei, instanceCount: gl.sizei) void {
+        if (everyFrame()) {
+            dispatchDebugDraw(instrumentDraw, .{ count, instanceCount }, gl.DrawArraysInstanced, .{ mode, first, count, instanceCount });
+        } else gl.DrawArraysInstanced(mode, first, count, instanceCount);
+    }
 
-pub export fn glDrawTransformFeedback(mode: gl.@"enum", id: gl.uint) void {
-    if (current.checkDebuggingOrRevert()) {
-        const query = state.getPtr(current).?.primitives_written_queries.items[0];
-        // get GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN
-        var primitiveCount: gl.int = undefined;
-        gl.GetQueryObjectiv(query, gl.QUERY_RESULT, &primitiveCount);
-        dispatchDebugDraw(instrumentDraw, .{ primitiveCount, 1 }, gl.DrawTransformFeedback, .{ mode, id });
-    } else gl.DrawTransformFeedback(mode, id);
-}
+    pub export fn glDrawElements(mode: gl.@"enum", count: gl.sizei, _type: gl.@"enum", indices: usize) void {
+        if (everyFrame()) {
+            dispatchDebugDraw(instrumentDraw, .{ count, 1 }, gl.DrawElements, .{ mode, count, _type, indices });
+        } else gl.DrawElements(mode, count, _type, indices);
+    }
 
-pub export fn glDrawTransformFeedbackInstanced(mode: gl.@"enum", id: gl.uint, instanceCount: gl.sizei) void {
-    if (current.checkDebuggingOrRevert()) {
-        const query = state.getPtr(current).?.primitives_written_queries.items[0];
-        // get GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN
-        var primitiveCount: gl.int = undefined;
-        gl.GetQueryObjectiv(query, gl.QUERY_RESULT, &primitiveCount);
-        dispatchDebugDraw(instrumentDraw, .{ primitiveCount, instanceCount }, gl.DrawTransformFeedbackInstanced, .{ mode, id, instanceCount });
-    } else gl.DrawTransformFeedbackInstanced(mode, id, instanceCount);
-}
+    pub export fn glDrawElementsInstanced(mode: gl.@"enum", count: gl.sizei, _type: gl.@"enum", indices: ?*const anyopaque, instanceCount: gl.sizei) void {
+        if (everyFrame()) {
+            dispatchDebugDraw(instrumentDraw, .{ count, instanceCount }, gl.DrawElementsInstanced, .{ mode, count, _type, indices, instanceCount });
+        } else gl.DrawElementsInstanced(mode, count, _type, indices, instanceCount);
+    }
 
-pub export fn glDrawTransformFeedbackStream(mode: gl.@"enum", id: gl.uint, stream: gl.uint) void {
-    if (current.checkDebuggingOrRevert()) {
-        const query = state.getPtr(current).?.primitives_written_queries.items[stream];
-        // get GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN
-        var primitiveCount: gl.int = undefined;
-        gl.GetQueryObjectiv(query, gl.QUERY_RESULT, &primitiveCount);
-        dispatchDebugDraw(instrumentDraw, .{ primitiveCount, 1 }, gl.DrawTransformFeedbackStream, .{ mode, id, stream });
-    } else gl.DrawTransformFeedbackStream(mode, id, stream);
-}
+    pub export fn glDrawElementsBaseVertex(mode: gl.@"enum", count: gl.sizei, _type: gl.@"enum", indices: ?*const anyopaque, basevertex: gl.int) void {
+        if (everyFrame()) {
+            dispatchDebugDraw(instrumentDraw, .{ count, 1 }, gl.DrawElementsBaseVertex, .{ mode, count, _type, indices, basevertex });
+        } else gl.DrawElementsBaseVertex(mode, count, _type, indices, basevertex);
+    }
 
-pub export fn glDrawTransformFeedbackStreamInstanced(mode: gl.@"enum", id: gl.uint, stream: gl.uint, instanceCount: gl.sizei) void {
-    if (current.checkDebuggingOrRevert()) {
-        const query = state.getPtr(current).?.primitives_written_queries.items[stream];
-        // get GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN
-        var primitiveCount: gl.int = undefined;
-        gl.GetQueryObjectiv(query, gl.QUERY_RESULT, &primitiveCount);
-        dispatchDebugDraw(instrumentDraw, .{ primitiveCount, instanceCount }, gl.DrawTransformFeedbackStreamInstanced, .{ mode, id, stream, instanceCount });
-    } else gl.DrawTransformFeedbackStreamInstanced(mode, id, stream, instanceCount);
-}
+    pub export fn glDrawElementsInstancedBaseVertex(mode: gl.@"enum", count: gl.sizei, _type: gl.@"enum", indices: ?*const anyopaque, instanceCount: gl.sizei, basevertex: gl.int) void {
+        if (everyFrame()) {
+            dispatchDebugDraw(instrumentDraw, .{ count, instanceCount }, gl.DrawElementsInstancedBaseVertex, .{ mode, count, _type, indices, instanceCount, basevertex });
+        } else gl.DrawElementsInstancedBaseVertex(mode, count, _type, indices, instanceCount, basevertex);
+    }
+
+    pub export fn glDrawRangeElements(mode: gl.@"enum", start: gl.uint, end: gl.uint, count: gl.sizei, _type: gl.@"enum", indices: ?*const anyopaque) void {
+        if (everyFrame()) {
+            dispatchDebugDraw(instrumentDraw, .{ count, 1 }, gl.DrawRangeElements, .{ mode, start, end, count, _type, indices });
+        } else gl.DrawRangeElements(mode, start, end, count, _type, indices);
+    }
+
+    pub export fn glDrawRangeElementsBaseVertex(mode: gl.@"enum", start: gl.uint, end: gl.uint, count: gl.sizei, _type: gl.@"enum", indices: ?*const anyopaque, basevertex: gl.int) void {
+        if (everyFrame()) {
+            dispatchDebugDraw(instrumentDraw, .{ count, 1 }, gl.DrawRangeElementsBaseVertex, .{ mode, start, end, count, _type, indices, basevertex });
+        } else gl.DrawRangeElementsBaseVertex(mode, start, end, count, _type, indices, basevertex);
+    }
+
+    pub export fn glDrawElementsInstancedBaseVertexBaseInstance(mode: gl.@"enum", count: gl.sizei, _type: gl.@"enum", indices: ?*const anyopaque, instanceCount: gl.sizei, basevertex: gl.int, baseInstance: gl.uint) void {
+        if (everyFrame()) {
+            dispatchDebugDraw(instrumentDraw, .{ count, instanceCount }, gl.DrawElementsInstancedBaseVertexBaseInstance, .{ mode, count, _type, indices, instanceCount, basevertex, baseInstance });
+        } else gl.DrawElementsInstancedBaseVertexBaseInstance(mode, count, _type, indices, instanceCount, basevertex, baseInstance);
+    }
+
+    pub export fn glDrawElementsInstancedBaseInstance(mode: gl.@"enum", count: gl.sizei, _type: gl.@"enum", indices: ?*const anyopaque, instanceCount: gl.sizei, baseInstance: gl.uint) void {
+        if (everyFrame()) {
+            dispatchDebugDraw(instrumentDraw, .{ count, instanceCount }, gl.DrawElementsInstancedBaseInstance, .{ mode, count, _type, indices, instanceCount, baseInstance });
+        } else gl.DrawElementsInstancedBaseInstance(mode, count, _type, indices, instanceCount, baseInstance);
+    }
+
+    const IndirectCommand = extern struct {
+        count: gl.uint, //again opengl mismatch GLuint vs GLint
+        instanceCount: gl.uint,
+        first: gl.uint,
+        baseInstance: gl.uint,
+    };
+    pub fn parseIndirect(indirect: ?*const IndirectCommand) IndirectCommand {
+        // check if GL_DRAW_INDIRECT_BUFFER is bound
+        var buffer: gl.uint = 0;
+        gl.GetIntegerv(gl.DRAW_INDIRECT_BUFFER_BINDING, @ptrCast(&buffer));
+        if (buffer != 0) {
+            // get the data from the buffer
+            var data: IndirectCommand = undefined;
+            gl.GetBufferSubData(gl.DRAW_INDIRECT_BUFFER, @intCast(@intFromPtr(indirect)), @intCast(@sizeOf(IndirectCommand)), &data);
+
+            return data;
+        }
+
+        return if (indirect) |i| i.* else IndirectCommand{ .count = 0, .instanceCount = 1, .first = 0, .baseInstance = 0 };
+    }
+
+    pub export fn glDrawArraysIndirect(mode: gl.@"enum", indirect: ?*const IndirectCommand) void {
+        if (everyFrame()) {
+            const i = parseIndirect(indirect);
+            dispatchDebugDraw(instrumentDraw, .{ @as(gl.sizei, @intCast(i.count)), @as(gl.sizei, @intCast(i.instanceCount)) }, gl.DrawArraysIndirect, .{ mode, indirect });
+        } else gl.DrawArraysIndirect(mode, indirect);
+    }
+
+    pub export fn glDrawElementsIndirect(mode: gl.@"enum", _type: gl.@"enum", indirect: ?*const IndirectCommand) void {
+        if (everyFrame()) {
+            const i = parseIndirect(indirect);
+            dispatchDebugDraw(instrumentDraw, .{ @as(gl.sizei, @intCast(i.count)), @as(gl.sizei, @intCast(i.instanceCount)) }, gl.DrawElementsIndirect, .{ mode, _type, indirect });
+        } else gl.DrawElementsIndirect(mode, _type, indirect);
+    }
+
+    pub export fn glDrawArraysInstancedBaseInstance(mode: gl.@"enum", first: gl.int, count: gl.sizei, instanceCount: gl.sizei, baseInstance: gl.uint) void {
+        if (everyFrame()) {
+            dispatchDebugDraw(instrumentDraw, .{ count, instanceCount }, gl.DrawArraysInstancedBaseInstance, .{ mode, first, count, instanceCount, baseInstance });
+        } else gl.DrawArraysInstancedBaseInstance(mode, first, count, instanceCount, baseInstance);
+    }
+
+    pub export fn glDrawTransformFeedback(mode: gl.@"enum", id: gl.uint) void {
+        if (everyFrame()) {
+            const query = state.getPtr(current).?.primitives_written_queries.items[0];
+            // get GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN
+            var primitiveCount: gl.int = undefined;
+            gl.GetQueryObjectiv(query, gl.QUERY_RESULT, &primitiveCount);
+            dispatchDebugDraw(instrumentDraw, .{ primitiveCount, 1 }, gl.DrawTransformFeedback, .{ mode, id });
+        } else gl.DrawTransformFeedback(mode, id);
+    }
+
+    pub export fn glDrawTransformFeedbackInstanced(mode: gl.@"enum", id: gl.uint, instanceCount: gl.sizei) void {
+        if (everyFrame()) {
+            const query = state.getPtr(current).?.primitives_written_queries.items[0];
+            // get GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN
+            var primitiveCount: gl.int = undefined;
+            gl.GetQueryObjectiv(query, gl.QUERY_RESULT, &primitiveCount);
+            dispatchDebugDraw(instrumentDraw, .{ primitiveCount, instanceCount }, gl.DrawTransformFeedbackInstanced, .{ mode, id, instanceCount });
+        } else gl.DrawTransformFeedbackInstanced(mode, id, instanceCount);
+    }
+
+    pub export fn glDrawTransformFeedbackStream(mode: gl.@"enum", id: gl.uint, stream: gl.uint) void {
+        if (everyFrame()) {
+            const query = state.getPtr(current).?.primitives_written_queries.items[stream];
+            // get GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN
+            var primitiveCount: gl.int = undefined;
+            gl.GetQueryObjectiv(query, gl.QUERY_RESULT, &primitiveCount);
+            dispatchDebugDraw(instrumentDraw, .{ primitiveCount, 1 }, gl.DrawTransformFeedbackStream, .{ mode, id, stream });
+        } else gl.DrawTransformFeedbackStream(mode, id, stream);
+    }
+
+    pub export fn glDrawTransformFeedbackStreamInstanced(mode: gl.@"enum", id: gl.uint, stream: gl.uint, instanceCount: gl.sizei) void {
+        if (everyFrame()) {
+            const query = state.getPtr(current).?.primitives_written_queries.items[stream];
+            // get GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN
+            var primitiveCount: gl.int = undefined;
+            gl.GetQueryObjectiv(query, gl.QUERY_RESULT, &primitiveCount);
+            dispatchDebugDraw(instrumentDraw, .{ primitiveCount, instanceCount }, gl.DrawTransformFeedbackStreamInstanced, .{ mode, id, stream, instanceCount });
+        } else gl.DrawTransformFeedbackStreamInstanced(mode, id, stream, instanceCount);
+    }
+};
 
 /// For fast switch-branching on strings
 fn hashStr(str: String) u32 {
@@ -1529,7 +1533,11 @@ fn callIfLoaded(comptime proc: String, a: anytype) voidOrOptional(returnType(@fi
     //         }
     //     }
     // }
-    return if (state.get(current)) |s| if (s.proc_table) |t| if (@intFromPtr(@field(t, proc)) != 0) @call(.auto, proc_proc, a) else voidOrNull(proc_ret) else voidOrNull(proc_ret) else voidOrNull(proc_ret);
+    return if (isProcLoaded(proc)) @call(.auto, proc_proc, a) else voidOrNull(proc_ret);
+}
+
+fn isProcLoaded(comptime proc: String) bool {
+    return if (state.get(current)) |s| if (s.proc_table) |t| @intFromPtr(@field(t, proc)) != 0 else false else false;
 }
 
 fn voidOrOptional(comptime t: type) type {
@@ -1704,7 +1712,51 @@ noinline fn dumpProcTableErrors(c_state: *State) void {
     }
 }
 
-// TODO destroying contexts
+fn tagEvent(_: ?*const anyopaque, event: shaders.ResourceLocator.TagEvent, _: std.mem.Allocator) anyerror!void {
+    const name = event.locator.name().?;
+    callIfLoaded("ObjectLabel", .{
+        @as(gl.@"enum", if (event.locator == .programs) gl.PROGRAM else gl.SHADER),
+        @as(gl.uint, @intCast(event.ref)),
+        @as(gl.int, if (event.action == .Assign) @intCast(name.len) else 0),
+        if (event.action == .Assign) name.ptr else null,
+    });
+    if (event.action == .Assign) {
+        deshaderDebugMessage("Tagged {s} {x} with {s}", .{ if (event.locator == .programs) "program" else "shader", event.ref, name }, gl.DEBUG_TYPE_OTHER, .info);
+    } else {
+        deshaderDebugMessage("Removed tag from {s}: {s} {x}", .{ if (event.locator == .programs) "program" else "shader", name, event.ref }, gl.DEBUG_TYPE_OTHER, .info);
+    }
+}
+
+/// Returns true if the frame should be debugged
+fn everyFrame() bool {
+    current.bus.processQueueNoThrow();
+    return current.checkDebuggingOrRevert();
+}
+
+fn deshaderDebugMessage(comptime fmt: String, fmt_args: anytype, @"type": gl.@"enum", severity: std.log.Level) void {
+    if (isProcLoaded("DebugMessageInsert")) blk: {
+        const message = std.fmt.allocPrint(common.allocator, fmt, fmt_args) catch |err| {
+            log.err("{}", .{err});
+            break :blk;
+        };
+        defer common.allocator.free(message);
+        gl.DebugMessageInsert(gl.DEBUG_SOURCE_THIRD_PARTY, @"type", 0, switch (severity) {
+            .debug => gl.DEBUG_SEVERITY_NOTIFICATION,
+            .err => gl.DEBUG_SEVERITY_HIGH,
+            .info => gl.DEBUG_SEVERITY_LOW,
+            .warn => gl.DEBUG_SEVERITY_MEDIUM,
+        }, @intCast(message.len), message.ptr);
+        return;
+    }
+
+    switch (severity) {
+        .debug => log.debug(fmt, fmt_args),
+        .err => log.err(fmt, fmt_args),
+        .info => log.info(fmt, fmt_args),
+        .warn => log.warn(fmt, fmt_args),
+    }
+}
+
 /// Performs context switching and initialization
 pub fn makeCurrent(comptime api: anytype, c: ?*const anyopaque) void {
     if (c) |context| {
@@ -1773,6 +1825,7 @@ pub fn makeCurrent(comptime api: anytype, c: ?*const anyopaque) void {
                 }
 
                 contextInvalidatedEvent() catch |err| break :_try err;
+                result.value_ptr.bus.addListener(tagEvent, null) catch |err| break :_try err;
             }
             current = result.value_ptr;
         } catch |err| {
