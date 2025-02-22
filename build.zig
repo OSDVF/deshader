@@ -11,7 +11,7 @@
 // GNU General Public License for more details.
 //
 // You should have received a copy of the GNU General Public License
-// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -657,7 +657,7 @@ pub fn build(b: *std.Build) !void {
         deshader_lib.step.dependOn(&dependencies_step.step);
         launcher_exe.step.dependOn(&dependencies_step.step);
         if (target.result.isGnuLibC()) { // VCPKG links to libstdc++ dynamically
-            if(try fileWithPrefixExists(b.allocator, host_libs_location, "libstdc++.so")) |name| {
+            if (try fileWithPrefixExists(b.allocator, host_libs_location, "libstdc++.so")) |name| {
                 deshader_lib.addObjectFile(.{ .cwd_relative = name });
             } else {
                 log.err("Missing libstdc++, trying to link Zig's LibCpp", .{});

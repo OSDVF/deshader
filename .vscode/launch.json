@@ -11,6 +11,7 @@
             "env": {
                 "DESHADER_LIB": "zig-out/lib/libdeshader.so",
                 "DESHADER_PROCESS": "glfw",
+                "POWER_SAVE": 100
             },
             "autorun": [
                 "set environment LD_PRELOAD ${workspaceRoot}/zig-out/lib/libdeshader.so",
@@ -28,6 +29,7 @@
             "env": {
                 "DESHADER_LIB": "zig-out/lib/libdeshader.so",
                 "DESHADER_GUI": "hidden",
+                "POWER_SAVE": 100
             },
         },
         {

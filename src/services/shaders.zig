@@ -11,9 +11,13 @@
 // GNU General Public License for more details.
 //
 // You should have received a copy of the GNU General Public License
-// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! > Graphics API agnostic interface for shader sources and programs
+//! ## Instrumentation Runtime Frontend
+//!
+//! See `instrumentation` for details about the whole instrumentation architecture design.
+//!
+//! > Runtime Frontend is a graphics API agnostic interface for shader sources and programs
 //! (Should not contain any gl* or vk* calls)
 //! Provides
 //! - specific virtual storage implementations for shaders and programs
@@ -36,7 +40,7 @@ const storage = @import("storage.zig");
 const debug = @import("debug.zig");
 const commands = @import("../commands.zig");
 const instrumentation = @import("instrumentation.zig");
-const ArrayBufMap = @import("array_buf_map.zig").ArrayBufMap;
+const ArrayBufMap = @import("../common/array_buf_map.zig").ArrayBufMap;
 
 const glslang = @cImport({
     @cInclude("glslang/Include/glslang_c_interface.h");
@@ -605,10 +609,10 @@ pub fn isNesting(comptime t: type) bool {
     return @hasDecl(ChildOrT(t), "getNested");
 }
 
-fn statStorage(stor: anytype, locator: storage.Locator.Name, nested: ?storage.Locator) !storage.StatPayload {
+fn statStorage(stor: anytype, locator: @TypeOf(stor.*).Locator, nested: ?storage.Locator) !storage.StatPayload {
     // {target, ?remaining_iterator}
-    var dir_or_file = blk: {
-        switch (locator) {
+    var file = blk: {
+        switch (locator.name) {
             .untagged => |combined| if (combined.isRoot())
                 return try storage.Stat.now().toPayload(.Directory, 0) // TODO: untagged root not always dirty
             else if (stor.all.get(combined.ref)) |parts| {
@@ -668,24 +672,24 @@ fn statStorage(stor: anytype, locator: storage.Locator.Name, nested: ?storage.Lo
         }
     };
 
-    const is_nesting = comptime isNesting(@TypeOf(dir_or_file[0]));
+    //
+    // (nested) file or nested-untagged-root
+    //
+    const is_nesting = comptime isNesting(@TypeOf(file[0]));
     blk: {
         if (is_nesting) {
-            const stage = try if (dir_or_file[1]) |remaining_iterator|
-                dir_or_file[0].getNested(((try storage.Locator.parse(remaining_iterator.rest())).file() orelse return storage.Error.InvalidPath).name)
+            const stage = try if (file[1]) |remaining_iterator|
+                file[0].getNested(((try storage.Locator.parse(remaining_iterator.rest())).file() orelse return storage.Error.InvalidPath).name)
             else if (nested) |n| if (n.file()) |nf|
-                dir_or_file[0].getNested(nf.name)
+                file[0].getNested(nf.name)
             else
                 break :blk else break :blk;
 
             if (stage.Nested.nested) |target| {
                 // Nested file
-                var payload = try target.stat.toPayload(.File, target.lenOr0());
+                var payload = if (nested.?.instrumented) target.i_stat else try target.stat.toPayload(.File, target.lenOr0());
                 if (target.tag != null) {
                     payload.type = payload.type | @intFromEnum(storage.FileType.SymbolicLink);
-                }
-                if (nested != null and nested.?.instrumented) {
-                    payload.permission = .ReadOnly;
                 }
                 return payload;
             } else {
@@ -695,8 +699,12 @@ fn statStorage(stor: anytype, locator: storage.Locator.Name, nested: ?storage.Lo
         }
     }
 
-    var payload = try dir_or_file[0].stat.toPayload(if (is_nesting) .Directory else .File, dir_or_file[0].lenOr0());
-    if (locator == .tagged) {
+    var payload = if (!is_nesting and locator.instrumented)
+        file[0].i_stat
+    else
+        try file[0].stat.toPayload(if (is_nesting) .Directory else .File, file[0].lenOr0());
+
+    if (!locator.isUntagged()) {
         payload.type = payload.type | @intFromEnum(storage.FileType.SymbolicLink);
     }
     return payload;
@@ -704,8 +712,8 @@ fn statStorage(stor: anytype, locator: storage.Locator.Name, nested: ?storage.Lo
 
 pub fn stat(self: *@This(), locator: ResourceLocator) !storage.StatPayload {
     var s = switch (locator) {
-        .sources => |sources| try statStorage(&self.Shaders, sources.name, null),
-        .programs => |programs| try statStorage(&self.Programs, programs.name, programs.nested),
+        .sources => |sources| try statStorage(&self.Shaders, sources, null),
+        .programs => |programs| try statStorage(&self.Programs, programs, programs.nested),
     };
     if (locator.isInstrumented()) {
         s.permission = .ReadOnly;
@@ -981,7 +989,7 @@ pub fn selectThread(shader_locator: usize, thread: []usize, group: ?[]usize) !vo
         };
 
     for (shader.items) |*s| {
-        s.i_dirty = true;
+        s.r_dirty = true;
     }
 }
 
@@ -1044,7 +1052,7 @@ pub fn @"continue"(self: *@This(), shader_ref: usize) !void {
     }
 
     for (shader.items) |*s| {
-        s.i_dirty = true;
+        s.r_dirty = true;
     }
 }
 
@@ -1068,7 +1076,7 @@ pub fn advanceStepping(self: *@This(), shader_ref: usize, target: ?u32) !void {
     }
 
     for (shader.items) |*s| {
-        s.i_dirty = true;
+        s.r_dirty = true;
     }
 }
 
@@ -1167,7 +1175,7 @@ const stages_order = std.EnumMap(decls.Stage, usize).init(.{
     .vk_tess_evaluation = 2,
     .gl_task = 1,
     .vk_task = 1,
-    .gl_mesh = 2, // replaces vertex, geometry and tesselation
+    .gl_mesh = 2, // mesh replaces vertex, geometry and tesselation
     .vk_mesh = 2,
     .gl_geometry = 3,
     .vk_geometry = 3,
@@ -1203,7 +1211,7 @@ pub fn instrument(self: *@This(), program: *Shader.Program, in_params: State.Par
 
     var state = std.AutoArrayHashMapUnmanaged(usize, *State){};
     var invalidated_any = false;
-    var invalidated_uniforms = false;
+    var invalidated_uniforms = false; // TODO some mismatch between r_dirty and invalidated_uniforms
     // Collapse the map into a list
     const shader_count = program.stages.count();
     const shaders_list = try params.allocator.alloc(ShadersRefMap.Entry, shader_count);
@@ -1222,13 +1230,13 @@ pub fn instrument(self: *@This(), program: *Shader.Program, in_params: State.Par
     // needs re-link?
     var re_link = false;
     for (shaders_list) |shader_entry| {
-        const shader_parts = shader_entry.value_ptr; // One shader represented by a list of its source parts
+        const shader_parts = shader_entry.value_ptr.*; // One shader represented by a list of its source parts
         const first_part = shader_parts.*.items[0];
 
-        for (shader_parts.*.items) |*sp| {
-            if (sp.i_dirty) {
+        for (shader_parts.items) |*sp| {
+            if (sp.r_dirty) {
                 invalidated_uniforms = true;
-                sp.i_dirty = false; // clear
+                sp.r_dirty = false; // clear
             }
         }
 
@@ -1236,7 +1244,7 @@ pub fn instrument(self: *@This(), program: *Shader.Program, in_params: State.Par
             program,
             &params,
             shader_entry.key_ptr.*,
-            shader_parts.*.items,
+            shader_parts.items,
         );
         switch (shader_result) {
             .cached => |cached_state| try state.put(params.allocator, shader_entry.key_ptr.*, cached_state),
@@ -1248,15 +1256,19 @@ pub fn instrument(self: *@This(), program: *Shader.Program, in_params: State.Par
                 if (new_result.source) |instrumented_source| {
                     // If any instrumentation was emitted,
                     // replace the shader source with the instrumented one on the host side
-                    if (first_part.compileHost) |c| {
-                        const payload = try Shader.SourcePart.toPayload(params.allocator, shader_parts.*.items);
+                    if (first_part.compileHost) |compile| {
+                        const payload = try Shader.SourcePart.toPayload(params.allocator, shader_parts.items);
                         defer Shader.SourcePart.freePayload(payload, params.allocator);
 
-                        const result = c(payload, instrumented_source, @intCast(new_result.length));
+                        const result = compile(payload, instrumented_source, @intCast(new_result.length));
                         if (result != 0) {
                             log.err("Failed to compile instrumented shader {x}. Code {d}", .{ program.ref, result });
                             new_result.deinit(params.allocator);
                             continue;
+                        }
+                        for (shader_parts.items) |*sp| {
+                            sp.i_stat.size = new_result.length;
+                            sp.i_stat.dirty();
                         }
                     } else {
                         log.err("No compileHost function for shader {x}", .{program.ref});
@@ -1408,7 +1420,7 @@ pub const Shader = struct {
         stage: @TypeOf(SourcesPayload.stage) = @enumFromInt(0),
         language: @TypeOf(SourcesPayload.language) = @enumFromInt(0),
         /// Can be anything that is needed for the host application
-        context: ?*const anyopaque = null,
+        context: ?*anyopaque = null,
         /// Graphics API-dependednt function that compiles the (instrumented) shader within the host application context. Defaults to glShaderSource and glCompileShader
         compileHost: @TypeOf(SourcesPayload.compile) = null,
         saveHost: @TypeOf(SourcesPayload.save) = null,
@@ -1424,8 +1436,10 @@ pub const Shader = struct {
         source: ?String = null,
         /// Contains references (indexes) to `stops` in the source code
         breakpoints: std.AutoHashMapUnmanaged(usize, BreakpointSpecial) = .{},
-        /// A flag for the platform interface (e.g. `gl_shaders`) for setting the required uniforms for source-stepping
-        i_dirty: bool = true, // TODO where to clear this?
+        /// A flag for the runtime backend (e.g. `interceptors.gl_shaders`) for setting the required uniforms for source-stepping
+        r_dirty: bool = true, // TODO where to clear this?
+        /// Attributes of the .instrumented "file"
+        i_stat: storage.StatPayload,
         /// Syntax tree of the original shader source code. Used for breakpoint location calculation
         tree: ?analyzer.parse.Tree = null,
         /// Possible breakpoint or debugging step locations. Access using `possibleSteps()`
@@ -1503,8 +1517,9 @@ pub const Shader = struct {
                 .saveHost = payload.save,
                 .currentSourceHost = payload.currentSource,
                 .language = payload.language,
-                .context = if (payload.contexts != null) payload.contexts.?[index] else null,
+                .context = payload.context,
                 .stat = storage.Stat.now(),
+                .i_stat = storage.StatPayload.empty_readonly,
                 .source = source,
             };
         }
@@ -1514,11 +1529,13 @@ pub const Shader = struct {
             return self.source;
         }
 
-        pub fn instrumentedSource(self: *const @This()) !?String {
-            if (self.currentSourceHost) |c| {
+        /// Updates the 'accessed' time on the .insturmented "file"
+        pub fn instrumentedSource(self: *@This()) !?String {
+            if (self.currentSourceHost) |currentSource| {
                 const path = if (self.tag) |t| try t.fullPathAlloc(self.allocator, true) else null;
                 defer if (path) |p| self.allocator.free(p);
-                if (c(self.ref, if (path) |p| p.ptr else null, if (path) |p| p.len else 0)) |source| {
+                if (currentSource(self.context, self.ref, if (path) |p| p.ptr else null, if (path) |p| p.len else 0)) |source| {
+                    self.i_stat.touch();
                     return std.mem.span(source);
                 }
             } else {
@@ -1583,6 +1600,7 @@ pub const Shader = struct {
                 s.deinit(self.allocator);
             }
             self.tree = null;
+            self.i_stat = storage.StatPayload.empty_readonly;
         }
 
         pub fn parseTree(self: *@This()) !*const analyzer.parse.Tree {
@@ -1739,13 +1757,7 @@ pub const Shader = struct {
                 .ref = parts[0].ref,
                 .compile = parts[0].compileHost,
                 // TODO .paths
-                .contexts = blk: {
-                    var contexts = try allocator.alloc(?*const anyopaque, parts.len);
-                    for (parts, 0..) |part, i| {
-                        contexts[i] = part.context;
-                    }
-                    break :blk contexts.ptr;
-                },
+                .context = parts[0].context,
                 .count = parts.len,
                 .language = parts[0].language,
                 .lengths = blk: {
@@ -1774,7 +1786,6 @@ pub const Shader = struct {
             }
             allocator.free(payload.sources.?[0..payload.count]);
             allocator.free(payload.lengths.?[0..payload.count]);
-            allocator.free(payload.contexts.?[0..payload.count]);
         }
     };
 
@@ -2016,13 +2027,7 @@ pub const Shader = struct {
                         .ref = shader.ref,
                         .paths = if (has_paths) paths.ptr else null,
                         .compile = shader.compileHost,
-                        .contexts = blk: {
-                            var contexts = try allocator.alloc(?*const anyopaque, shader_parts.*.items.len);
-                            for (shader_parts.*.items, 0..) |part, i| {
-                                contexts[i] = part.context;
-                            }
-                            break :blk contexts.ptr;
-                        },
+                        .context = shader_parts.*.items[0].context,
                         .count = shader_parts.*.items.len,
                         .language = shader.language,
                         .sources = sources.ptr,
@@ -2030,7 +2035,6 @@ pub const Shader = struct {
                         .stage = shader.stage,
                         .save = shader.saveHost,
                     };
-                    defer allocator.free(payload.contexts.?[0..payload.count]);
                     const status = compile(payload, "", 0);
 
                     if (status != 0) {

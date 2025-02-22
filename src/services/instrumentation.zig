@@ -11,12 +11,14 @@
 // GNU General Public License for more details.
 //
 // You should have received a copy of the GNU General Public License
-// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! TODO
-//! Sdílená paměť - dumpuje jen jedno vlákno ze skupiny
-//! Lokální paměť - každé vlákno
-//! Builtin variables - podle druhu
+//! # Deshader Instrumentation
+//! The instrumentation process consists of several intercomunicting "layers":
+//!
+//! - Shader Processor (this file)
+//! - Runtime Frontend (`shaders`)
+//! - Runtime Backend ([`interceptors.gl_shaders`](../interceptors/gl_shaders.zig))
 
 const std = @import("std");
 const analyzer = @import("glsl_analyzer");

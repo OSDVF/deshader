@@ -11,7 +11,7 @@
 // GNU General Public License for more details.
 //
 // You should have received a copy of the GNU General Public License
-// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -21,6 +21,7 @@ pub const logging = @import("common/log.zig");
 pub const env = @import("common/env.zig");
 pub const process = @import("common/process.zig");
 pub const Bus = @import("common/event.zig").Bus;
+pub const Waiter = @import("common/waiter.zig").Waiter;
 
 const c = @cImport({
     if (builtin.os.tag == .windows) {

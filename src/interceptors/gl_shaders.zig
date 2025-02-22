@@ -11,9 +11,12 @@
 // GNU General Public License for more details.
 //
 // You should have received a copy of the GNU General Public License
-// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Rendering and shader instrumentation service implementation for OpenGL.
+//! ## Instrumentation Runtime Backend for OpenGL
+//!
+//! See `instrumentation` for details about the whole instrumentation architecture design.
+//!  Rendering and shader instrumentation frontend service implementation for OpenGL.
 //! Contains functions prefixed with `gl` which are interceptor functions for OpenGL API calls.
 
 // TODO: support MESA debug extensions? (MESA_program_debug, MESA_shader_debug)
@@ -59,12 +62,10 @@ const UniformTargets = struct {
     bp_selector: ?gl.int = null,
 };
 
-/// The service instance which belongs to currently selected context.
-pub threadlocal var current: *shaders = undefined;
-
 // Managed per-context state
 const State = struct {
     proc_table: ?gl.ProcTable = null,
+    gl: loaders.GlBackend, // TODO: encapsulate the whole gl_shaders into a backend-specific service
     readback_step_buffers: std.AutoHashMapUnmanaged(usize, []uvec2) = .{},
     stack_trace_buffer: [shaders.STACK_TRACE_MAX]shaders.StackTraceT = undefined,
     variables_buffer: [MAX_VARIABLES_SIZE]u8 = undefined,
@@ -123,7 +124,14 @@ const State = struct {
         gl.makeProcTableCurrent(prev_proc_table);
     }
 };
+
+const Request = enum { BorrowContext };
+const Response = enum { ContextFree };
+
 var state: std.AutoHashMapUnmanaged(*shaders, State) = .{};
+var waiter = common.Waiter(Request, Response){};
+/// The service instance which belongs to currently selected context.
+pub threadlocal var current: *shaders = undefined;
 
 fn defaultCompileShader(source: decls.SourcesPayload, instrumented: CString, length: i32) callconv(.C) u8 {
     const shader: gl.uint = @intCast(source.ref);
@@ -176,9 +184,128 @@ fn defaultCompileShader(source: decls.SourcesPayload, instrumented: CString, len
     return 0;
 }
 
-fn defaultGetShaderSource(ref: Ref, _: ?CString, _: usize) callconv(.C) ?CString {
+fn FirstOrEmptyTuple(comptime T: type) type {
+    const fields = std.meta.fields(T);
+    return @Type(std.builtin.Type{ .Struct = .{
+        .is_tuple = true,
+        .fields = if (fields.len > 0) fields[0..1] else &.{},
+        .decls = &.{},
+        .layout = .auto,
+    } });
+}
+
+fn firstOrEmpty(t: anytype) FirstOrEmptyTuple(@TypeOf(t)) {
+    return if (std.meta.fields(@TypeOf(t)).len > 0)
+        .{t[0]}
+    else
+        .{};
+}
+
+fn setContext(gl_backend_union: loaders.GlBackend, context: ?*const anyopaque) void {
+    switch (gl_backend_union) {
+        inline else => |params, backend| {
+            const gl_backend = @field(loaders.APIs.gl, @tagName(backend));
+            if (gl_backend.get_current != null) {
+                if (context) |c|
+                    _ = callConcatArgs(gl_backend.make_current[0], params, .{c})
+                else
+                    _ = callRestNull(gl_backend.make_current[0], firstOrEmpty(params));
+
+                makeCurrent(gl_backend, params, context);
+            }
+        },
+    }
+}
+
+/// Switches the context to `ctx` and returns the previous context.
+///
+/// NOTE: Do not switch context when rendering is currently in progress. Use `drawing_mutex` to synchronize.
+fn switchContext(gl_backend_union: loaders.GlBackend, ctx: *const anyopaque) ?*const anyopaque {
+    switch (gl_backend_union) {
+        inline else => |params, backend| {
+            const gl_backend = @field(loaders.APIs.gl, @tagName(backend));
+            const make_current = gl_backend.make_current[0];
+            var prev_context: ?*const anyopaque = undefined;
+
+            if (gl_backend.get_current) |get_current| {
+                prev_context = get_current();
+            }
+
+            const success = callConcatArgs(make_current, params, .{ctx});
+            makeCurrent(gl_backend, params, ctx);
+
+            if (success == 0) {
+                log.err("Failed to switch context for {}", .{backend});
+                return null;
+            }
+            return prev_context;
+        },
+    }
+}
+
+fn callConcatArgs(function: anytype, params: anytype, additional: anytype) ReturnType(@TypeOf(function)) {
+    const ArgsT = std.meta.ArgsTuple(@typeInfo(@TypeOf(function)).Pointer.child);
+    var args_tuple: ArgsT = undefined;
+    const params_len = std.meta.fields(@TypeOf(params)).len;
+    const additional_len = std.meta.fields(@TypeOf(additional)).len;
+    if (params_len + additional_len != std.meta.fields(ArgsT).len) {
+        @compileError("The number of arguments does not match the function signature");
+    }
+    inline for (0..params_len + 1) |i| {
+        if (i < params_len) {
+            args_tuple[i] = params[i];
+        } else {
+            args_tuple[i] = additional[i - params_len];
+        }
+    }
+    return @call(.auto, function, args_tuple);
+}
+
+fn callRestNull(function: anytype, params: anytype) ReturnType(@TypeOf(function)) {
+    const ArgsT = std.meta.ArgsTuple(@typeInfo(@TypeOf(function)).Pointer.child);
+    var args_tuple: ArgsT = undefined;
+    const params_len = std.meta.fields(@TypeOf(params)).len;
+    inline for (0..std.meta.fields(ArgsT).len) |i| {
+        if (i < params_len) {
+            args_tuple[i] = params[i];
+        } else {
+            const t = @TypeOf(args_tuple[i]);
+            switch (@typeInfo(t)) {
+                .Optional => {
+                    args_tuple[i] = null;
+                },
+                .Pointer => |p| {
+                    if (p.is_allowzero) {
+                        args_tuple[i] = null;
+                    } else {
+                        @compileError(std.fmt.comptimePrint("Argument {d} is {} and not allowzero.", .{ i, t }));
+                    }
+                },
+                .Int, .ComptimeInt => {
+                    args_tuple[i] = 0;
+                },
+                else => {
+                    @compileError(std.fmt.comptimePrint("Argument {d} is not nullable ({}).", .{ i, t }));
+                },
+            }
+        }
+    }
+    return @call(.auto, function, args_tuple);
+}
+
+fn defaultGetCurrentSource(ctx: ?*anyopaque, ref: Ref, _: ?CString, _: usize) callconv(.C) ?CString {
+    const service: *shaders = @alignCast(@ptrCast(ctx.?));
+    const c_state = state.getPtr(service) orelse return null;
+
+    if (waiter.request(.BorrowContext) != .ContextFree) {
+        log.err("Could not borrow context from the drawing thead.", .{});
+        return null;
+    }
+    const prev_context = switchContext(c_state.gl, service.context);
+
     const shader: gl.uint = @intCast(ref);
     var length: gl.sizei = undefined;
+    // TODO bind the correct context
     gl.GetShaderiv(shader, gl.SHADER_SOURCE_LENGTH, &length);
     if (length == 0) {
         log.err("Shader {d} has no source", .{shader});
@@ -188,8 +315,10 @@ fn defaultGetShaderSource(ref: Ref, _: ?CString, _: usize) callconv(.C) ?CString
         log.err("Failed to allocate memory for shader source: {any}", .{err});
         return null;
     };
-    defer common.allocator.free(source[0..@intCast(length)]);
     gl.GetShaderSource(shader, length, &length, source);
+
+    setContext(c_state.gl, prev_context);
+    waiter.eatingDone();
     return source;
 }
 
@@ -261,7 +390,8 @@ pub export fn glCreateShader(stage: gl.@"enum") gl.uint {
             .ref = ref,
             .stage = @enumFromInt(stage),
             .compile = defaultCompileShader,
-            .currentSource = defaultGetShaderSource,
+            .currentSource = defaultGetCurrentSource,
+            .context = current,
             .count = 1,
             .language = decls.LanguageType.GLSL,
         }, 0) catch |err| {
@@ -300,7 +430,7 @@ pub export fn glCreateShaderProgramv(stage: gl.@"enum", count: gl.sizei, sources
         .sources = sources,
         .lengths = lengths.ptr,
         .compile = defaultCompileShader,
-        .currentSource = defaultGetShaderSource,
+        .currentSource = defaultGetCurrentSource,
         .language = decls.LanguageType.GLSL,
     }) catch |err| {
         log.warn("Failed to add shader source {x} cache: {any}", .{ new_platform_sources[0], err });
@@ -1061,7 +1191,8 @@ pub usingnamespace struct {
     // }
 
     pub export fn glDispatchCompute(num_groups_x: gl.uint, num_groups_y: gl.uint, num_groups_z: gl.uint) void {
-        if (everyFrame()) {
+        defer endFrame();
+        if (beginFrame()) {
             dispatchDebug(instrumentCompute, .{[_]usize{ @intCast(num_groups_x), @intCast(num_groups_y), @intCast(num_groups_z) }}, gl.DispatchCompute, .{ num_groups_x, num_groups_y, num_groups_z });
         } else gl.DispatchCompute(num_groups_x, num_groups_y, num_groups_z);
     }
@@ -1072,7 +1203,8 @@ pub usingnamespace struct {
         num_groups_z: gl.uint,
     };
     pub export fn glDispatchComputeIndirect(address: gl.intptr) void {
-        if (everyFrame()) {
+        defer endFrame();
+        if (beginFrame()) {
             var command = IndirectComputeCommand{ .num_groups_x = 1, .num_groups_y = 1, .num_groups_z = 1 };
             //check GL_DISPATCH_INDIRECT_BUFFER
             var buffer: gl.int = 0;
@@ -1086,61 +1218,71 @@ pub usingnamespace struct {
     }
 
     pub export fn glDrawArrays(mode: gl.@"enum", first: gl.int, count: gl.sizei) void {
-        if (everyFrame()) {
+        defer endFrame();
+        if (beginFrame()) {
             dispatchDebugDraw(instrumentDraw, .{ count, 1 }, gl.DrawArrays, .{ mode, first, count });
         } else gl.DrawArrays(mode, first, count);
     }
 
     pub export fn glDrawArraysInstanced(mode: gl.@"enum", first: gl.int, count: gl.sizei, instanceCount: gl.sizei) void {
-        if (everyFrame()) {
+        defer endFrame();
+        if (beginFrame()) {
             dispatchDebugDraw(instrumentDraw, .{ count, instanceCount }, gl.DrawArraysInstanced, .{ mode, first, count, instanceCount });
         } else gl.DrawArraysInstanced(mode, first, count, instanceCount);
     }
 
     pub export fn glDrawElements(mode: gl.@"enum", count: gl.sizei, _type: gl.@"enum", indices: usize) void {
-        if (everyFrame()) {
+        defer endFrame();
+        if (beginFrame()) {
             dispatchDebugDraw(instrumentDraw, .{ count, 1 }, gl.DrawElements, .{ mode, count, _type, indices });
         } else gl.DrawElements(mode, count, _type, indices);
     }
 
     pub export fn glDrawElementsInstanced(mode: gl.@"enum", count: gl.sizei, _type: gl.@"enum", indices: ?*const anyopaque, instanceCount: gl.sizei) void {
-        if (everyFrame()) {
+        defer endFrame();
+        if (beginFrame()) {
             dispatchDebugDraw(instrumentDraw, .{ count, instanceCount }, gl.DrawElementsInstanced, .{ mode, count, _type, indices, instanceCount });
         } else gl.DrawElementsInstanced(mode, count, _type, indices, instanceCount);
     }
 
     pub export fn glDrawElementsBaseVertex(mode: gl.@"enum", count: gl.sizei, _type: gl.@"enum", indices: ?*const anyopaque, basevertex: gl.int) void {
-        if (everyFrame()) {
+        defer endFrame();
+        if (beginFrame()) {
             dispatchDebugDraw(instrumentDraw, .{ count, 1 }, gl.DrawElementsBaseVertex, .{ mode, count, _type, indices, basevertex });
         } else gl.DrawElementsBaseVertex(mode, count, _type, indices, basevertex);
     }
 
     pub export fn glDrawElementsInstancedBaseVertex(mode: gl.@"enum", count: gl.sizei, _type: gl.@"enum", indices: ?*const anyopaque, instanceCount: gl.sizei, basevertex: gl.int) void {
-        if (everyFrame()) {
+        defer endFrame();
+        if (beginFrame()) {
             dispatchDebugDraw(instrumentDraw, .{ count, instanceCount }, gl.DrawElementsInstancedBaseVertex, .{ mode, count, _type, indices, instanceCount, basevertex });
         } else gl.DrawElementsInstancedBaseVertex(mode, count, _type, indices, instanceCount, basevertex);
     }
 
     pub export fn glDrawRangeElements(mode: gl.@"enum", start: gl.uint, end: gl.uint, count: gl.sizei, _type: gl.@"enum", indices: ?*const anyopaque) void {
-        if (everyFrame()) {
+        defer endFrame();
+        if (beginFrame()) {
             dispatchDebugDraw(instrumentDraw, .{ count, 1 }, gl.DrawRangeElements, .{ mode, start, end, count, _type, indices });
         } else gl.DrawRangeElements(mode, start, end, count, _type, indices);
     }
 
     pub export fn glDrawRangeElementsBaseVertex(mode: gl.@"enum", start: gl.uint, end: gl.uint, count: gl.sizei, _type: gl.@"enum", indices: ?*const anyopaque, basevertex: gl.int) void {
-        if (everyFrame()) {
+        defer endFrame();
+        if (beginFrame()) {
             dispatchDebugDraw(instrumentDraw, .{ count, 1 }, gl.DrawRangeElementsBaseVertex, .{ mode, start, end, count, _type, indices, basevertex });
         } else gl.DrawRangeElementsBaseVertex(mode, start, end, count, _type, indices, basevertex);
     }
 
     pub export fn glDrawElementsInstancedBaseVertexBaseInstance(mode: gl.@"enum", count: gl.sizei, _type: gl.@"enum", indices: ?*const anyopaque, instanceCount: gl.sizei, basevertex: gl.int, baseInstance: gl.uint) void {
-        if (everyFrame()) {
+        defer endFrame();
+        if (beginFrame()) {
             dispatchDebugDraw(instrumentDraw, .{ count, instanceCount }, gl.DrawElementsInstancedBaseVertexBaseInstance, .{ mode, count, _type, indices, instanceCount, basevertex, baseInstance });
         } else gl.DrawElementsInstancedBaseVertexBaseInstance(mode, count, _type, indices, instanceCount, basevertex, baseInstance);
     }
 
     pub export fn glDrawElementsInstancedBaseInstance(mode: gl.@"enum", count: gl.sizei, _type: gl.@"enum", indices: ?*const anyopaque, instanceCount: gl.sizei, baseInstance: gl.uint) void {
-        if (everyFrame()) {
+        defer endFrame();
+        if (beginFrame()) {
             dispatchDebugDraw(instrumentDraw, .{ count, instanceCount }, gl.DrawElementsInstancedBaseInstance, .{ mode, count, _type, indices, instanceCount, baseInstance });
         } else gl.DrawElementsInstancedBaseInstance(mode, count, _type, indices, instanceCount, baseInstance);
     }
@@ -1167,27 +1309,31 @@ pub usingnamespace struct {
     }
 
     pub export fn glDrawArraysIndirect(mode: gl.@"enum", indirect: ?*const IndirectCommand) void {
-        if (everyFrame()) {
+        defer endFrame();
+        if (beginFrame()) {
             const i = parseIndirect(indirect);
             dispatchDebugDraw(instrumentDraw, .{ @as(gl.sizei, @intCast(i.count)), @as(gl.sizei, @intCast(i.instanceCount)) }, gl.DrawArraysIndirect, .{ mode, indirect });
         } else gl.DrawArraysIndirect(mode, indirect);
     }
 
     pub export fn glDrawElementsIndirect(mode: gl.@"enum", _type: gl.@"enum", indirect: ?*const IndirectCommand) void {
-        if (everyFrame()) {
+        defer endFrame();
+        if (beginFrame()) {
             const i = parseIndirect(indirect);
             dispatchDebugDraw(instrumentDraw, .{ @as(gl.sizei, @intCast(i.count)), @as(gl.sizei, @intCast(i.instanceCount)) }, gl.DrawElementsIndirect, .{ mode, _type, indirect });
         } else gl.DrawElementsIndirect(mode, _type, indirect);
     }
 
     pub export fn glDrawArraysInstancedBaseInstance(mode: gl.@"enum", first: gl.int, count: gl.sizei, instanceCount: gl.sizei, baseInstance: gl.uint) void {
-        if (everyFrame()) {
+        defer endFrame();
+        if (beginFrame()) {
             dispatchDebugDraw(instrumentDraw, .{ count, instanceCount }, gl.DrawArraysInstancedBaseInstance, .{ mode, first, count, instanceCount, baseInstance });
         } else gl.DrawArraysInstancedBaseInstance(mode, first, count, instanceCount, baseInstance);
     }
 
     pub export fn glDrawTransformFeedback(mode: gl.@"enum", id: gl.uint) void {
-        if (everyFrame()) {
+        defer endFrame();
+        if (beginFrame()) {
             const query = state.getPtr(current).?.primitives_written_queries.items[0];
             // get GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN
             var primitiveCount: gl.int = undefined;
@@ -1197,7 +1343,8 @@ pub usingnamespace struct {
     }
 
     pub export fn glDrawTransformFeedbackInstanced(mode: gl.@"enum", id: gl.uint, instanceCount: gl.sizei) void {
-        if (everyFrame()) {
+        defer endFrame();
+        if (beginFrame()) {
             const query = state.getPtr(current).?.primitives_written_queries.items[0];
             // get GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN
             var primitiveCount: gl.int = undefined;
@@ -1207,7 +1354,8 @@ pub usingnamespace struct {
     }
 
     pub export fn glDrawTransformFeedbackStream(mode: gl.@"enum", id: gl.uint, stream: gl.uint) void {
-        if (everyFrame()) {
+        defer endFrame();
+        if (beginFrame()) {
             const query = state.getPtr(current).?.primitives_written_queries.items[stream];
             // get GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN
             var primitiveCount: gl.int = undefined;
@@ -1217,7 +1365,8 @@ pub usingnamespace struct {
     }
 
     pub export fn glDrawTransformFeedbackStreamInstanced(mode: gl.@"enum", id: gl.uint, stream: gl.uint, instanceCount: gl.sizei) void {
-        if (everyFrame()) {
+        defer endFrame();
+        if (beginFrame()) {
             const query = state.getPtr(current).?.primitives_written_queries.items[stream];
             // get GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN
             var primitiveCount: gl.int = undefined;
@@ -1314,6 +1463,7 @@ pub export fn glCreateProgram() gl.uint {
     current.programCreateUntagged(decls.ProgramPayload{
         .ref = @intCast(new_platform_program),
         .link = defaultLink,
+        .context = current,
     }) catch |err| {
         log.warn("Failed to add program {x} to storage: {any}", .{ new_platform_program, err });
     };
@@ -1442,7 +1592,7 @@ fn hardCast(comptime T: type, val: anytype) T {
     return @as(T, @alignCast(@ptrCast(@constCast(val))));
 }
 
-fn namedStringSourceAlloc(_: usize, path: ?CString, length: usize) callconv(.C) ?CString {
+fn namedStringSourceAlloc(_: ?*anyopaque, _: usize, path: ?CString, length: usize) callconv(.C) ?CString {
     if (path) |p| {
         var result_len: gl.int = undefined;
         gl.GetNamedStringivARB(@intCast(length), p, gl.NAMED_STRING_LENGTH_ARB, &result_len);
@@ -1461,7 +1611,7 @@ fn namedStringSourceAlloc(_: usize, path: ?CString, length: usize) callconv(.C) 
     return null;
 }
 
-fn freeNamedString(_: Ref, _: *const anyopaque, string: CString) callconv(.C) void {
+fn freeNamedString(_: Ref, _: ?*anyopaque, string: CString) callconv(.C) void {
     common.allocator.free(std.mem.span(string));
 }
 
@@ -1516,9 +1666,9 @@ pub export fn glDebugMessageInsert(source: gl.@"enum", _type: gl.@"enum", id: gl
 }
 
 /// Calls a function from the OpenGL context if it is available
-fn callIfLoaded(comptime proc: String, a: anytype) voidOrOptional(returnType(@field(gl, proc))) {
+fn callIfLoaded(comptime proc: String, a: anytype) VoidOrOptional(ReturnType(@field(gl, proc))) {
     const proc_proc = @field(gl, proc);
-    const proc_ret = returnType(proc_proc);
+    const proc_ret = ReturnType(proc_proc);
     const target_args = @typeInfo(@TypeOf(proc_proc)).Fn.params.len;
     const source_args = @typeInfo(@TypeOf(a)).Struct.fields.len;
     if (target_args != source_args) {
@@ -1540,7 +1690,7 @@ fn isProcLoaded(comptime proc: String) bool {
     return if (state.get(current)) |s| if (s.proc_table) |t| @intFromPtr(@field(t, proc)) != 0 else false else false;
 }
 
-fn voidOrOptional(comptime t: type) type {
+fn VoidOrOptional(comptime t: type) type {
     return if (t == void) void else ?t;
 }
 
@@ -1548,8 +1698,14 @@ fn voidOrNull(comptime t: type) if (t == void) void else null {
     if (t == void) {} else return null;
 }
 
-fn returnType(t: anytype) type {
-    return @typeInfo(@TypeOf(t)).Fn.return_type.?;
+fn ReturnType(t: anytype) type {
+    const t_type = @TypeOf(t);
+    var fn_type = @typeInfo(if (t_type == type) t else t_type);
+    switch (fn_type) {
+        .Pointer => |p| fn_type = @typeInfo(p.child),
+        else => {},
+    }
+    return fn_type.Fn.return_type.?;
 }
 
 const ids_array = blk: {
@@ -1591,15 +1747,13 @@ pub const context_procs = if (builtin.os.tag == .windows)
     struct {
         pub export fn wglMakeCurrent(hdc: *const anyopaque, context: ?*const anyopaque) c_int {
             const result = loaders.APIs.gl.wgl.make_current[0](hdc, context);
-            loaders.APIs.gl.wgl.last_params = .{hdc};
-            makeCurrent(loaders.APIs.gl.wgl, context);
+            makeCurrent(loaders.APIs.gl.wgl, .{hdc}, context);
             return result;
         }
 
         pub export fn wglMakeContextCurrentARB(hReadDC: *const anyopaque, hDrawDC: *const anyopaque, hglrc: ?*const anyopaque) c_int {
             const result = loaders.APIs.gl.wgl.make_current[1](hReadDC, hDrawDC, hglrc);
-            loaders.APIs.gl.wgl.last_params = .{hDrawDC};
-            makeCurrent(loaders.APIs.gl.wgl, hglrc);
+            makeCurrent(loaders.APIs.gl.wgl, .{hDrawDC}, hglrc);
             return result;
         }
 
@@ -1628,15 +1782,13 @@ else
         //#region Context functions
         pub export fn glXMakeCurrent(display: *const anyopaque, drawable: c_ulong, context: ?*const anyopaque) c_int {
             const result = loaders.APIs.gl.glX.make_current[0](display, drawable, context);
-            loaders.APIs.gl.glX.last_params = .{ display, drawable };
-            makeCurrent(loaders.APIs.gl.glX, context);
+            makeCurrent(loaders.APIs.gl.glX, .{ display, drawable }, context);
             return result;
         }
 
         pub export fn glXMakeContextCurrent(display: *const anyopaque, read: c_ulong, write: c_ulong, context: ?*const anyopaque) c_int {
             const result = loaders.APIs.gl.glX.make_current[1](display, read, write, context);
-            loaders.APIs.gl.glX.last_params = .{ display, write };
-            makeCurrent(loaders.APIs.gl.glX, context);
+            makeCurrent(loaders.APIs.gl.glX, .{ display, write }, context);
             return result;
         }
 
@@ -1657,8 +1809,7 @@ else
 
         pub export fn eglMakeCurrent(display: *const anyopaque, read: *const anyopaque, write: *const anyopaque, context: ?*const anyopaque) c_uint {
             const result = loaders.APIs.gl.egl.make_current[0](display, read, write, context);
-            loaders.APIs.gl.egl.last_params = .{ display, read, write };
-            makeCurrent(loaders.APIs.gl.egl, context);
+            makeCurrent(loaders.APIs.gl.egl, .{ display, read, write }, context);
             return result;
         }
 
@@ -1728,10 +1879,36 @@ fn tagEvent(_: ?*const anyopaque, event: shaders.ResourceLocator.TagEvent, _: st
 }
 
 /// Returns true if the frame should be debugged
-fn everyFrame() bool {
+fn beginFrame() bool {
+
+    // Bring back the stolen context
+    // TODO: what if the context was stolen from different than the main drawing thread
+    const c_state = state.getPtr(current).?;
+
+    switch (c_state.gl) {
+        inline else => |params, backend| {
+            const gl_backend = @field(loaders.APIs.gl, @tagName(backend));
+            if (gl_backend.get_current) |get_current| {
+                const prev_context = get_current();
+                while (waiter.requests()) |req| {
+                    switch (req) {
+                        .BorrowContext => {
+                            _ = callRestNull(gl_backend.make_current[0], firstOrEmpty(params));
+                            waiter.respondWaitEaten(.ContextFree);
+                        },
+                    }
+                }
+                _ = callConcatArgs(gl_backend.make_current[0], params, .{prev_context});
+                // makeCurrent(gl_backend, params, current.context);
+            }
+        },
+    }
+
     current.bus.processQueueNoThrow();
     return current.checkDebuggingOrRevert();
 }
+
+inline fn endFrame() void {}
 
 fn deshaderDebugMessage(comptime fmt: String, fmt_args: anytype, @"type": gl.@"enum", severity: std.log.Level) void {
     if (isProcLoaded("DebugMessageInsert")) blk: {
@@ -1758,16 +1935,20 @@ fn deshaderDebugMessage(comptime fmt: String, fmt_args: anytype, @"type": gl.@"e
 }
 
 /// Performs context switching and initialization
-pub fn makeCurrent(comptime api: anytype, c: ?*const anyopaque) void {
+pub fn makeCurrent(comptime api: anytype, params: anytype, c: ?*const anyopaque) void {
     if (c) |context| {
         _ = _try: {
             const result = shaders.getOrAddService(context, common.allocator) catch |err| break :_try err;
             const c_state = (state.getOrPut(common.allocator, result.value_ptr) catch |err| break :_try err).value_ptr;
+            const gl_backend = @unionInit(loaders.GlBackend, api.name, params);
             if (result.found_existing) {
                 gl.makeProcTableCurrent(@ptrCast(&c_state.proc_table));
+                c_state.gl = gl_backend;
             } else {
                 // Initialize per-context variables
-                c_state.* = .{};
+                c_state.* = .{
+                    .gl = gl_backend,
+                };
 
                 if (!api.late_loaded) {
                     if (loaders.loadGlLib()) {
@@ -1854,14 +2035,16 @@ fn deleteContext(c: *const anyopaque, api: anytype, arg: anytype) bool {
     const prev_context = api.get_current.?();
     if (shaders.getService(c)) |s| {
         deinit: {
-            // makeCurrent on Windows is illegal here
-            if (builtin.os.tag != .windows and @call(.auto, api.make_current[0], api.last_params ++ .{c}) == 0) break :deinit;
-            makeCurrent(api, c);
             if (state.getPtr(s)) |c_state| {
+                // TODO when context is stolen, a illegal command is issued here
+                // makeCurrent on Windows is illegal here
+                const params = @field(c_state.gl, api.name);
+                if (builtin.os.tag != .windows and @call(.auto, api.make_current[0], params ++ .{c}) == 0) break :deinit;
+                makeCurrent(api, params, c);
                 c_state.deinit();
+                if (builtin.os.tag != .windows and @call(.auto, api.make_current[0], params ++ .{prev_context}) == 0) break :deinit;
+                makeCurrent(api, params, prev_context);
             }
-            if (builtin.os.tag != .windows and @call(.auto, api.make_current[0], api.last_params ++ .{prev_context}) == 0) break :deinit;
-            makeCurrent(api, prev_context);
         }
         std.debug.assert(state.remove(s));
         std.debug.assert(shaders.removeService(c, common.allocator));

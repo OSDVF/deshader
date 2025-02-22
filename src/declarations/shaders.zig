@@ -11,7 +11,7 @@
 // GNU General Public License for more details.
 //
 // You should have received a copy of the GNU General Public License
-// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 /// Both API specific and agnostic declarations that will be included verbatim in the exported deshader.zig header file
 const CString = [*:0]const u8;
@@ -110,16 +110,15 @@ pub const SourcesPayload = extern struct {
     ///
     /// If multiple paths are assigned to the same shader source part (for example by `deshaderTagSource`), the client must accept any of
     /// the paths when reading the `SourcesPayload` (for example in `compile` and `save` functions).
-    paths: ?[*]?CString = null,
+    paths: ?[*]const ?CString = null,
     /// Shader GLSL source code parts. Each of them has different path and context. Has the size of 'count'
     /// Sources are never duplicated or freed
     sources: ?[*]const CString = null,
     /// Source code lengths
     /// is copied when intercepted because opengl specifies source length in 32-bit int
     lengths: ?[*]const usize = null,
-    /// User-specified contexts. Can be anything. Has the size of 'count'
-    /// Contexts are never duplicated or freed
-    contexts: ?[*]?*const anyopaque = null,
+    /// User-specified context. Can be anything.
+    context: ?*anyopaque = null,
     // Count of paths/sources/contexts
     count: usize = 0,
     /// Represents both type of the shader (vertex, fragment, etc) and the graphics backend (GL, VK)
@@ -133,11 +132,11 @@ pub const SourcesPayload = extern struct {
     /// The instrumented source is also always null-terminated.
     /// Should return `0` when there is no error.
     compile: ?*const fn (source: SourcesPayload, instrumented: CString, length: i32) callconv(.C) u8 = null,
-    /// Deshader executes this function when it wants to get the instrumented version of the source code.
-    /// Deshader does not store the instrumented source code, because it is always stored by the host application.
-    currentSource: ?*const fn (ref: usize, path: ?CString, length: usize) callconv(.C) ?CString = null,
+    /// Get the instrumented version of the source code. Deshader executes this function when requested by the frontend.
+    /// TODO: if the function is not provided, store always the source code somewhere.
+    currentSource: ?*const fn (context: ?*anyopaque, ref: usize, path: ?CString, length: usize) callconv(.C) ?CString = null,
     /// Free the memory returned by `currentSource`
-    free: ?*const fn (ref: usize, context: *const anyopaque, string: CString) callconv(.C) void = null,
+    free: ?*const fn (ref: usize, context: ?*anyopaque, string: CString) callconv(.C) void = null,
     /// Function to execute when user wants to save a source in the Deshader editor. Set to override the default behavior.
     /// The function must return 0 if there is no error.
     save: ?*const fn (ref: usize, index: usize, content: CString, length: usize, physical: ?CString) callconv(.C) u8 = null,
@@ -153,7 +152,7 @@ pub const ProgramPayload = extern struct {
     path: ?CString = null,
     shaders: ?[*]usize = null,
     count: usize = 0,
-    context: ?*const anyopaque = null,
+    context: ?*anyopaque = null,
     /// If `ProgramPayload.count` is 0, the function will only link the program. Otherwise it will attach the shaders in the order they are stored in the payload.
     /// The function must return 0 if there is no error.
     ///

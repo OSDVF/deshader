@@ -11,7 +11,7 @@
 // GNU General Public License for more details.
 //
 // You should have received a copy of the GNU General Public License
-// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 const std = @import("std");
 const decls = @import("../declarations/shaders.zig");
@@ -749,21 +749,21 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime parted: bo
             }
             // traverse files
             if (dir.files.getEntry(name)) |existing_file| {
-                dir.stat.access();
                 if (Nested != void and in_dir.subpath.len > 0) {
-                    existing_file.value_ptr.target.stat.access();
+                    existing_file.value_ptr.target.touch();
                     const nested_locator = try storage.Locator.parse(in_dir.subpath);
                     return .{ .content = if (nested_locator.file()) |n|
                         try existing_file.value_ptr.target.getNested(n.name)
                     else
                         .{ .Nested = .{ .parent = existing_file.value_ptr.target } }, .is_new = false };
+                } else {
+                    dir.touch();
                 }
                 if (Nested == void or in_dir.subpath.len == 0) {
                     if (overwrite) {
                         if (create_as_dir) {
                             return Error.TagExists;
                         }
-                        dir.touch();
 
                         // Remove old / overwrite
                         const old_content = existing_file.value_ptr.target;
@@ -799,7 +799,7 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime parted: bo
                                 return Error.DirExists;
                             }
 
-                            existing_dir.value_ptr.stat.access();
+                            existing_dir.value_ptr.dirty();
                             return .{
                                 .is_new = false,
                                 .content = .{ .Dir = existing_dir.value_ptr },
@@ -818,7 +818,7 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime parted: bo
                     const name_dupe = try self.allocator.dupe(u8, name);
                     const new_file = try dir.files.getOrPut(dir.allocator, name_dupe);
                     std.debug.assert(new_file.found_existing == false);
-                    dir.stat.touch();
+                    dir.touch();
                     new_file.value_ptr.* = StoredTag{
                         .name = name_dupe,
                         .parent = dir,
@@ -845,10 +845,31 @@ pub const FileType = enum(usize) {
     Directory = 2,
     SymbolicLink = 64,
 };
+
+fn StatMixin(comptime StatT: type) type {
+    return struct {
+        pub fn touch(self: *StatT) void {
+            self.accessed = std.time.milliTimestamp();
+        }
+
+        pub fn dirty(self: *StatT) void {
+            const time = std.time.milliTimestamp();
+            if (self.created == 0) {
+                self.created = time;
+            }
+            self.accessed = time;
+            self.modified = time;
+        }
+    };
+}
+
 pub const Stat = struct {
     accessed: i64,
     created: i64,
     modified: i64,
+
+    pub usingnamespace StatMixin(Stat);
+
     pub fn now() @This() {
         const time = std.time.milliTimestamp();
         return @This(){ .accessed = time, .created = time, .modified = time };
@@ -870,21 +891,6 @@ pub const Stat = struct {
             .modified = @max(virtual.modified, @divTrunc(physical.mtime, 1000)),
         };
     }
-
-    pub fn access(self: *@This()) void {
-        self.accessed = std.time.milliTimestamp();
-    }
-
-    pub fn touch(self: *@This()) void {
-        const time = std.time.milliTimestamp();
-        self.accessed = time;
-    }
-
-    pub fn dirty(self: *@This()) void {
-        const time = std.time.milliTimestamp();
-        self.accessed = time;
-        self.modified = time;
-    }
 };
 
 pub const Permission = enum(u8) {
@@ -899,6 +905,17 @@ pub const StatPayload = struct {
     modified: i64,
     size: usize,
     permission: Permission = .ReadWrite,
+
+    pub usingnamespace StatMixin(@This());
+
+    pub const empty_readonly = @This(){
+        .type = @intFromEnum(FileType.Unknown),
+        .accessed = 0,
+        .created = 0,
+        .modified = 0,
+        .size = 0,
+        .permission = .ReadOnly,
+    };
 
     pub fn fromPhysical(physical: anytype, file_type: FileType) @This() {
         return StatPayload{
@@ -1129,7 +1146,7 @@ pub fn Tag(comptime Taggable: type) type {
 
 pub const untagged_path = "/untagged";
 pub const Locator = struct {
-    /// Return the instrumented version of the file
+    /// Locates the instrumented version of the file
     instrumented: bool = false,
     name: Name,
 
@@ -1320,6 +1337,10 @@ pub const Locator = struct {
 
         pub fn format(self: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
             try writer.print("{}/{}", .{ self.name, self.nested });
+        }
+
+        pub fn isUntagged(self: @This()) bool {
+            return self.name == .untagged;
         }
     };
 

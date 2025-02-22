@@ -11,7 +11,7 @@
 // GNU General Public License for more details.
 //
 // You should have received a copy of the GNU General Public License
-// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 const std = @import("std");
 const gl = @import("gl");
@@ -40,6 +40,7 @@ const GetProcAddressSignature = fn (name: CString) ?gl.PROC;
 pub const APIs = struct {
     pub const gl = if (builtin.os.tag == .windows) struct {
         pub const wgl = struct {
+            pub const name = "wgl";
             const names = [_]String{"C:\\Windows\\System32\\opengl32.dll"};
             pub var lib: ?std.DynLib = null;
             pub var loader: ?*const GetProcAddressSignature = null;
@@ -61,26 +62,28 @@ pub const APIs = struct {
             const get_current_name = "wglGetCurrentContext";
             pub var get_current: ?*const fn () ?*const anyopaque = null;
             pub var late_loaded = false;
-            pub var last_params: struct { *const anyopaque } = undefined;
+            pub const MakeCurrentParams = struct { *const anyopaque };
         };
         pub const custom = struct {
+            pub const name = "custom";
             var names: []const String = &[_]String{};
             pub var lib: ?std.DynLib = null;
             pub var loader: ?*const GetProcAddressSignature = null;
             var possible_loaders: []const String = &.{};
             var make_current_names: []const ZString = &.{""};
-            pub var make_current: struct { *const fn (hdc: *const anyopaque, hglrc: *const anyopaque) c_int } = .{undefined};
+            pub var make_current: struct { *const fn (hdc: *const anyopaque, hglrc: ?*const anyopaque) c_int } = .{undefined};
             pub var create_names = [_]ZString{""};
             pub var create: struct { *const fn (hdc: *const anyopaque) ?*const anyopaque } = .{undefined};
             var destroy_name = "";
             pub var destroy: ?*const fn (hdc: *const anyopaque) bool = null;
             var get_current_name: ZString = "";
             pub var get_current: ?*const fn () ?*const anyopaque = null;
-            pub var last_params: struct { *const anyopaque } = undefined;
+            pub const MakeCurrentParams = struct { *const anyopaque };
             pub var late_loaded = false;
         };
     } else struct {
         pub const glX = struct {
+            pub const name = "glX";
             const names: []const String = &.{ "libGL" ++ builtin.target.dynamicLibSuffix(), "libGLX" ++ builtin.target.dynamicLibSuffix() }; //TODO also "libOpenGL.so" ?
             pub var lib: ?std.DynLib = null;
             pub var loader: ?*const GetProcAddressSignature = null;
@@ -101,17 +104,18 @@ pub const APIs = struct {
             pub var destroy: ?*const fn (display: *const anyopaque, context: *const anyopaque) bool = null;
             const get_current_name = "glXGetCurrentContext";
             pub var get_current: ?*const fn () ?*const anyopaque = null;
-            pub var last_params: struct { *const anyopaque, c_ulong } = undefined;
+            pub const MakeCurrentParams = struct { *const anyopaque, c_ulong };
             pub var late_loaded = false;
         };
         pub const egl = struct {
+            pub const name = "egl";
             const names: []const String = &.{"libEGL" ++ builtin.target.dynamicLibSuffix()};
             pub var lib: ?std.DynLib = null;
             pub var loader: ?*const GetProcAddressSignature = null;
             const default_loaders = [_]String{"eglGetProcAddress"};
             var possible_loaders: []const String = &@This().default_loaders;
             const make_current_names: []const ZString = &.{"eglMakeCurrent"};
-            pub var make_current: struct { *const fn (display: *const anyopaque, draw: *const anyopaque, read: *const anyopaque, context: ?*const anyopaque) c_uint } = .{undefined};
+            pub var make_current: struct { *const fn (display: *const anyopaque, draw: ?*const anyopaque, read: ?*const anyopaque, context: ?*const anyopaque) c_uint } = .{undefined};
             const create_names: []const ZString = &.{"eglCreateContext"};
             pub var create: struct {
                 *const fn (display: *const anyopaque, config: *const anyopaque, share: *const anyopaque, attribs: ?[*]const c_int) ?*const anyopaque,
@@ -121,16 +125,17 @@ pub const APIs = struct {
             const get_current_name = "eglGetCurrentContext";
             pub var get_current: ?*const fn () ?*const anyopaque = null;
             pub var late_loaded = false;
-            pub var last_params: struct { *const anyopaque, *const anyopaque, *const anyopaque } = undefined;
+            pub const MakeCurrentParams = struct { *const anyopaque, *const anyopaque, *const anyopaque };
         };
         pub const cgl = struct {
+            pub const name = "cgl";
             const names = &[_]String{ "/System/Library/Frameworks/OpenGL.framework/OpenGL", "/System/Library/Frameworks/OpenGL.framework/Libraries/libGL.dylib" };
             pub var lib: ?std.DynLib = null;
             pub var loader: ?*const GetProcAddressSignature = null;
             const default_loaders = [_]String{"CGLGetProcAddress"};
             var possible_loaders: []const String = &@This().default_loaders;
             const make_current_names: []const ZString = &.{"CGLSetCurrentContext"};
-            pub var make_current: struct { *const fn (context: *const anyopaque) c_int } = .{undefined};
+            pub var make_current: struct { *const fn (context: ?*const anyopaque) c_int } = .{undefined};
             const create_names: []const ZString = &.{"CGLCreateContext"};
             pub var create: struct { *const fn (pix: *const anyopaque, share: *const anyopaque, ctx: *const anyopaque) c_int } = .{undefined};
             const destroy_name = "CGLDestroyContext";
@@ -138,14 +143,15 @@ pub const APIs = struct {
             const get_current_name = "CGLGetCurrentContext";
             pub var get_current: ?*const fn () ?*const anyopaque = null;
             pub var late_loaded = false;
-            pub var last_params: struct { *const anyopaque } = undefined;
+            pub const MakeCurrentParams = struct {};
         };
         pub const custom = struct {
+            pub const name = "custom";
             var names: []String = &.{};
             pub var lib: ?std.DynLib = null;
             pub var loader: ?*const GetProcAddressSignature = null;
             var make_current_names: []const ZString = &.{""};
-            var make_current: struct { *const fn (display: *const anyopaque, draw: c_ulong, context: ?*const anyopaque) c_int } = .{undefined};
+            pub var make_current: struct { *const fn (display: *const anyopaque, draw: c_ulong, context: ?*const anyopaque) c_int } = .{undefined};
             var possible_loaders: []const String = &.{};
             var create_names: []const ZString = &.{""};
             var create: struct { *const fn (display: *const anyopaque, vis: *const anyopaque, share: *const anyopaque, direct: c_int) ?*const anyopaque } = .{undefined};
@@ -154,11 +160,44 @@ pub const APIs = struct {
             var get_current_name: ZString = "";
             pub var get_current: ?*const fn () ?*const anyopaque = null;
             pub var late_loaded = false;
-            pub var last_params: struct { *const anyopaque, c_ulong } = undefined;
+            pub const MakeCurrentParams = struct { *const anyopaque, c_ulong };
         };
     };
     pub var originalDlopen: ?*const fn (name: ?CString, mode: c_int) callconv(.C) ?*const anyopaque = null;
 };
+
+fn GlBackendUnion() type {
+    const fieldInfos = std.meta.declarations(APIs.gl);
+    var enumDecls: [fieldInfos.len]std.builtin.Type.EnumField = undefined;
+    var unionDecls: [fieldInfos.len]std.builtin.Type.UnionField = undefined;
+    var empty = [_]std.builtin.Type.Declaration{};
+    for (fieldInfos, 0..) |field, i| {
+        enumDecls[i] = .{ .name = field.name, .value = i };
+        unionDecls[i] = .{
+            .name = field.name,
+            .type = @field(APIs.gl, field.name).MakeCurrentParams,
+            .alignment = 0,
+        };
+    }
+    return @Type(std.builtin.Type{
+        .Union = .{
+            .tag_type = @Type(std.builtin.Type{
+                .Enum = .{
+                    .tag_type = std.math.IntFittingRange(0, fieldInfos.len - 1),
+                    .fields = &enumDecls,
+                    .decls = &empty,
+                    .is_exhaustive = true,
+                },
+            }),
+            .decls = &empty,
+            .fields = &unionDecls,
+            .layout = .auto,
+        },
+    });
+}
+
+pub const GlBackend = GlBackendUnion();
+
 var reported_process_name = false;
 /// used for renaming libraries on Windows
 var renamed_libs: std.ArrayList(String) = undefined;

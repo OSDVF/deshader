@@ -11,7 +11,7 @@
 // GNU General Public License for more details.
 //
 // You should have received a copy of the GNU General Public License
-// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -925,7 +925,7 @@ pub const MutliListener = struct {
                         if (!remaining.remove(id)) { // this is a new breakpoint
                             if (i_state) |st| {
                                 st.dirty = true;
-                                shader.i_dirty = true;
+                                shader.r_dirty = true;
                             }
                         }
                     }
@@ -937,14 +937,14 @@ pub const MutliListener = struct {
                     try shader.removeBreakpoint(i.*);
                     if (i_state) |st| {
                         st.dirty = true;
-                        shader.i_dirty = true;
+                        shader.r_dirty = true;
                     }
                 }
             } else {
                 shader.clearBreakpoints();
                 if (i_state) |st| {
                     st.dirty = true;
-                    shader.i_dirty = true;
+                    shader.r_dirty = true;
                 }
             }
 
