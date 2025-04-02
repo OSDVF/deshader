@@ -19,6 +19,7 @@ const positron = @import("positron");
 const serve = @import("serve");
 const websocket = @import("websocket");
 
+const analyzer = @import("glsl_analyzer");
 const common = @import("common");
 const logging = common.logging;
 const DeshaderLog = common.log;
@@ -26,7 +27,7 @@ const options = @import("options");
 const storage = @import("services/storage.zig");
 const dap = @import("services/debug.zig");
 const shaders = @import("services/shaders.zig");
-const analyzer = @import("glsl_analyzer");
+const instruments = @import("services/instruments.zig");
 
 const String = []const u8;
 const CString = [*:0]const u8;
@@ -649,7 +650,7 @@ pub const MutliListener = struct {
             shaders.user_action = true;
             const in_params = try parseArgs(dap.ContinueArguments, args);
             const locator = shaders.Running.Locator.parse(in_params.threadId);
-            try (try locator.service()).@"continue"(locator.shader());
+            try instruments.Step.@"continue"(try locator.service(), locator.shader());
 
             instance.?.unPause();
         }
@@ -722,7 +723,7 @@ pub const MutliListener = struct {
                             .line = local_stop.line,
                             .column = local_stop.character,
                             .verified = true,
-                            .path = try s.fullPath(common.allocator, part, null, bp[1]),
+                            .path = try s.fullPath(common.allocator, part, false, bp[1]),
                         };
                         try breakpoints_to_send.append(common.allocator, dap_bp);
                     }
@@ -853,7 +854,7 @@ pub const MutliListener = struct {
             shaders.user_action = true;
             const in_params = try parseArgs(dap.NextArguments, args);
             const locator = shaders.Running.Locator.parse(in_params.threadId);
-            try (try locator.service()).advanceStepping(locator.shader(), null);
+            try instruments.Step.advanceStepping(try locator.service(), locator.shader(), null);
             instance.?.unPause();
         }
 
@@ -925,11 +926,11 @@ pub const MutliListener = struct {
                         if (!remaining.remove(id)) { // this is a new breakpoint
                             if (i_state) |st| {
                                 st.dirty = true;
-                                shader.r_dirty = true;
+                                shader.b_dirty = true;
                             }
                         }
                     }
-                    bp_result.path = try s.fullPath(common.allocator, shader, target.program, target.shader.?.part);
+                    bp_result.path = try s.fullPath(common.allocator, shader, false, target.shader.?.part);
                     try result.append(common.allocator, bp_result);
                 }
                 var it = remaining.keyIterator();
@@ -937,14 +938,14 @@ pub const MutliListener = struct {
                     try shader.removeBreakpoint(i.*);
                     if (i_state) |st| {
                         st.dirty = true;
-                        shader.r_dirty = true;
+                        shader.b_dirty = true;
                     }
                 }
             } else {
                 shader.clearBreakpoints();
                 if (i_state) |st| {
                     st.dirty = true;
-                    shader.r_dirty = true;
+                    shader.b_dirty = true;
                 }
             }
 
@@ -973,7 +974,7 @@ pub const MutliListener = struct {
         pub fn stackTrace(args: ?ArgumentsMap) !String {
             // Get program and shader ref
             const parsed_args = try parseArgs(dap.StackTraceArguments, args);
-            const trace = try shaders.stackTrace(common.allocator, parsed_args);
+            const trace = try instruments.StackTrace.stackTrace(common.allocator, parsed_args);
             defer {
                 for (trace.stackFrames) |fr| {
                     common.allocator.free(fr.path);

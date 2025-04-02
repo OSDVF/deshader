@@ -13,12 +13,12 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! ## Instrumentation Runtime Frontend
+//! ## Instrumentation Runtime and Shader Storage Frontend Service
 //!
-//! See `instrumentation` for details about the whole instrumentation architecture design.
+//! See [processor.zig](processor.zig) for details about the whole instrumentation architecture design.
 //!
 //! > Runtime Frontend is a graphics API agnostic interface for shader sources and programs
-//! (Should not contain any gl* or vk* calls)
+//! (Should not contain any `gl*` or `vk*` calls)
 //! Provides
 //! - specific virtual storage implementations for shaders and programs
 //! - instrumentation state management caching
@@ -36,10 +36,12 @@ const argsm = @import("args");
 const common = @import("common");
 const log = common.log;
 const decls = @import("../declarations/shaders.zig");
+const decls_instruments = @import("../declarations/instruments.zig");
+const instruments = @import("instruments.zig");
 const storage = @import("storage.zig");
 const debug = @import("debug.zig");
 const commands = @import("../commands.zig");
-const instrumentation = @import("instrumentation.zig");
+const Processor = @import("processor.zig");
 const ArrayBufMap = @import("../common/array_buf_map.zig").ArrayBufMap;
 
 const glslang = @cImport({
@@ -47,8 +49,6 @@ const glslang = @cImport({
     @cInclude("glslang/Public/resource_limits_c.h");
 });
 
-pub const STACK_TRACE_MAX = 32;
-pub const StackTraceT = u32;
 const Ref = usize;
 const String = []const u8;
 const CString = [*:0]const u8;
@@ -56,7 +56,7 @@ const ZString = [:0]const u8;
 const Storage = storage.Storage;
 const Tag = storage.Tag;
 // each ref can have multiple source parts
-const ShadersRefMap = std.AutoHashMap(usize, *std.ArrayListUnmanaged(Shader.SourcePart));
+const ShadersRefMap = std.AutoHashMapUnmanaged(usize, Shader.Parts);
 
 /// `#pragma deshader` specifications. `#pragma deshader` arguments are passed like command-line parameters
 /// e.g. separated by spaces. To pass an argument with spaces, enclose it in double quotes. Double quotes can be escaped by `\`.
@@ -86,14 +86,16 @@ pub const Pragmas = union(enum) {
 };
 
 const Service = @This();
+/// When an item is removed, `Invalidated` event must be sent (all threadIds across all services are invalidated)
+var services = std.AutoArrayHashMapUnmanaged(*const anyopaque, Service){};
+var services_by_name = std.StringHashMapUnmanaged(*Service){};
+var spec: analyzer.Spec = undefined;
+var spec_arena: std.heap.ArenaAllocator = undefined;
 
 pub var inited_static = false;
 pub var available_data: std.StringHashMap(Data) = undefined;
 pub var data_breakpoints: std.StringHashMap(StoredDataBreakpoint) = undefined;
 pub var debugging = false;
-/// When an item is removed, `Invalidated` event must be sent (all threadIds across all services are invalidated)
-var services = std.AutoArrayHashMapUnmanaged(*const anyopaque, Service){};
-var services_by_name = std.StringHashMapUnmanaged(*Service){};
 /// Sets if only the selected shader thread will be paused and the others will run the whole program
 pub var single_pause_mode = true; // TODO more modes (breakpoint only, free run)
 /// Indicator of a user action which has been taken since the last frame (continue, step...).
@@ -107,9 +109,10 @@ context: *const anyopaque,
 /// Owned by the service.
 name: String,
 
-/// Workspace paths are like "include path" mappings
-/// Maps one to many [fs directory]<=>[deshader virtual directories] (hence the two complementary hashmaps)
-/// If a tagged shader (or a shader nested in a program) is found in a workspace path, it can be saved or read from the physical storage
+/// Workspace paths are like "include-paths" mappings.
+/// This field maps one-to-many [fs directory]<=>[deshader virtual directories].
+/// The order of `VirtualDir`s matters (it is like "include path" priority).
+/// If a tagged shader (or a shader nested in a program) is found in a workspace path, it can be saved or read from the physical storage.
 /// TODO watch the filesystem
 physical_to_virtual: ArrayBufMap(VirtualDir.Set) = undefined,
 
@@ -118,10 +121,13 @@ Programs: Shader.Program.StorageT,
 allocator: std.mem.Allocator,
 /// Async event queue. Should be processed by the drawing thread.
 bus: common.Bus(ResourceLocator.TagEvent, true),
+instruments_any: std.ArrayListUnmanaged(Processor.Instrument) = .{},
+instruments_scoped: std.ArrayListUnmanaged(Processor.Instrument) = .{},
+instrument_clients: std.ArrayListUnmanaged(decls_instruments.InstrumentClient) = .{},
 revert_requested: bool = false, // set by the command listener thread, read by the drawing thread
-/// Instrumentation and debugging state for each stage
+/// Instrumentation and debugging state cache for each shader stage of each program
 state: std.AutoHashMapUnmanaged(usize, State) = .{},
-support: instrumentation.Processor.Config.Support = .{ .buffers = false, .max_variables_size = 0, .include = true, .all_once = false },
+support: Processor.Config.Support = .{ .buffers = false, .include = true, .all_once = false },
 
 pub fn initStatic(allocator: std.mem.Allocator) !void {
     available_data = @TypeOf(available_data).init(allocator);
@@ -131,6 +137,9 @@ pub fn initStatic(allocator: std.mem.Allocator) !void {
         return error.GLSLang;
     }
     inited_static = true;
+
+    spec_arena = std.heap.ArenaAllocator.init(allocator);
+    spec = try analyzer.Spec.load(spec_arena.allocator());
 }
 
 pub fn deinitStatic() void {
@@ -139,6 +148,8 @@ pub fn deinitStatic() void {
         data_breakpoints.deinit();
 
         glslang.glslang_finalize_process();
+
+        spec_arena.deinit();
     } else {
         log.warn("Deinitializing shaders service without initializing it", .{});
     }
@@ -146,7 +157,10 @@ pub fn deinitStatic() void {
 
 pub fn deinit(service: *@This()) void {
     service.bus.deinit();
-    service.Programs.deinit(.{});
+    service.instruments_any.deinit(service.allocator);
+    service.instruments_scoped.deinit(service.allocator);
+    service.instrument_clients.deinit(service.allocator);
+    service.Programs.deinit(.{service.allocator});
     service.Shaders.deinit(.{});
     service.physical_to_virtual.deinit();
     service.dirty_breakpoints.deinit(service.allocator);
@@ -180,6 +194,18 @@ pub fn getOrAddService(context: *const anyopaque, allocator: std.mem.Allocator) 
         try result.value_ptr.Programs.bus.addListener(&programTagEvent, result.value_ptr);
     }
     return result;
+}
+
+pub fn addInstrument(self: *Service, i: Processor.Instrument) !void {
+    if (i.tag) |_| {
+        try self.instruments_scoped.append(self.allocator, i);
+    } else {
+        try self.instruments_any.append(self.allocator, i);
+    }
+}
+
+pub fn addInstrumentClient(self: *Service, i: decls_instruments.InstrumentClient) !void {
+    try self.instrument_clients.append(self.allocator, i);
 }
 
 fn programTagEvent(m_self: ?*anyopaque, event: Shader.Program.StorageT.StoredTag.Event, _: std.mem.Allocator) anyerror!void {
@@ -406,73 +432,80 @@ pub const ResourceLocator = union(enum) {
     }
 };
 
-/// Instrumentation and debuging state of a single shader stage
-const State = struct {
+/// Full mutable instrumentation and debuging state (inputs, outputs, settings) of a single shader stage
+pub const State = struct {
     /// Input params for the instrumentation process
     pub const Params = struct {
         allocator: std.mem.Allocator,
-        //dimensions
-        screen: [2]usize,
         vertices: usize,
         instances: usize,
         // xyz group count and xyz group sizes
         compute: [6]usize,
 
-        max_attachments: usize,
-        max_buffers: usize,
-        /// Maximum number of XFB float output variables
-        max_xfb: usize,
-        search_paths: ?std.AutoHashMapUnmanaged(Ref, []String),
-        used_buffers: std.ArrayList(Ref),
-        used_interface: std.ArrayList(Ref),
+        context: Context,
+
+        pub const Context = struct {
+            //dimensions
+            screen: [2]usize,
+            max_attachments: usize,
+            max_buffers: usize,
+            /// Maximum number of XFB float output variables
+            max_xfb: usize,
+            search_paths: ?std.AutoHashMapUnmanaged(Ref, []String),
+            program: *Shader.Program,
+            used_buffers: std.ArrayListUnmanaged(Ref),
+            used_interface: std.ArrayListUnmanaged(Ref),
+
+            pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+                self.used_interface.deinit(allocator);
+                self.used_buffers.deinit(allocator);
+            }
+        };
+
+        pub fn clone(self: *const @This()) !Params {
+            var new = self.*;
+            new.context.used_interface = try self.context.used_interface.clone(self.allocator);
+            new.context.used_buffers = try self.context.used_buffers.clone(self.allocator);
+            return new;
+        }
+
+        pub fn deinit(self: *@This()) void {
+            self.context.deinit(self.allocator);
+        }
     };
     /// Needs re-instrumentation (stepping enabled flag, pause mode, or source code has changed)
     dirty: bool,
     params: Params,
-    /// Mutable state of debug outputs generated by the instrumentation. Can be edited externally (e.g. to assign host-side refs).
+    /// Mutable state of debug outputs generated by the instrumentation and control variables. Can be edited externally (e.g. when assigning host-side refs).
     /// Uses allocator from `params`. If `outputs` are null, no instrumentation was done.
-    outputs: instrumentation.Result.Outputs,
-    //
-    // Client debugger state. Does not affect the instrumentation
-    //
-    /// If source stepping is ongoing, this is the global index of the currently reached step.
-    /// Can be used for the purpose of setting the target step index with `target_step`.
-    reached_step: ?struct {
-        id: u32,
-        /// Index into `Outputs.parts_offsets`
-        index: u32,
-    } = null,
-    /// Index for the step counter to check for.
-    /// Set to non-null value to enable stepping.
-    target_step: ?u32 = null,
-    /// Same as `target_step`, but is checked only on places with breakpoints.
-    target_bp: u32 = 0,
+    channels: Processor.Result.Channels,
+    instruments: std.AutoArrayHashMapUnmanaged(u64, decls_instruments.InstrumentClient) = .{},
     selected_thread: [3]usize = .{ 0, 0, 0 },
     selected_group: ?[3]usize = .{ 0, 0, 0 },
 
     pub fn globalSelectedThread(self: *const @This()) usize {
         const groups = self.selected_group orelse .{ 0, 0, 0 };
-        var group_area: usize = self.outputs.group_dim[0];
-        for (self.outputs.group_dim[1..]) |g| {
+        var group_area: usize = self.channels.group_dim[0];
+        for (self.channels.group_dim[1..]) |g| {
             group_area *= g;
         }
 
-        const group_offset = if (self.outputs.group_count) |gc| blk: {
+        const group_offset = if (self.channels.group_count) |gc| blk: {
             var selected_g_flat: usize = groups[0];
             if (gc.len > 1) {
-                selected_g_flat += groups[1] * self.outputs.group_dim[0];
+                selected_g_flat += groups[1] * self.channels.group_dim[0];
                 if (gc.len > 2) {
-                    selected_g_flat += groups[2] * self.outputs.group_dim[0] * self.outputs.group_dim[1];
+                    selected_g_flat += groups[2] * self.channels.group_dim[0] * self.channels.group_dim[1];
                 }
             }
             break :blk selected_g_flat * group_area;
         } else 0;
 
         var thread_in_group = self.selected_thread[0];
-        if (self.outputs.group_dim.len > 1) {
-            thread_in_group += self.selected_thread[1] * self.outputs.group_dim[0];
-            if (self.outputs.group_dim.len > 2) {
-                thread_in_group += self.selected_thread[2] * self.outputs.group_dim[0] * self.outputs.group_dim[1];
+        if (self.channels.group_dim.len > 1) {
+            thread_in_group += self.selected_thread[1] * self.channels.group_dim[0];
+            if (self.channels.group_dim.len > 2) {
+                thread_in_group += self.selected_thread[2] * self.channels.group_dim[0] * self.channels.group_dim[1];
             }
         }
 
@@ -480,9 +513,14 @@ const State = struct {
     }
 
     pub fn deinit(self: *@This()) void {
-        self.outputs.deinit(self.params.allocator);
-        self.params.used_interface.deinit();
-        self.params.used_buffers.deinit();
+        self.channels.deinit(self.params.allocator);
+        for (self.instruments.values()) |*instr| {
+            if (instr.deinit) |de| {
+                de(self);
+            }
+        }
+        self.instruments.deinit(self.params.allocator);
+        self.params.deinit();
     }
 };
 
@@ -902,18 +940,18 @@ pub fn addBreakpointAlloc(self: *@This(), locator: ResourceLocator, bp: debug.So
     const target = try self.getResourcesByLocator(locator);
     const shader = target.shader orelse return error.TargetNotFound;
     var new = try shader.source.addBreakpoint(bp);
-    new.path = try self.fullPath(allocator, shader.source, target.program, shader.part);
+    new.path = try self.fullPath(allocator, shader.source, locator == .programs, shader.part);
     if (self.state.getPtr(shader.source.ref)) |state| {
         state.dirty = true;
     }
     return new;
 }
 
-/// Tries to get tagged path, or falls back to untagged path
-pub fn fullPath(self: @This(), allocator: std.mem.Allocator, shader: *Shader.SourcePart, program: ?*const Shader.Program, part_index: usize) !String {
+/// Tries to get tagged path, or falls back to untagged path. `part_index` is a hint which results in a small optimization (no searching among source parts will be performed)
+pub fn fullPath(self: @This(), allocator: std.mem.Allocator, shader: *Shader.SourcePart, program: bool, part_index: ?usize) !String {
     const basename = try shader.basenameAlloc(allocator, part_index);
     defer allocator.free(basename);
-    if (program) |p| {
+    if (program) if (shader.program) |p| {
         if (p.tag) |t| {
             const program_path = try t.fullPathAlloc(allocator, false);
             defer allocator.free(program_path);
@@ -921,14 +959,14 @@ pub fn fullPath(self: @This(), allocator: std.mem.Allocator, shader: *Shader.Sou
         } else {
             return std.fmt.allocPrint(allocator, "/{s}" ++ ResourceLocator.programs_path ++ storage.untagged_path ++ "/{x}/{s}", .{ self.name, p.ref, basename });
         }
-    }
+    };
 
     if (shader.tag) |t| {
         const source_path = try t.fullPathAlloc(allocator, false);
         defer allocator.free(source_path);
         return std.fmt.allocPrint(allocator, "/{s}" ++ ResourceLocator.sources_path ++ "{s}", .{ self.name, source_path });
     } else {
-        return std.fmt.allocPrint(allocator, "/{s}" ++ ResourceLocator.sources_path ++ storage.untagged_path ++ "/{}{s}", .{ self.name, storage.Locator.PartRef{ .ref = shader.ref, .part = part_index }, shader.toExtension() });
+        return std.fmt.allocPrint(allocator, "/{s}" ++ ResourceLocator.sources_path ++ storage.untagged_path ++ "/{}{s}", .{ self.name, storage.Locator.PartRef{ .ref = shader.ref, .part = part_index orelse shader.getPartIndex() orelse unreachable }, shader.toExtension() });
     }
 }
 
@@ -957,8 +995,8 @@ pub fn runningShaders(self: *const @This(), allocator: std.mem.Allocator, result
                 .id = try Running.Locator.from(self, shader.ref),
                 .type = @tagName(shader.stage),
                 .name = try std.fmt.allocPrint(allocator, "{name}", .{Shader.SourcePart.WithIndex{ .source = shader, .part_index = 0 }}),
-                .group_dim = state_entry.value_ptr.outputs.group_dim,
-                .group_count = state_entry.value_ptr.outputs.group_count,
+                .group_dim = state_entry.value_ptr.channels.group_dim,
+                .group_count = state_entry.value_ptr.channels.group_count,
                 .selected_thread = state_entry.value_ptr.selected_thread,
                 .selected_group = state_entry.value_ptr.selected_group,
             });
@@ -989,180 +1027,60 @@ pub fn selectThread(shader_locator: usize, thread: []usize, group: ?[]usize) !vo
         };
 
     for (shader.items) |*s| {
-        s.r_dirty = true;
+        s.b_dirty = true;
     }
 }
 
-pub fn stackTrace(allocator: std.mem.Allocator, args: debug.StackTraceArguments) !debug.StackTraceResponse {
-    const levels = args.levels orelse 1;
-    var result = std.ArrayListUnmanaged(debug.StackFrame){};
-    const locator = Running.Locator.parse(args.threadId);
-    const service = try locator.service();
-
-    const state = service.state.get(locator.shader()) orelse return error.NotInstrumented;
-    if (state.reached_step) |global_step| {
-        const shader = service.Shaders.all.get(locator.shader()) orelse return error.TargetNotFound;
-        const local = state.outputs.localStepOffset(global_step.id);
-
-        if (local.offset) |o| {
-            const s = shader.items[local.part].possible_steps.?.items(.pos)[global_step.id - o];
-            try result.append(allocator, debug.StackFrame{
-                .id = 0,
-                .line = s.line,
-                .column = s.character,
-                .name = "main",
-                .path = try service.fullPath(allocator, &(shader).items[local.part], null, local.part),
-            });
-            if (levels > 1) {
-                for (1..levels) |_| {
-                    // TODO nesting
-                }
-            }
-        } else {
-            log.warn("Reached global stop index {d} did not match any local stop.", .{global_step.id});
-        }
-    }
-    const arr = try result.toOwnedSlice(allocator);
-
-    return debug.StackTraceResponse{
-        .stackFrames = arr,
-        .totalFrames = if (arr.len > 0) 1 else 0,
-    };
-}
-
-pub fn disableBreakpoints(self: *@This(), shader_ref: usize) !void {
-    const shader = self.Shaders.all.get(shader_ref) orelse return error.TargetNotFound;
-    const state = self.state.getPtr(shader_ref) orelse return error.NotInstrumented;
-
-    state.target_bp = std.math.maxInt(u32); // TODO shader uses u32. Would 64bit be a lot slower?
-
-    for (shader.items) |*s| {
-        s.dirty = true;
-    }
-}
-
-/// Continue to next breakpoint hit or end of the shader
-pub fn @"continue"(self: *@This(), shader_ref: usize) !void {
-    const shader = self.Shaders.all.get(shader_ref) orelse return error.TargetNotFound;
-    const state = self.state.getPtr(shader_ref) orelse return error.NotInstrumented;
-
-    state.target_bp = (if (state.reached_step) |s| s.index else 0) +% 1;
-    if (state.target_step) |_| {
-        state.target_step = std.math.maxInt(u32);
-    }
-
-    for (shader.items) |*s| {
-        s.r_dirty = true;
-    }
-}
-
-/// Increments the desired step (or also desired breakpoint) selector for the shader `shader_ref`.
-pub fn advanceStepping(self: *@This(), shader_ref: usize, target: ?u32) !void {
-    const shader: *std.ArrayListUnmanaged(Shader.SourcePart) = self.Shaders.all.get(shader_ref) orelse return error.TargetNotFound;
-
-    const state = self.state.getPtr(shader_ref) orelse return error.NotInstrumented;
-    const next = (if (state.reached_step) |s| s.index else 0) +% 1;
-    if (state.target_step == null) {
-        // invalidate instrumentated code because stepping was previously disabled
-        state.dirty = true;
-    }
-
-    if (target) |t| {
-        state.target_step = t;
-        state.target_bp = t;
-    } else {
-        state.target_step = next; //TODO limits
-        state.target_bp = next;
-    }
-
-    for (shader.items) |*s| {
-        s.r_dirty = true;
-    }
-}
-
-pub fn disableStepping(self: *@This(), shader_ref: usize) !void {
-    const shader = self.Shaders.all.get(shader_ref) orelse return error.TargetNotFound;
-
-    const state = self.state.getPtr(shader_ref) orelse return error.NotInstrumented;
-    if (state.params.target_step) {
-        state.params.target_step = null;
-        state.dirty = true;
-        for (shader.items) |*s| {
-            s.dirty = true;
-        }
-    }
-}
-
-fn instrumentOrGetCached(self: *@This(), program: *Shader.Program, params: *State.Params, key: usize, sources: []Shader.SourcePart) !union(enum) {
-    cached: *State,
-    new: instrumentation.Result,
+/// Check the cached shader stage instrumentation state against `params` and create a new one if needed
+fn getOrCreateStateCache(self: *@This(), params: State.Params, stage: Ref) !struct {
+    state: enum { New, Cached, Dirty },
+    value: *State,
 } {
-    const state = self.state.getPtr(key);
-    return find_cached: {
-        if (state) |c| {
-            if (c.dirty) { // marked dirty by another mechanism
-                log.debug("Shader {x} marked dirty", .{key});
-                break :find_cached null;
+    const state = try self.state.getOrPut(self.allocator, stage);
+    if (state.found_existing) {
+        const c = state.value_ptr;
+        if (c.dirty) { // marked dirty by user action (breakpoint added...)
+            log.debug("Shader {x} instrumentation state marked dirty", .{stage});
+            // deinit the state as it will be replaced by the new state
+            return .{ .state = .Dirty, .value = c };
+        }
+        // check for params mismatch
+        if (params.context.used_interface.items.len > 0) {
+            if (params.context.used_interface.items.len != c.params.context.used_interface.items.len) {
+                log.debug("Shader {x} interface shape changed", .{stage});
+                return .{ .state = .Dirty, .value = c };
             }
-            // check for params mismatch
-            if (params.used_interface.items.len > 0) {
-                if (params.used_interface.items.len != c.params.used_interface.items.len) {
-                    log.debug("Shader {x} interface shape changed", .{key});
-                    break :find_cached null;
-                }
-                for (params.used_interface.items, c.params.used_interface.items) |p, c_p| {
-                    if (p != c_p) {
-                        log.debug("Shader {x} interface {d} changed", .{ key, p });
-                        break :find_cached null;
-                    }
-                }
-            }
-            if (params.screen[0] != 0) {
-                if (params.screen[0] != c.params.screen[0] or params.screen[1] != c.params.screen[1]) {
-                    log.debug("Shader {x} screen changed", .{key});
-                    break :find_cached null;
+            for (params.context.used_interface.items, c.params.context.used_interface.items) |p, c_p| {
+                if (p != c_p) {
+                    log.debug("Shader {x} interface {d} changed", .{ stage, p });
+                    return .{ .state = .Dirty, .value = c };
                 }
             }
-            if (params.vertices != 0) {
-                if (params.vertices != c.params.vertices) {
-                    log.debug("Shader {x} vertices changed", .{key});
-                    break :find_cached null;
-                }
+        }
+        if (params.context.screen[0] != 0) {
+            if (params.context.screen[0] != c.params.context.screen[0] or params.context.screen[1] != c.params.context.screen[1]) {
+                log.debug("Shader {x} screen changed", .{stage});
+                return .{ .state = .Dirty, .value = c };
             }
-            if (params.compute[0] != 0) {
-                if (params.compute[0] != c.params.compute[0] or params.compute[1] != c.params.compute[1] or params.compute[2] != c.params.compute[2]) {
-                    log.debug("Shader {x} compute shape changed", .{key});
-                    break :find_cached null;
-                }
+        }
+        if (params.vertices != 0) {
+            if (params.vertices != c.params.vertices) {
+                log.debug("Shader {x} vertices changed", .{stage});
+                return .{ .state = .Dirty, .value = c };
             }
+        }
+        if (params.compute[0] != 0) {
+            if (params.compute[0] != c.params.compute[0] or params.compute[1] != c.params.compute[1] or params.compute[2] != c.params.compute[2]) {
+                log.debug("Shader {x} compute shape changed", .{stage});
+                return .{ .state = .Dirty, .value = c };
+            }
+        }
 
-            break :find_cached .{
-                .cached = c, //should really be there when the cache check passes
-            };
-        } else {
-            log.debug("Shader {x} was not instrumented before", .{key});
-            break :find_cached null;
-        }
-    } orelse blk: {
-        // Get new instrumentation
-        // TODO what if threads_offset has changed
-        const result = try Shader.instrument(self, sources, if (state) |s| s.target_step != null else false, params, &program.uniform_locations, &program.uniform_names);
-        errdefer result.deinit(params.allocator);
-        if (result.source) |s| {
-            if (sources[0].tag) |tag| {
-                log.debug("Shader {x}:{s} instrumented source:\n{s}", .{ sources[0].ref, tag.name, s[0..result.length] });
-            } else {
-                log.debug("Shader {x} instrumented source:\n{s}", .{ sources[0].ref, s[0..result.length] });
-            }
-        }
-        if (result.outputs.diagnostics.items.len > 0) {
-            log.info("Shader {x} instrumentation diagnostics:", .{sources[0].ref});
-            for (result.outputs.diagnostics.items) |diag| {
-                log.info("{d}: {s}", .{ diag.span.start, diag.message }); // TODO line and column pos instead of offset
-            }
-        }
-        break :blk .{ .new = result };
-    };
+        return .{ .state = .Cached, .value = c }; //should really run to here when the cache check passes
+    } else {
+        log.debug("Shader {x} was not instrumented before", .{stage});
+        return .{ .state = .New, .value = state.value_ptr };
+    }
 }
 
 // shader stages order: vertex, tessellation control, tessellation evaluation, geometry, fragment, compute
@@ -1197,21 +1115,13 @@ fn sortStages(_: void, a: ShadersRefMap.Entry, b: ShadersRefMap.Entry) bool {
 }
 
 /// Instruments all (or selected) shader stages of the program.
-/// The returned Outputs hashmap should be freed by the caller, but not the content it refers to.
+/// The returned `state` hashmap should be freed by the caller, but not the content it refers to.
 /// *NOTE: Should be called by the drawing thread because shader source code compilation is invoked insde.*
-pub fn instrument(self: *@This(), program: *Shader.Program, in_params: State.Params) !InstrumentationResult {
-    // copy free_attachments and used_buffers for passing them by reference because all stages will share them
-    var params = in_params;
-    var copied_i = try std.ArrayList(usize).initCapacity(params.allocator, params.used_interface.items.len);
-    copied_i.appendSliceAssumeCapacity(params.used_interface.items);
-    params.used_interface = copied_i;
-    var copied_b = try std.ArrayList(usize).initCapacity(params.allocator, params.used_buffers.items.len);
-    copied_b.appendSliceAssumeCapacity(params.used_buffers.items);
-    params.used_buffers = copied_b;
-
-    var state = std.AutoArrayHashMapUnmanaged(usize, *State){};
+pub fn instrument(self: *@This(), program: *Shader.Program, params: State.Params) !InstrumentationResult {
+    // copy used_interface and used_buffers for passing them by reference because all stages will share them
+    var stages = std.AutoArrayHashMapUnmanaged(usize, *State){};
     var invalidated_any = false;
-    var invalidated_uniforms = false; // TODO some mismatch between r_dirty and invalidated_uniforms
+    var invalidated_uniforms = false; // TODO some mismatch between b_dirty and invalidated_uniforms
     // Collapse the map into a list
     const shader_count = program.stages.count();
     const shaders_list = try params.allocator.alloc(ShadersRefMap.Entry, shader_count);
@@ -1226,7 +1136,7 @@ pub fn instrument(self: *@This(), program: *Shader.Program, in_params: State.Par
     // sort the stages by the order they will be executed
     std.sort.heap(ShadersRefMap.Entry, shaders_list, {}, sortStages);
 
-    try state.ensureTotalCapacity(params.allocator, shader_count);
+    try stages.ensureTotalCapacity(params.allocator, shader_count);
     // needs re-link?
     var re_link = false;
     for (shaders_list) |shader_entry| {
@@ -1234,102 +1144,69 @@ pub fn instrument(self: *@This(), program: *Shader.Program, in_params: State.Par
         const first_part = shader_parts.*.items[0];
 
         for (shader_parts.items) |*sp| {
-            if (sp.r_dirty) {
+            if (sp.b_dirty) {
                 invalidated_uniforms = true;
-                sp.r_dirty = false; // clear
+                sp.b_dirty = false; // clear
             }
         }
 
-        var shader_result = try self.instrumentOrGetCached(
-            program,
-            &params,
-            shader_entry.key_ptr.*,
-            shader_parts.items,
-        );
-        switch (shader_result) {
-            .cached => |cached_state| try state.put(params.allocator, shader_entry.key_ptr.*, cached_state),
-            .new => |*new_result| {
+        const result = try self.getOrCreateStateCache(params, shader_entry.key_ptr.*);
+        switch (result.state) {
+            .New, .Dirty => |st| {
                 invalidated_any = true;
-                errdefer new_result.deinit(params.allocator);
+                if (st == .Dirty) {
+                    result.value.deinit();
+                }
+                // Create new state
+                var new_params = try params.clone();
+
+                // Get new instrumentation
+                // TODO what if threads_offset has changed
+                var instrumentation = try Shader.instrument(self, shader_parts.items, &new_params);
+                errdefer instrumentation.deinit(params.allocator);
+                if (instrumentation.channels.diagnostics.items.len > 0) {
+                    log.info("Shader {x} instrumentation diagnostics:", .{first_part.ref});
+                    for (instrumentation.channels.diagnostics.items) |diag| {
+                        log.info("{d}: {s}", .{ diag.span.start, diag.message }); // TODO line and column pos instead of offset
+                    }
+                }
 
                 // A new instrumentation was emitted
-                if (new_result.source) |instrumented_source| {
+                if (instrumentation.source) |instrumented_source| {
                     // If any instrumentation was emitted,
                     // replace the shader source with the instrumented one on the host side
                     if (first_part.compileHost) |compile| {
                         const payload = try Shader.SourcePart.toPayload(params.allocator, shader_parts.items);
                         defer Shader.SourcePart.freePayload(payload, params.allocator);
 
-                        const result = compile(payload, instrumented_source, @intCast(new_result.length));
-                        if (result != 0) {
-                            log.err("Failed to compile instrumented shader {x}. Code {d}", .{ program.ref, result });
-                            new_result.deinit(params.allocator);
+                        const compile_status = compile(payload, instrumented_source, @intCast(instrumentation.length));
+                        if (compile_status != 0) {
+                            log.err("Failed to compile instrumented shader {x}. Code {d}", .{ program.ref, compile_status });
+                            instrumentation.deinit(params.allocator);
                             continue;
                         }
                         for (shader_parts.items) |*sp| {
-                            sp.i_stat.size = new_result.length;
+                            sp.i_stat.size = instrumentation.length;
                             sp.i_stat.dirty();
                         }
                     } else {
                         log.err("No compileHost function for shader {x}", .{program.ref});
-                        new_result.deinit(params.allocator);
+                        instrumentation.deinit(params.allocator);
                         continue;
                     }
 
                     re_link = true;
                 }
-
-                // Update the cache
-                const cache_entry = try self.state.getOrPut(params.allocator, first_part.ref);
-                if (cache_entry.found_existing) {
-                    const c = cache_entry.value_ptr;
-                    // Update params
-                    if (params.used_interface.items.len > 0) {
-                        c.params.used_interface.clearRetainingCapacity();
-                        try c.params.used_interface.ensureTotalCapacity(in_params.used_interface.items.len);
-                        c.params.used_interface.appendSliceAssumeCapacity(in_params.used_interface.items);
-                    }
-                    if (params.screen[0] != 0) {
-                        c.params.screen = params.screen;
-                    }
-                    if (params.vertices != 0) {
-                        c.params.vertices = params.vertices;
-                    }
-                    if (params.compute[0] != 0) {
-                        c.params.compute = params.compute;
-                    }
-                    if (params.used_buffers.capacity > 0) {
-                        c.params.used_buffers.clearRetainingCapacity();
-                        try c.params.used_buffers.ensureTotalCapacity(in_params.used_buffers.items.len);
-                        c.params.used_buffers.appendSliceAssumeCapacity(in_params.used_buffers.items);
-                    }
-                    c.dirty = false;
-                    c.outputs = new_result.toOwnedOutputs(params.allocator);
-                } else {
-                    // Initialize state cache entry
-                    cache_entry.value_ptr.* = State{
-                        .params = .{
-                            .allocator = params.allocator,
-                            .compute = params.compute,
-                            .instances = params.instances,
-                            .max_attachments = params.max_attachments,
-                            .max_buffers = params.max_buffers,
-                            .max_xfb = params.max_xfb,
-                            .screen = params.screen,
-                            .search_paths = params.search_paths,
-                            .used_buffers = std.ArrayList(usize).fromOwnedSlice(params.allocator, try params.allocator.dupe(usize, params.used_buffers.items)),
-                            .used_interface = std.ArrayList(usize).fromOwnedSlice(params.allocator, try params.allocator.dupe(usize, params.used_interface.items)),
-                            .vertices = params.vertices,
-                        },
-                        .dirty = false,
-                        .outputs = new_result.toOwnedOutputs(params.allocator),
-                    };
-                }
-                if (new_result.source != null) {
-                    try state.put(params.allocator, shader_entry.key_ptr.*, cache_entry.value_ptr);
-                }
+                result.value.* = State{
+                    .params = new_params,
+                    .dirty = false,
+                    .channels = instrumentation.toOwnedChannels(params.allocator),
+                };
             },
+            .Cached => {},
         }
+        // MAYBE if (new_result.source != null)
+        try stages.put(params.allocator, shader_entry.key_ptr.*, result.value);
     }
 
     // Re-link the program
@@ -1355,22 +1232,26 @@ pub fn instrument(self: *@This(), program: *Shader.Program, in_params: State.Par
             return error.Link;
         }
     }
-    return .{ .state = state, .invalidated = invalidated_any, .uniforms_invalidated = invalidated_uniforms };
+    return InstrumentationResult{ .stages = stages, .invalidated = invalidated_any, .uniforms_invalidated = invalidated_uniforms };
 }
 
 /// Empty variables used just for type resolution
 const SourcesPayload: decls.SourcesPayload = undefined;
 const ProgramPayload: decls.ProgramPayload = undefined;
 
+/// Result for one `Program` instrumentation
 pub const InstrumentationResult = struct {
+    /// True if any of the shader stages was re-instrumented (aggregate of `State.dirty`)
     invalidated: bool,
+    /// True if any of the shader stages had their uniforms invalidated (aggregate of `SourcePart.b_dirty`)
     uniforms_invalidated: bool,
     /// Instrumentation state for shader stages in the order as they are executed
-    state: std.AutoArrayHashMapUnmanaged(usize, *State),
+    stages: std.AutoArrayHashMapUnmanaged(usize, *State),
 };
 
 /// Methods for working with a collection of `SourcePart`s
 pub const Shader = struct {
+    pub const Parts = *std.ArrayListUnmanaged(SourcePart);
     pub const BreakpointSpecial = struct {
         condition: ?String,
         hit_condition: ?String,
@@ -1436,8 +1317,8 @@ pub const Shader = struct {
         source: ?String = null,
         /// Contains references (indexes) to `stops` in the source code
         breakpoints: std.AutoHashMapUnmanaged(usize, BreakpointSpecial) = .{},
-        /// A flag for the runtime backend (e.g. `interceptors.gl_shaders`) for setting the required uniforms for source-stepping
-        r_dirty: bool = true, // TODO where to clear this?
+        /// A flag for the runtime backend (e.g. `backend/gl.zig`) for setting the required uniforms for source-stepping
+        b_dirty: bool = true, // TODO where to clear this?
         /// Attributes of the .instrumented "file"
         i_stat: storage.StatPayload,
         /// Syntax tree of the original shader source code. Used for breakpoint location calculation
@@ -1445,11 +1326,15 @@ pub const Shader = struct {
         /// Possible breakpoint or debugging step locations. Access using `possibleSteps()`
         possible_steps: ?Steps = null,
 
-        pub const Steps = std.MultiArrayList(struct {
+        pub const Step = struct {
+            /// Line & column
             pos: analyzer.lsp.Position,
+            /// Character offset from the beginning of the file
             offset: usize,
+            /// "length" of the step (for example if the statement ends in middle of the line)
             wrap_next: usize = 0,
-        });
+        };
+        pub const Steps = std.MultiArrayList(Step);
 
         pub fn deinit(self: *@This()) !void {
             if (self.source) |s| {
@@ -1488,11 +1373,17 @@ pub const Shader = struct {
             }
         }
 
-        pub fn basenameAlloc(source: *const SourcePart, allocator: std.mem.Allocator, part_index: usize) !String {
-            if (source.tag) |t| {
+        pub fn getPartIndex(self: *const @This()) ?usize {
+            return common.indexOfSliceMember(SourcePart, self.program.?.stages.get(self.ref).?.items, self);
+        }
+
+        /// Specifying `part_index` is a hint which results in a small optimization (no searching among source parts will be performed)
+        pub fn basenameAlloc(self: *const SourcePart, allocator: std.mem.Allocator, part_index: ?usize) !String {
+            const found_part_index = part_index orelse self.getPartIndex() orelse unreachable;
+            if (self.tag) |t| {
                 return try allocator.dupe(u8, t.name);
             } else {
-                return try std.fmt.allocPrint(allocator, "{}{s}", .{ storage.Locator.PartRef{ .ref = source.ref, .part = part_index }, source.toExtension() });
+                return try std.fmt.allocPrint(allocator, "{}{s}", .{ storage.Locator.PartRef{ .ref = self.ref, .part = found_part_index }, self.toExtension() });
             }
         }
 
@@ -1650,38 +1541,6 @@ pub const Shader = struct {
             }
         }
 
-        /// Fill `marked` with the insturmented version of the source part
-        pub fn instrument(part: *@This(), step_part_offset: *usize, prev_offset: *usize, marked: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator) !void {
-            const part_steps = try part.possibleSteps();
-            const part_source = part.getSource().?;
-
-            defer step_part_offset.* += part_steps.len;
-            for (part_steps.items(.offset), part_steps.items(.wrap_next), 0..) |offset, wrap, index| {
-                // insert the previous part
-                try marked.appendSlice(allocator, part_source[prev_offset.*..offset]);
-
-                const eol = std.mem.indexOfScalar(u8, part_source[offset..], '\n') orelse part_source.len;
-                const line = part_source[offset..][0..eol];
-
-                if (parsePragmaDeshader(line)) { //ignore pragma deshader (hide Deshader from the API)
-                    prev_offset.* += line.len;
-                } else {
-                    // insert the marker _step_(id, wrapped_code) into the line
-                    const global_id = step_part_offset.* + index;
-                    const writer = marked.writer(allocator);
-                    if (wrap > 0) {
-                        try writer.print(" {s}({d},{s}) ", .{ step_marker, global_id, part_source[offset .. offset + wrap] });
-                    }
-                    // note the spaces
-                    try writer.print(" {s}({d}) ", .{ step_marker, global_id });
-                    prev_offset.* = offset + wrap;
-                }
-            }
-
-            // Insert rest of the source
-            try marked.appendSlice(allocator, part_source[prev_offset.*..]);
-        }
-
         /// The result will have empty path field
         pub fn addBreakpoint(self: *@This(), bp: debug.SourceBreakpoint) !debug.Breakpoint {
             var new = debug.Breakpoint{
@@ -1789,51 +1648,58 @@ pub const Shader = struct {
         }
     };
 
-    /// SourceInterface.breakpoints already contains all breakpoints inserted by pragmas, so the pragmas should be skipped
-    fn parsePragmaDeshader(line: String) bool {
-        if (analyzer.parse.parsePreprocessorDirective(line)) |directive| {
-            switch (directive) {
-                .pragma => |pragma| {
-                    if (std.mem.eql(u8, line[pragma.name.start..pragma.name.end], "deshader")) {
-                        return true;
-                    }
-                },
-                else => {},
-            }
-        }
-        return false;
-    }
-
-    /// Step marker string. glsl_analyzer is modified to ignore these markers when parsing AST, but adds them to a separate list
-    const step_marker = blk: { // get the default struct field value
-        const dummy = instrumentation.ParseInfo{
-            .arena_state = undefined,
-            .tree = undefined,
-            .ignored = undefined,
-            .diagnostics = undefined,
-            .calls = undefined,
-            .version = undefined,
-            .version_span = undefined,
-            .extensions = undefined,
-        };
-        break :blk dummy.step_identifier;
-    };
-
-    /// `SourcePart` collection must be insturmented together
+    /// `SourcePart` collection (a stage) instrumented together
     pub fn instrument(
         service: *Service,
         source_parts: []SourcePart,
-        stepping: bool,
         params: *State.Params, //includes allocator
-        uniform_locations: *std.ArrayListUnmanaged(String),
-        uniform_names: *std.StringHashMapUnmanaged(usize),
-    ) !instrumentation.Result {
+    ) !Processor.Result {
         const info = toGLSLangStage(source_parts[0].stage); //the parts should all be of the same type
 
-        var breakpoints = std.AutoHashMapUnmanaged(usize, void){};
-        defer breakpoints.deinit(params.allocator);
+        var instruments_scoped = std.EnumMap(analyzer.parse.Tag, std.ArrayListUnmanaged(Processor.Instrument)){};
+        for (service.instruments_scoped.items) |instr| {
+            const entry: *std.ArrayListUnmanaged(Processor.Instrument) = instruments_scoped.getPtr(instr.tag.?) orelse blk: {
+                instruments_scoped.put(instr.tag.?, std.ArrayListUnmanaged(Processor.Instrument){});
+                break :blk instruments_scoped.getPtr(instr.tag.?).?;
+            };
+            try entry.append(params.allocator, instr);
+        }
 
-        var part_step_offsets = try params.allocator.alloc(usize, source_parts.len);
+        const program = source_parts[0].program.?;
+
+        var processor = Processor{
+            .config = .{
+                .allocator = params.allocator,
+                .spec = spec,
+                .source = undefined,
+                .instruments_any = service.instruments_any.items,
+                .instruments_scoped = instruments_scoped,
+                .program = source_parts[0].program.?.channels,
+                .support = service.support,
+                .group_dim = switch (info.stage) {
+                    glslang.GLSLANG_STAGE_VERTEX, glslang.GLSLANG_STAGE_GEOMETRY => &[_]usize{params.vertices},
+                    glslang.GLSLANG_STAGE_FRAGMENT => &params.context.screen,
+                    glslang.GLSLANG_STAGE_COMPUTE => params.compute[3..6],
+                    else => unreachable, //TODO other stages
+                },
+                .groups_count = switch (info.stage) {
+                    glslang.GLSLANG_STAGE_COMPUTE => params.compute[0..3],
+                    else => null,
+                },
+                .max_buffers = params.context.max_buffers,
+                .max_interface = switch (info.stage) {
+                    glslang.GLSLANG_STAGE_FRAGMENT => params.context.max_attachments,
+                    else => params.context.max_xfb, // do not care about stages without xfb support, because it will be 0 for them
+                },
+                .shader_stage = source_parts[0].stage,
+                .single_thread_mode = single_pause_mode,
+                .uniform_names = &program.uniform_names,
+                .uniform_locations = &program.uniform_locations,
+                .used_buffers = &params.context.used_buffers,
+                .used_interface = &params.context.used_interface,
+            },
+        };
+
         var result_parts = try std.ArrayListUnmanaged(*SourcePart).initCapacity(params.allocator, source_parts.len);
         var already_included = std.StringHashMapUnmanaged(void){};
         defer already_included.deinit(params.allocator);
@@ -1844,7 +1710,7 @@ pub const Shader = struct {
             for (source_parts) |*part| {
                 const source = part.getSource() orelse "";
                 // Process #include directives
-                if (service.support.include) if (params.search_paths) |search_paths| if (search_paths.get(part.ref)) |sp| {
+                if (service.support.include) if (params.context.search_paths) |search_paths| if (search_paths.get(part.ref)) |sp| {
                     try part.flattenIncluded(service, sp, params.allocator, if (part.once or service.support.all_once) &already_included else null, &result_parts);
                 };
                 try result_parts.append(common.allocator, part);
@@ -1854,19 +1720,12 @@ pub const Shader = struct {
                 total_stops_count += part_stops.len;
             }
 
-            var marked = try std.ArrayListUnmanaged(u8).initCapacity(params.allocator, total_code_len + (step_marker.len + 3) * total_stops_count);
+            var marked = try std.ArrayListUnmanaged(u8).initCapacity(params.allocator, total_code_len + (instruments.Step.step_identifier.len + 3) * total_stops_count);
             defer marked.deinit(params.allocator);
 
-            var stop_part_offset: usize = 0;
-            var prev_offset: usize = 0;
-            for (source_parts, 0..) |*part, p| {
-                prev_offset = 0;
-                part_step_offsets[p] = stop_part_offset;
-                try part.instrument(&stop_part_offset, &prev_offset, &marked, params.allocator);
-
-                var it = part.breakpoints.keyIterator();
-                while (it.next()) |b| {
-                    try breakpoints.put(params.allocator, b.* + stop_part_offset, {});
+            for (service.instruments_any.items) |instr| {
+                if (instr.preprocess) |preprocess| {
+                    try preprocess(&processor, result_parts.items, &marked);
                 }
             }
 
@@ -1903,40 +1762,9 @@ pub const Shader = struct {
         };
         defer params.allocator.free(preprocessed);
 
-        var processor = instrumentation.Processor{
-            .config = .{
-                .allocator = params.allocator,
-                .breakpoints = breakpoints,
-                .support = service.support,
-                .group_dim = switch (info.stage) {
-                    glslang.GLSLANG_STAGE_VERTEX, glslang.GLSLANG_STAGE_GEOMETRY => &[_]usize{params.vertices},
-                    glslang.GLSLANG_STAGE_FRAGMENT => &params.screen,
-                    glslang.GLSLANG_STAGE_COMPUTE => params.compute[3..6],
-                    else => unreachable, //TODO other stages
-                },
-                .groups_count = switch (info.stage) {
-                    glslang.GLSLANG_STAGE_COMPUTE => params.compute[0..3],
-                    else => null,
-                },
-                .max_buffers = params.max_buffers,
-                .max_interface = switch (info.stage) {
-                    glslang.GLSLANG_STAGE_FRAGMENT => params.max_attachments,
-                    else => params.max_xfb, // do not care about stages without xfb support, because it will be 0 for them
-                },
-                .parts = result_parts,
-                .part_stops = part_step_offsets,
-                .stepping = stepping,
-                .shader_stage = source_parts[0].stage,
-                .single_thread_mode = single_pause_mode,
-                .uniform_names = uniform_names,
-                .uniform_locations = uniform_locations,
-                .used_buffers = &params.used_buffers,
-                .used_interface = &params.used_interface,
-            },
-        };
-        try processor.setup(preprocessed);
+        try processor.setup();
         // Generates instrumented source with breakpoints and debug outputs applied
-        const applied = try processor.applyTo(preprocessed);
+        const applied = try processor.apply();
         return applied;
     }
 
@@ -1947,18 +1775,24 @@ pub const Shader = struct {
         ref: @TypeOf(ProgramPayload.ref) = 0,
         tag: ?*Tag(@This()) = null,
         /// Ref and sources
-        stages: ShadersRefMap,
+        stages: ShadersRefMap = .{},
         context: @TypeOf(ProgramPayload.context) = null,
         /// Function for attaching and linking the shader. Defaults to glAttachShader and glLinkShader wrapper
         link: @TypeOf(ProgramPayload.link),
 
         stat: storage.Stat,
 
-        uniform_locations: std.ArrayListUnmanaged(String) = .{}, //will be filled by the instrumentation routine
+        /// Input and output channels for communication with instrumentation backend
+        channels: Processor.Channels = .{},
+        // TODO maybe could be put into `channels` as well
+        uniform_locations: std.ArrayListUnmanaged(String) = .{}, //will be filled by the instrumentation routine TODO or backend?
         uniform_names: std.StringHashMapUnmanaged(usize) = .{}, //inverse to uniform_locations
 
-        pub fn deinit(self: *@This()) void {
-            self.stages.deinit();
+        pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+            self.stages.deinit(allocator);
+            self.channels.deinit(allocator);
+            self.uniform_locations.deinit(allocator);
+            self.uniform_names.deinit(allocator);
         }
 
         pub fn dirty(self: *@This()) void {
@@ -2471,7 +2305,6 @@ pub fn programCreateUntagged(service: *Service, program: decls.ProgramPayload) !
         .ref = program.ref,
         .context = program.context,
         .link = program.link,
-        .stages = ShadersRefMap.init(service.allocator),
         .stat = storage.Stat.now(),
     };
 
@@ -2486,7 +2319,7 @@ pub fn programCreateUntagged(service: *Service, program: decls.ProgramPayload) !
 pub fn programAttachSource(service: *Service, ref: usize, source: usize) !void {
     if (service.Shaders.all.getEntry(source)) |existing_source| {
         if (service.Programs.all.get(ref)) |program| {
-            try program.stages.put(existing_source.key_ptr.*, existing_source.value_ptr.*);
+            try program.stages.put(service.allocator, existing_source.key_ptr.*, existing_source.value_ptr.*);
             for (existing_source.value_ptr.*.items) |*part| part.program = program;
         } else {
             return error.TargetNotFound;
@@ -2576,3 +2409,36 @@ fn toGLSLangStage(stage: decls.Stage) ShaderInfoForGLSLang {
         .unknown => .{ .client = glslang.GLSLANG_CLIENT_NONE, .stage = 0 },
     };
 }
+
+/// Returns all declarations (functions, struct) of the given type in the `scope`
+fn allDecls(comptime T: type, scope: anytype) []const T {
+    const d = std.meta.declarations(@TypeOf(scope));
+    comptime var array: [d.len]T = undefined;
+    for (d, 0..) |decl, i| {
+        array[i] = @field(scope, decl.name);
+    }
+    return array;
+}
+
+pub const default_scoped_instruments = blk: {
+    var scoped_instruments = std.EnumMap(analyzer.parse.Tag, []const Processor.Instrument){};
+    for (std.meta.declarations(instruments)) |decl| {
+        const instr_def = @field(instruments, decl.name);
+        if ((@typeInfo(@TypeOf(instr_def)) != .Struct) or !@hasField(instr_def, "tag")) {
+            //probabaly not an instrument definition
+            continue;
+        }
+        const instr = Processor.Instrument{
+            .id = instr_def.id,
+            .tag = instr_def.tag,
+            .collect = if (@hasField(instr_def, "collect")) &instr_def.collect else null,
+            .deinit = if (@hasField(instr_def, "deinit")) &instr_def.deinit else null,
+            .constructors = if (@hasField(instr_def, "constructors")) &instr_def.constructors else null,
+            .preprocess = if (@hasField(instr_def, "preprocess")) &instr_def.preprocess else null,
+            .instrument = if (@hasField(instr_def, "instrument")) &instr_def.instrument else null,
+            .setup = if (@hasField(instr_def, "setup")) &instr_def.setup else null,
+        };
+        scoped_instruments.put(instr_def.tag, instr);
+    }
+    break :blk scoped_instruments;
+};

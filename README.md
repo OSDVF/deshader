@@ -2,8 +2,10 @@
 Shaders are often shiny but sometimes also shady, fishy and stinky!
 > What if I could just step-debug that shader as I do with my CPU programs?
 
-Now you can!
+Now you can, and in your favorite code editor[^1]!
 Deshader intercepts OpenGL calls and adds instrumentation code to your shaders (so you don't need to write your own visualizations to debug shader execution process anymore).
+
+[^1]: VSCode derivatives and the standalone Deshader Editor is supported for now.
 You can also:
 # Features
 - Step through the shader execution (...breakpoints, logging, conditional bps...)
@@ -21,7 +23,7 @@ You can also:
 ## Non-goals
 ...and some dead ends, which have been encountered.
 - Debugging other languages than GLSL (feel free to fork and add your own language)
-- Using vendor-specific GPU APIs and instructions
+- Vendor API/ISA level debugging
 - Assembly (ISA) or pseudo-assembly (SPIR-V) level debugging
 - Profiling
 - [Custom WebView profile data directory](https://github.com/webview/webview/issues/719)
@@ -31,6 +33,10 @@ You can also:
 - View assembly
     - SPIR-V (compile by GLSLang)
     - ISA level ([nvdisasm](https://developer.download.nvidia.com/compute/cuda/redist/cuda_nvdisasm/), [nvcachetools](https://github.com/therontarigo/nvcachetools), [envytools](https://github.com/envytools/envytools/))
+- Vulkan support
+- Profiling
+- Validation
+- Modular instrumentation API
 
 Feel free to fork and add your own goals or even better, break the non-goals!
 
@@ -79,7 +85,7 @@ Deshader consists of several (mostly third party; mostly forked) components that
 - VSCode extension
     - [/editor/deshader-vscode/](/editor/deshader-vscode/) (MIT)
     - With node.js packages
-    - Managed by **Bun** and bundled by Webpack
+    - Managed by **Bun**
 
 ## Requirements
 - [Zig 0.13](https://ziglang.org/) (MIT)

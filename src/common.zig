@@ -393,7 +393,7 @@ pub fn nullOrEmpty(s: ?String) bool {
     return if (s) |ys| ys.len == 0 else true;
 }
 
-pub fn indexOfSliceMember(comptime T: type, slice: []const T, needle: *T) ?usize {
+pub fn indexOfSliceMember(comptime T: type, slice: []const T, needle: *const T) ?usize {
     for (slice) |*entry| {
         if (entry == needle) {
             return (@intFromPtr(entry) - @intFromPtr(slice.ptr)) / @sizeOf(T);

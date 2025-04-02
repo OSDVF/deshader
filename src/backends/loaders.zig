@@ -28,7 +28,7 @@ const c = @cImport({
         @cInclude("dlfcn.h");
     }
 });
-const gl_shaders = @import("../interceptors/gl_shaders.zig");
+const gl_shaders = @import("../backends/gl.zig");
 
 const String = []const u8;
 const ZString = [:0]const u8;
@@ -331,7 +331,7 @@ const _platform_gl_libs = switch (builtin.os.tag) {
 };
 const _gl_libs = _platform_gl_libs ++ .{APIs.gl.custom};
 
-/// Lists all exported declarations inside interceptors/shaders.zig and creates a map from procedure name to procedure pointer
+/// Lists all exported declarations inside backends/shaders.zig and creates a map from procedure name to procedure pointer
 pub const intercepted = blk: {
     const decls = @typeInfo(gl_shaders).Struct.decls ++ @typeInfo(gl_shaders.context_procs).Struct.decls;
 
@@ -350,7 +350,7 @@ pub const intercepted = blk: {
             names2[i] = proc.name;
             procs[i] = .{
                 proc.name,
-                // depends on every declaration in gl_shaders.zig to be a function or a private struct (so not listed here). It cannot be pub struct
+                // depends on every declaration in backends/gl.zig to be a function or a private struct (so not listed here). It cannot be pub struct
                 if (@hasDecl(gl_shaders, proc.name)) @field(gl_shaders, proc.name) else @field(gl_shaders.context_procs, proc.name),
             };
         }

@@ -20,16 +20,15 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const options = @import("options");
-const gl = @import("gl");
 const common = @import("common");
 const log = common.log;
 const commands = @import("commands.zig");
-const gl_shaders = @import("interceptors/gl_shaders.zig");
+const gl_backend = @import("backends/gl.zig");
 const shaders = @import("services/shaders.zig");
 const shader_decls = @import("declarations/shaders.zig");
 
-const loaders = @import("interceptors/loaders.zig");
-const transitive = @import("interceptors/transitive.zig");
+const loaders = @import("backends/loaders.zig");
+const transitive = @import("backends/transitive.zig");
 
 const String = []const u8;
 
@@ -53,32 +52,32 @@ pub export fn deshaderFreeList(list: [*]const [*:0]const u8, count: usize) void 
 }
 
 pub export fn deshaderListPrograms(path: [*:0]const u8, recursive: bool, count: *usize, physical: bool, postfix: ?[*:0]const u8) ?[*]const [*:0]const u8 {
-    var result = gl_shaders.current.Programs.listDir(common.allocator, std.mem.span(path), recursive, physical, if (postfix) |n| std.mem.span(n) else null) catch return null;
+    var result = gl_backend.current.Programs.listDir(common.allocator, std.mem.span(path), recursive, physical, if (postfix) |n| std.mem.span(n) else null) catch return null;
     count.* = result.items.len;
     return (result.toOwnedSlice(common.allocator) catch return null).ptr;
 }
 
 pub export fn deshaderListSources(path: [*:0]const u8, recursive: bool, count: *usize, physical: bool, postfix: ?[*:0]const u8) ?[*]const [*:0]const u8 {
-    var result = gl_shaders.current.Shaders.listDir(common.allocator, std.mem.span(path), recursive, physical, if (postfix) |n| std.mem.span(n) else null) catch return null;
+    var result = gl_backend.current.Shaders.listDir(common.allocator, std.mem.span(path), recursive, physical, if (postfix) |n| std.mem.span(n) else null) catch return null;
     count.* = result.items.len;
     return (result.toOwnedSlice(common.allocator) catch return null).ptr;
 }
 
 /// If `program` == 0, then list all programs. Else list shader stages of a particular program
 pub export fn deshaderListProgramsUntagged(count: *usize, ref_or_root: usize, nested_postfix: ?[*:0]const u8) ?[*]const [*:0]const u8 {
-    const result = gl_shaders.current.Programs.listUntagged(common.allocator, ref_or_root, if (nested_postfix) |n| std.mem.span(n) else null, null) catch return null;
+    const result = gl_backend.current.Programs.listUntagged(common.allocator, ref_or_root, if (nested_postfix) |n| std.mem.span(n) else null, null) catch return null;
     count.* = result.len;
     return @ptrCast(result);
 }
 
 pub export fn deshaderListSourcesUntagged(count: *usize, ref_or_root: usize, nested_postfix: ?[*:0]const u8) ?[*]const [*:0]const u8 {
-    const result = gl_shaders.current.Shaders.listUntagged(common.allocator, ref_or_root, if (nested_postfix) |n| std.mem.span(n) else null, null) catch return null;
+    const result = gl_backend.current.Shaders.listUntagged(common.allocator, ref_or_root, if (nested_postfix) |n| std.mem.span(n) else null, null) catch return null;
     count.* = result.len;
     return @ptrCast(result);
 }
 
 pub export fn deshaderRemovePath(path: [*:0]const u8, dir: bool) usize {
-    gl_shaders.current.Shaders.untag(std.mem.span(path), dir) catch |err| {
+    gl_backend.current.Shaders.untag(std.mem.span(path), dir) catch |err| {
         log.err(err_format, .{ @src().fn_name, err });
         if (@errorReturnTrace()) |trace|
             std.debug.dumpStackTrace(trace.*);
@@ -88,7 +87,7 @@ pub export fn deshaderRemovePath(path: [*:0]const u8, dir: bool) usize {
 }
 
 pub export fn deshaderRemoveSource(ref: usize) usize {
-    gl_shaders.current.Shaders.remove(ref) catch |err| {
+    gl_backend.current.Shaders.remove(ref) catch |err| {
         log.err(err_format, .{ @src().fn_name, err });
         if (@errorReturnTrace()) |trace|
             std.debug.dumpStackTrace(trace.*);
@@ -103,7 +102,7 @@ pub export fn deshaderRemoveSource(ref: usize) usize {
 ///
 /// Alternatively, glNamedStringARB or glObjectLabel can be used to tag shaders.
 pub export fn deshaderTag(ref: usize, part_index: usize, path: [*:0]const u8, if_exists: ExistsBehavior) usize {
-    _ = gl_shaders.current.Shaders.assignTag(ref, part_index, std.mem.span(path), if_exists) catch |err| {
+    _ = gl_backend.current.Shaders.assignTag(ref, part_index, std.mem.span(path), if_exists) catch |err| {
         log.err(err_format, .{ @src().fn_name, err });
         if (@errorReturnTrace()) |trace|
             std.debug.dumpStackTrace(trace.*);
@@ -115,7 +114,7 @@ pub export fn deshaderTag(ref: usize, part_index: usize, path: [*:0]const u8, if
 /// Set a physical folder as a workspace for shader sources
 pub export fn deshaderPhysicalWorkspace(virtual: [*:0]const u8, physical: [*:0]const u8) usize {
     _ = _try: {
-        gl_shaders.current.mapPhysicalToVirtual(std.mem.span(physical), shaders.ResourceLocator.parse(std.mem.span(virtual)) catch |err| break :_try err) catch |err| break :_try err;
+        gl_backend.current.mapPhysicalToVirtual(std.mem.span(physical), shaders.ResourceLocator.parse(std.mem.span(virtual)) catch |err| break :_try err) catch |err| break :_try err;
     } catch |err| {
         log.err(err_format, .{ @src().fn_name, err });
         if (@errorReturnTrace()) |trace|
@@ -126,13 +125,13 @@ pub export fn deshaderPhysicalWorkspace(virtual: [*:0]const u8, physical: [*:0]c
 }
 
 pub export fn deshaderTaggedProgram(payload: ProgramPayload, behavior: ExistsBehavior) usize {
-    gl_shaders.current.programCreateUntagged(payload) catch |err| {
+    gl_backend.current.programCreateUntagged(payload) catch |err| {
         log.err(err_format, .{ @src().fn_name, err });
         if (@errorReturnTrace()) |trace|
             std.debug.dumpStackTrace(trace.*);
         return @intFromError(err);
     };
-    _ = gl_shaders.current.Programs.assignTag(payload.ref, 0, std.mem.span(payload.path.?), behavior) catch |err| {
+    _ = gl_backend.current.Programs.assignTag(payload.ref, 0, std.mem.span(payload.path.?), behavior) catch |err| {
         log.err(err_format, .{ @src().fn_name, err });
         if (@errorReturnTrace()) |trace|
             std.debug.dumpStackTrace(trace.*);
@@ -144,7 +143,7 @@ pub export fn deshaderTaggedProgram(payload: ProgramPayload, behavior: ExistsBeh
 pub export fn deshaderTaggedSource(payload: SourcesPayload, if_exists: ExistsBehavior) usize {
     std.debug.assert(payload.count == 1);
     std.debug.assert(payload.paths != null);
-    gl_shaders.current.sourcesCreateUntagged(payload) catch |err| {
+    gl_backend.current.sourcesCreateUntagged(payload) catch |err| {
         log.err(err_format, .{ @src().fn_name, err });
         if (@errorReturnTrace()) |trace|
             std.debug.dumpStackTrace(trace.*);
@@ -152,7 +151,7 @@ pub export fn deshaderTaggedSource(payload: SourcesPayload, if_exists: ExistsBeh
     };
     for (0..payload.count) |i| {
         if (payload.paths.?[i]) |path| {
-            _ = gl_shaders.current.Programs.assignTag(payload.ref, i, std.mem.span(path), if_exists) catch |err| {
+            _ = gl_backend.current.Programs.assignTag(payload.ref, i, std.mem.span(path), if_exists) catch |err| {
                 log.err(err_format, .{ @src().fn_name, err });
                 if (@errorReturnTrace()) |trace|
                     std.debug.dumpStackTrace(trace.*);
@@ -209,7 +208,7 @@ comptime {
     }
 }
 
-/// Mean to be called at Deshader shared library load
+/// Will be called on Deshader shared library load
 fn runOnLoad() !void {
     if (!common.initialized) { // races with the intercepted dlopen but should be on the same thread
         try common.init(); // init allocator and env
