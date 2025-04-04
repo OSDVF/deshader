@@ -88,8 +88,8 @@ Deshader consists of several (mostly third party; mostly forked) components that
     - Managed by **Bun**
 
 ## Requirements
-- [Zig 0.13](https://ziglang.org/) (MIT)
-- Bun 1.1.34 [Install](https://github.com/oven-sh/bun#install) (MIT)
+- [Zig 0.14](https://ziglang.org/) (MIT)
+- Bun 1.2.8 [Install](https://github.com/oven-sh/bun#install) (MIT)
 - [VCPKG](https://vcpkg.io) (MIT)
 - C libraries
     - Linux

@@ -29,8 +29,8 @@ pub const ListGlProcsStep = struct {
         return self;
     }
 
-    fn make(step: *std.Build.Step, progressNode: std.Progress.Node) anyerror!void {
-        const node = progressNode.start("List GL procs", 1);
+    fn make(step: *std.Build.Step, options: std.Build.Step.MakeOptions) anyerror!void {
+        const node = options.progress_node.start("List GL procs", 1);
         defer node.end();
         const self: *@This() = @fieldParentPtr("step", step);
         const path = self.symbolsOutput.getPath(step.owner);

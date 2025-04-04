@@ -147,9 +147,8 @@ fn handleWaitResult(self: *std.process.Child, status: u32) void {
     self.term = cleanupAfterWait(self, status);
 }
 
-fn destroyPipe(pipe: [2]std.posix.fd_t) void {
-    if (pipe[0] != -1) std.posix.close(pipe[0]);
-    if (pipe[0] != pipe[1]) std.posix.close(pipe[1]);
+fn destroyPipe(pipe: std.posix.fd_t) void {
+    if (pipe != -1) std.posix.close(pipe);
 }
 
 const ErrInt = std.meta.Int(.unsigned, @sizeOf(anyerror) * 8);
@@ -170,7 +169,7 @@ fn cleanupAfterWait(self: *std.process.Child, status: u32) !std.process.Child.Te
 
         if (builtin.os.tag == .linux) {
             var fd = [1]std.posix.pollfd{std.posix.pollfd{
-                .fd = err_pipe[0],
+                .fd = err_pipe,
                 .events = std.posix.POLL.IN,
                 .revents = undefined,
             }};
@@ -182,7 +181,7 @@ fn cleanupAfterWait(self: *std.process.Child, status: u32) !std.process.Child.Te
             // According to eventfd(2) the descriptor is readable if the counter
             // has a value greater than 0
             if ((fd[0].revents & std.posix.POLL.IN) != 0) {
-                const err_int = try readIntFd(err_pipe[0]);
+                const err_int = try readIntFd(err_pipe);
                 return @as(std.process.Child.SpawnError, @errorCast(@errorFromInt(err_int)));
             }
         } else {
@@ -238,7 +237,7 @@ pub fn getSelfThreadName(allocator: std.mem.Allocator) !String {
         return allocator.dupe(u8, result_buffer[0..len]);
     } else {
         const err = std.c.pthread_getname_np(thread_id, @ptrCast(&result_buffer), @intCast(result_buffer.len + 1)); //including the null terminator
-        switch (err) {
+        switch (@as(std.c.E, @enumFromInt(err))) {
             .SUCCESS => return allocator.dupe(u8, result_buffer[0..(std.mem.indexOfScalar(u8, &result_buffer, 0) orelse 0) :0]),
             .RANGE => unreachable,
             else => |e| return std.posix.unexpectedErrno(e),

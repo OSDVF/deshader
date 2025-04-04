@@ -39,6 +39,7 @@ pub const setting_vars = struct {
     /// Are shader parts automatically merged in glShaderSource? (so they will all belong to the same tag)
     pub var singleChunkShader: bool = true;
     pub var stackTraces: bool = false;
+    pub var forceSupport: bool = false;
 };
 
 pub var instance: ?*MutliListener = null;
@@ -138,7 +139,7 @@ pub const MutliListener = struct {
 
             self.http.?.not_found_text = "Unknown command";
 
-            inline for (@typeInfo(commands).Struct.decls) |function| {
+            inline for (@typeInfo(commands).@"struct".decls) |function| {
                 const command = @field(commands, function.name);
                 _ = try self.addHTTPCommand("/" ++ function.name, command, if (@hasDecl(free_funcs, function.name)) @field(free_funcs, function.name) else null);
             }
@@ -199,7 +200,7 @@ pub const MutliListener = struct {
         const route = try self.http.?.addRoute(name);
         const command_route = struct {
             var comm: *const @TypeOf(command) = undefined;
-            var free: ?*const fn (@typeInfo(@TypeOf(command)).Fn.return_type.?) void = null;
+            var free: ?*const fn (@typeInfo(@TypeOf(command)).@"fn".return_type.?) void = null;
             var writer: serve.HttpResponse.Writer = undefined;
             fn log(level: std.log.Level, scope: String, message: String) void {
                 const result = std.fmt.allocPrint(common.allocator, "{s} ({s}): {s}", .{ scope, @tagName(level), message }) catch return;
@@ -224,10 +225,10 @@ pub const MutliListener = struct {
                 } else {
                     logging.log_listener = null;
                 }
-                const return_type = @typeInfo(@TypeOf(command)).Fn.return_type.?;
-                const error_union = @typeInfo(return_type).ErrorUnion;
+                const return_type = @typeInfo(@TypeOf(command)).@"fn".return_type.?;
+                const error_union = @typeInfo(return_type).error_union;
 
-                const result_or_err = switch (@typeInfo(@TypeOf(command)).Fn.params.len) {
+                const result_or_err = switch (@typeInfo(@TypeOf(command)).@"fn".params.len) {
                     0 => comm(),
                     1 => blk: {
                         const url = try provider.allocator.dupe(u8, context.request.url);
@@ -322,13 +323,13 @@ pub const MutliListener = struct {
             StringArray,
             HttpStatusCode,
         };
-        const decls = @typeInfo(commands).Struct.decls;
+        const decls = @typeInfo(commands).@"struct".decls;
         const comInfo = struct { r: CommandReturnType, a: usize, c: *const anyopaque, free: ?*const anyopaque };
         var command_array: [decls.len]struct { String, comInfo } = undefined;
         for (decls, 0..) |function, i| {
             const command = @field(commands, function.name);
-            const return_type = @typeInfo(@TypeOf(command)).Fn.return_type.?;
-            const error_union = @typeInfo(return_type).ErrorUnion;
+            const return_type = @typeInfo(@TypeOf(command)).@"fn".return_type.?;
+            const error_union = @typeInfo(return_type).error_union;
             command_array[i] = .{ function.name, comInfo{
                 .r = switch (error_union.payload) {
                     void => CommandReturnType.Void,
@@ -338,7 +339,7 @@ pub const MutliListener = struct {
                     serve.HttpStatusCode => CommandReturnType.HttpStatusCode,
                     else => @compileError("Command " ++ function.name ++ " has invalid return type. Only void, string, string array, string set, and http status code are available."),
                 },
-                .a = @typeInfo(@TypeOf(command)).Fn.params.len,
+                .a = @typeInfo(@TypeOf(command)).@"fn".params.len,
                 .c = &command,
                 .free = if (@hasDecl(free_funcs, function.name)) &@field(free_funcs, function.name) else null,
             } };
@@ -498,7 +499,7 @@ pub const MutliListener = struct {
 
     fn getInnerType(comptime t: type) struct { type: type, isOptional: bool } {
         return switch (@typeInfo(t)) {
-            .Optional => |opt| .{ .type = opt.child, .isOptional = true },
+            .optional => |opt| .{ .type = opt.child, .isOptional = true },
             else => .{ .type = t, .isOptional = false },
         };
     }
@@ -581,15 +582,15 @@ pub const MutliListener = struct {
         const inner = getInnerType(t);
         if (value) |v| {
             return switch (@typeInfo(inner.type)) {
-                .Bool => std.ascii.eqlIgnoreCase(v, "true") or
+                .bool => std.ascii.eqlIgnoreCase(v, "true") or
                     std.ascii.eqlIgnoreCase(v, "on") or
                     std.mem.eql(u8, v, "1"),
 
-                .Float => std.fmt.parseFloat(inner.type, v),
+                .float => std.fmt.parseFloat(inner.type, v),
 
-                .Int => try std.fmt.parseInt(inner.type, v, 0),
+                .int => try std.fmt.parseInt(inner.type, v, 0),
 
-                .Array, .Pointer => {
+                .array, .pointer => {
                     if (logParsing) {
                         DeshaderLog.debug("Parsing array/pointer {x}: {s}", .{ @intFromPtr(v.ptr), v });
                     }
@@ -601,10 +602,10 @@ pub const MutliListener = struct {
                         return parsed.value;
                     }
                 },
-                .Enum => if (std.meta.stringToEnum(inner.type, v)) |e| e else return error.InvalidEnumValue,
+                .@"enum" => if (std.meta.stringToEnum(inner.type, v)) |e| e else return error.InvalidEnumValue,
 
                 // JSON
-                .Struct => if (std.json.parseFromSlice(inner.type, common.allocator, v, .{ .ignore_unknown_fields = true })) |p|
+                .@"struct" => if (std.json.parseFromSlice(inner.type, common.allocator, v, .{ .ignore_unknown_fields = true })) |p|
                     p.value
                 else |err|
                     err,
@@ -631,7 +632,7 @@ pub const MutliListener = struct {
                     return error.WrongParameters;
                 }
             }
-            inline for (@typeInfo(result_type.type).Struct.fields) |field| {
+            inline for (@typeInfo(result_type.type).@"struct".fields) |field| {
                 if (logParsing) {
                     DeshaderLog.debug("Parsing field: {s}", .{field.name});
                 }
@@ -736,7 +737,7 @@ pub const MutliListener = struct {
 
             var breakpoints_to_send = std.ArrayListUnmanaged(dap.Breakpoint){};
             shaders.debugging = true;
-            for (shaders.allServices()) |*s| {
+            for (shaders.allServices()) |s| {
                 try getUnsentBreakpoints(s, &breakpoints_to_send);
             }
             defer {
@@ -752,7 +753,7 @@ pub const MutliListener = struct {
         pub fn noDebug() !void {
             shaders.user_action = true;
             shaders.debugging = false;
-            for (shaders.allServices()) |*s| {
+            for (shaders.allServices()) |s| {
                 s.revert_requested = true;
             }
             instance.?.unPause();
@@ -812,7 +813,7 @@ pub const MutliListener = struct {
             const in_params = try parseArgs(struct { single: bool }, args);
             if (shaders.single_pause_mode != in_params.single) {
                 shaders.single_pause_mode = in_params.single;
-                for (shaders.allServices()) |*s| {
+                for (shaders.allServices()) |s| {
                     s.invalidate();
                 }
             }
@@ -994,15 +995,15 @@ pub const MutliListener = struct {
 
         /// The full state of the debugger
         pub fn state() !String {
-            var breakpoints_to_send = std.ArrayListUnmanaged(dap.Breakpoint){};
+            var breakpoints_to_send = std.ArrayListUnmanaged(dap.Breakpoint).empty;
             defer {
                 for (breakpoints_to_send.items) |bp| {
                     common.allocator.free(bp.path);
                 }
                 breakpoints_to_send.deinit(common.allocator);
             }
-            var running_to_send = std.ArrayListUnmanaged(shaders.Running){};
-            for (shaders.allServices()) |*s| {
+            var running_to_send = std.ArrayListUnmanaged(shaders.Running).empty;
+            for (shaders.allServices()) |s| {
                 try getUnsentBreakpoints(s, &breakpoints_to_send);
                 try s.runningShaders(common.allocator, &running_to_send);
             }
@@ -1012,7 +1013,7 @@ pub const MutliListener = struct {
                 }
                 running_to_send.deinit(common.allocator);
             }
-            var result = std.ArrayListUnmanaged(u8){};
+            var result = std.ArrayListUnmanaged(u8).empty;
             const w = result.writer(common.allocator);
             try std.json.stringify(.{ // Must be called instead of stringifyAlloc which would corrupt the stack (because of the array-lists being on stack)
                 .breakpoints = breakpoints_to_send.items,
@@ -1025,8 +1026,8 @@ pub const MutliListener = struct {
         }
 
         pub fn runningShaders() !String {
-            var threads_list = std.ArrayListUnmanaged(shaders.Running){};
-            for (shaders.allServices()) |*s| {
+            var threads_list = std.ArrayListUnmanaged(shaders.Running).empty;
+            for (shaders.allServices()) |s| {
                 try s.runningShaders(common.allocator, &threads_list);
             }
             defer {
@@ -1256,7 +1257,7 @@ pub const MutliListener = struct {
                 }
             }
             // From all files
-            for (shaders.allServices()) |*s| {
+            for (shaders.allServices()) |s| {
                 var it = s.Shaders.all.valueIterator();
                 while (it.next()) |sh| {
                     for (sh.*.items) |*part| {
@@ -1275,9 +1276,9 @@ pub const MutliListener = struct {
         var help_out: [
             blk: { // Compute the number of functions
                 var count = 0;
-                for (@typeInfo(commands).Struct.decls) |decl_info| {
+                for (@typeInfo(commands).@"struct".decls) |decl_info| {
                     const decl = @field(commands, decl_info.name);
-                    if (@typeInfo(@TypeOf(decl)) == .Fn) {
+                    if (@typeInfo(@TypeOf(decl)) == .@"fn") {
                         count += 1;
                     }
                 }
@@ -1286,9 +1287,9 @@ pub const MutliListener = struct {
         ]String = undefined;
         pub fn help() ![]const String {
             var i: usize = 0;
-            inline for (@typeInfo(commands).Struct.decls) |decl_info| {
+            inline for (@typeInfo(commands).@"struct".decls) |decl_info| {
                 const decl = @field(commands, decl_info.name);
-                if (@typeInfo(@TypeOf(decl)) == .Fn) {
+                if (@typeInfo(@TypeOf(decl)) == .@"fn") {
                     defer i += 1;
                     help_out[i] = decl_info.name;
                 }
@@ -1297,7 +1298,7 @@ pub const MutliListener = struct {
         }
 
         pub fn settings(args: ?ArgumentsMap) (error{ UnknownSettingName, OutOfMemory } || std.fmt.ParseIntError)![]const String {
-            const settings_decls = @typeInfo(setting_vars).Struct.decls;
+            const settings_decls = @typeInfo(setting_vars).@"struct".decls;
             if (args == null) {
                 var values = try common.allocator.alloc(String, settings_decls.len);
                 inline for (settings_decls, 0..) |decl, i| {
@@ -1313,7 +1314,13 @@ pub const MutliListener = struct {
 
                 try struct {
                     fn setBool(comptime name: String, target_val: ?String) void {
-                        @field(setting_vars, name) = stringToBool(target_val);
+                        const b_val = stringToBool(target_val);
+                        if (std.mem.eql(u8, name, "forceSupport")) {
+                            for (shaders.allServices()) |s| {
+                                s.setForceSupport(b_val);
+                            }
+                        }
+                        @field(setting_vars, name) = b_val;
                     }
 
                     fn setInt(comptime name: String, comptime T: type, target_val: ?String) !void {

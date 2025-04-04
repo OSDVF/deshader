@@ -55,7 +55,7 @@ Name              | Values                                           | Descripti
 `logLevel`        | `err`, `warn`, `info`, `debug`, `default`        | Override log level
 `logInterception` | `true`, `false` (default)                        | Enable logging of intercepted GL procedure requests
 `memoryFrames`    | number (default 7)                               | Number of frames in memory analysis backtrace.
-`ofmt`            | `Default`, `c`, `IR`, `BC`                       | Specify output format for Zig compiler
+`otype`            | `Default`, `c`, `IR`, `BC`                      | Specify output type for Zig compiler
 `sanitize`        | `true`, `false`                                  | Enable sanitizers (implicit for debug mode)
 `sdk`             |                                                  | SDK path (macOS only, defaults to the one selected by xcode-select)
 `sGLSLang`        | `true`, `false`                                  | Force usage of system-supplied GLSLang library (VCPKG has priority otherwise)

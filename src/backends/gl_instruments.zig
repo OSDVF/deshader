@@ -126,7 +126,8 @@ pub const Variables = struct {
 };
 
 pub const StackTrace = struct {
-    stack_trace_buffer: [shaders.STACK_TRACE_MAX]shaders.StackTraceT = undefined,
+    // TODO dynamic buffer
+    stack_trace_buffer: [instruments.StackTrace.default_max_entries]instruments.StackTrace.StackTraceT = undefined,
 
     pub fn onBeforeDraw(_: *shaders, instrumentation: *shaders.InstrumentationResult) anyerror!void {
         // Update uniforms

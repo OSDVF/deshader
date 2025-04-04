@@ -30,9 +30,9 @@ pub const GenerateStubsStep = struct {
         );
     }
 
-    pub fn makeFn(step: *std.Build.Step, progressNode: std.Progress.Node) anyerror!void {
+    pub fn makeFn(step: *std.Build.Step, options: std.Build.Step.MakeOptions) anyerror!void {
         const self: *@This() = @fieldParentPtr("step", step);
-        const node = progressNode.start("Generate Stubs", 1);
+        const node = options.progress_node.start("Generate Stubs", 1);
         const file = try std.fs.createFileAbsolute(self.output, .{});
         defer file.close();
         try generateStubs(step.owner.allocator, file, self.short_names);
@@ -74,7 +74,6 @@ pub fn generateStubs(allocator: std.mem.Allocator, output: std.fs.File, short_na
                     var buffer: [1]std.zig.Ast.Node.Index = undefined;
                     const f = tree.fullFnProto(&buffer, declNode.data.lhs);
                     const l_paren = tree.tokens.get(f.?.lparen).start;
-                    const return_type = tree.nodeToSpan(f.?.ast.return_type).start;
                     const func_name = tree.source[protoStart..l_paren];
 
                     if (std.mem.indexOf(u8, tree.source[protoStart - 7 .. protoStart], "export") != null) {
@@ -82,9 +81,7 @@ pub fn generateStubs(allocator: std.mem.Allocator, output: std.fs.File, short_na
                         try output.writeAll(&.{std.ascii.toLower(func_name[11])});
                         try output.writeAll(func_name[12..]);
                         try output.writeAll(" = @extern(*const fn ");
-                        try output.writeAll(tree.source[l_paren..return_type]);
-                        try output.writeAll("callconv(.C) ");
-                        try output.writeAll(tree.source[return_type..protoEnd]);
+                        try output.writeAll(tree.source[l_paren..protoEnd]);
                         try output.writeAll(", .{.name = \"");
                         try output.writeAll(func_name[3..]);
                         try output.writeAll("\" });\n");

@@ -1,5 +1,5 @@
 //! GLSL semantic analysis of the AST.
-//! Aside from the glsl_analyzer, this can also resolve the type of expressions.
+//! Aside from the glsl_analyzer, this can also bse used to resolve the type of expressions.
 //! Also does not depend on the `Workspace` struct.
 
 const std = @import("std");
@@ -9,8 +9,8 @@ const String = []const u8;
 const Node = u32;
 
 pub const Scope = struct {
-    functions: std.StringHashMapUnmanaged(Function) = .{},
-    variables: std.StringHashMapUnmanaged(Symbol) = .{},
+    functions: std.StringHashMapUnmanaged(Function) = .empty,
+    variables: std.StringHashMapUnmanaged(Symbol) = .empty,
     parent: ?*Scope = null,
     function_counter: *usize,
 
@@ -89,15 +89,15 @@ pub const Scope = struct {
 };
 
 pub const Type = union(enum) {
-    Primitive: Primitive,
-    Array: struct {
+    primitive: Primitive,
+    array: struct {
         type: Primitive,
         size: usize,
     },
-    Sampler: Sampler,
-    Texture: Sampler,
-    Image: ImageType,
-    Struct: String,
+    sampler: Sampler,
+    texture: Sampler,
+    image: ImageType,
+    @"struct": String,
 
     pub const Primitive = struct {
         data: Data,
@@ -121,7 +121,7 @@ pub const Type = union(enum) {
 
     pub const ImageType = union(enum) {
         Buffer: void,
-        Normal: Normal,
+        normal: Normal,
         Unknown: void,
 
         pub const Normal = struct {
@@ -293,7 +293,7 @@ pub const Type = union(enum) {
         }
 
         // if no type was matched, it's a struct
-        return .{ .Struct = t };
+        return .{ .@"struct" = t };
     }
 };
 

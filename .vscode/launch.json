@@ -146,6 +146,29 @@
                 "__NV_PRIME_RENDER_OFFLOAD": "0",
                 "G_DEBUG_MESSAGES": "all",
                 
+            
+            }
+        },
+        {
+            "type": "lldb-mi",
+            "request": "launch",
+            "name": "LLDB - GLFW",
+            "target": "./zig-out/bin/deshader-examples/glfw",
+            "cwd": "${workspaceRoot}",
+            "valuesFormatting": "parseText",
+            "preLaunchTask": "Build Examples",
+            "env": {
+                "DESHADER_IGNORE_PROCESS": "gdb:zsh:lldb",
+                "DESHADER_PROCESS": "glfw",
+                "LD_PRELOAD": "${workspaceRoot}/zig-out/lib/libdeshader.so",
+                "DYLD_INSERT_LIBRARIES": "${workspaceRoot}/zig-out/lib/libdeshader.dylib",
+                "DESHADER_COMMANDS_WS": "8082",
+                "DESHADER_START_SERVER": "1",
+                "DESHADER_LSP": "8083",
+                "DESHADER_GUI": "1",
+                "POWER_SAVE": "100",
+                "__NV_PRIME_RENDER_OFFLOAD": "0",
+                "G_DEBUG_MESSAGES": "all",
             }
         },
         {

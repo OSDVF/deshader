@@ -41,7 +41,10 @@ pub const Parsed = struct {
 
     /// sorted ascending by position in the code
     calls: std.StringHashMap(std.ArrayList(NodeId)),
+    /// GLSL version
     version: u16,
+    /// Is this an OpenGL ES shader?
+    es: bool,
     version_span: analyzer.parse.Span,
 
     // List of enabled extensions
@@ -79,6 +82,7 @@ pub const Parsed = struct {
         errdefer extensions.deinit();
 
         var version: u16 = 0;
+        var es = false;
         var version_span = analyzer.parse.Span{ .start = 0, .end = 0 };
 
         for (ignored.items) |token| {
@@ -89,7 +93,15 @@ pub const Parsed = struct {
                     try extensions.append(line[name.start..name.end]);
                 },
                 .version => |version_token| {
-                    version = try std.fmt.parseInt(u16, line[version_token.number.start..version_token.number.end], 10);
+                    var version_parts = std.mem.splitAny(u8, line[version_token.number.start..version_token.number.end], " \t");
+                    if (version_parts.next()) |version_part| {
+                        version = try std.fmt.parseInt(u16, version_part, 10);
+                    }
+                    if (version_parts.next()) |version_part| {
+                        if (std.mem.eql(u8, version_part, "es")) {
+                            es = true;
+                        }
+                    }
                     version_span = token;
                 },
                 else => continue,
@@ -104,6 +116,7 @@ pub const Parsed = struct {
             .extensions = extensions.items,
             .calls = calls,
             .version = version,
+            .es = es,
             .version_span = version_span,
         };
     }
@@ -119,18 +132,18 @@ pub const Result = struct {
     /// Actually it can be modified by the platform specific code (e.g. to set the selected thread location)
     pub const Channels = struct {
         /// Filled with storages created by the individual instruments
-        out: std.AutoArrayHashMapUnmanaged(u64, OutputStorage) = .{},
+        out: std.AutoArrayHashMapUnmanaged(u64, OutputStorage) = .empty,
         /// Filled with control variables created by the individual instruments (e.g. desired step)
-        controls: std.AutoArrayHashMapUnmanaged(u64, ?*anyopaque) = .{},
+        controls: std.AutoArrayHashMapUnmanaged(u64, *anyopaque) = .empty,
         /// Provided for storing `result` variables from the platform backend instrument clients (e.g. reached step)
-        responses: std.AutoArrayHashMapUnmanaged(u64, ?*anyopaque) = .{},
+        responses: std.AutoArrayHashMapUnmanaged(u64, *anyopaque) = .empty,
         /// Each group has the dimensions of `group_dim`
-        group_dim: []usize = undefined,
+        group_dim: []usize,
         /// Number of groups in each grid dimension
         group_count: ?[]usize = null,
 
         /// Function names. Index in the values array is the function's id (used when creating a stack trace)
-        functions: []String = undefined,
+        functions: []String,
         diagnostics: std.ArrayListUnmanaged(analyzer.parse.Diagnostic) = .{},
 
         pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
@@ -188,22 +201,25 @@ pub const Result = struct {
 
 /// Prototype for function that instruments the shader code
 pub const Instrument = struct {
-    id: u64,
+    pub const Id = u64;
+    id: Id,
     tag: ?analyzer.parse.Tag,
 
     collect: ?*const fn () void, //TODO
     constructors: ?*const fn (processor: *Processor, main: NodeId) anyerror!void,
-    deinit: ?*const fn (channels: *Processor.Result.Channels, allocator: std.mem.Allocator) anyerror!void,
+    deinit: ?*const fn (channels: *shaders.State) anyerror!void,
     instrument: ?*const fn (processor: *Processor, node: NodeId, context: *TraverseContext) anyerror!void,
     preprocess: ?*const fn (processor: *Processor, source_parts: []*shaders.Shader.SourcePart, result: *std.ArrayListUnmanaged(u8)) anyerror!void,
     setup: ?*const fn (processor: *Processor) anyerror!void,
+    /// Can be used to destroy scratch variables
+    setupDone: ?*const fn (processor: *Processor) anyerror!void,
 };
 
-/// Channels are always stored in one of program's stages `Channels` and these maps contains references only
+/// Physically are the channels always stored in one of program's stage's `Channels` and thes maps inside this struct contains references only
 pub const Channels = struct {
-    out: std.AutoArrayHashMapUnmanaged(u64, *Processor.OutputStorage) = .{},
-    controls: std.AutoArrayHashMapUnmanaged(u64, *?*anyopaque) = .{},
-    responses: std.AutoArrayHashMapUnmanaged(u64, *?*anyopaque) = .{},
+    out: std.AutoArrayHashMapUnmanaged(u64, *Processor.OutputStorage) = .empty,
+    controls: std.AutoArrayHashMapUnmanaged(u64, **anyopaque) = .empty,
+    responses: std.AutoArrayHashMapUnmanaged(u64, **anyopaque) = .empty,
 
     pub fn getControl(self: @This(), comptime T: type, id: u64) ?T {
         return if (self.controls.get(id)) |p| @alignCast(@ptrCast(p.*)) else null;
@@ -234,6 +250,8 @@ pub const Config = struct {
     spec: analyzer.Spec,
     source: String,
     support: Support,
+    /// Turn of deducing supported features from the declared GLSL source code version and extensions
+    force_support: bool,
     group_dim: []const usize,
     groups_count: ?[]const usize,
     /// Program-wide channels, shared between all shader stages. The channels should be onlly Buffers
@@ -266,20 +284,22 @@ threads: []usize = undefined,
 /// Offset of #version directive (if any was found)
 after_version: usize = 0,
 arena: std.heap.ArenaAllocator = undefined,
+channels: Result.Channels = .{ // undefined fields will be assigned in setup()
+    .group_dim = undefined,
+    .functions = undefined,
+},
 last_interface_decl: usize = 0,
 last_interface_node: NodeId = 0,
 last_interface_location: usize = 0,
 uses_dual_source_blend: bool = false,
 vulkan: bool = false,
-glsl_version: u16 = 140, // 4.60 -> 460
 parsed: Parsed = undefined,
-rand: std.rand.DefaultPrng = undefined,
-guarded: std.AutoHashMapUnmanaged(NodeId, void) = .{},
+rand: std.Random.DefaultPrng = undefined,
+scratch: std.AutoArrayHashMapUnmanaged(Instrument.Id, *anyopaque) = .empty,
 
 /// Maps offsets in file to the inserted instrumented code fragments (sorted)
 /// Both the key and the value are stored as Treap's Key (a bit confusing)
 inserts: Inserts = .{}, // Will be inserted many times but iterated only once at applyTo
-channels: Result.Channels = .{},
 
 //
 // Instrumentation privitives - identifiers for various storage and control variables
@@ -306,7 +326,7 @@ pub fn deinit(self: *@This()) void {
 pub fn toOwnedChannels(self: *@This()) Result.Channels {
     self.config.allocator.free(self.threads);
     self.inserts.deinit(self.config.allocator);
-    self.guarded.deinit(self.config.allocator);
+    self.scratch.deinit(self.config.allocator);
     self.arena.deinit();
 
     return self.channels;
@@ -325,7 +345,7 @@ pub fn setup(self: *@This()) !void {
     // TODO explicit uniform locations
     // TODO place outputs with explicit locations at correct place
     self.arena = std.heap.ArenaAllocator.init(self.config.allocator);
-    self.rand = std.rand.DefaultPrng.init(@intCast(std.time.timestamp()));
+    self.rand = std.Random.DefaultPrng.init(@intCast(std.time.timestamp()));
     self.inserts.init(self.config.allocator);
     self.channels.group_dim = try self.config.allocator.dupe(usize, self.config.group_dim);
     self.channels.group_count = if (self.config.groups_count) |g| try self.config.allocator.dupe(usize, g) else null;
@@ -348,11 +368,10 @@ pub fn setup(self: *@This()) !void {
         .scope = &root_scope,
         .statement = null,
     };
-
-    // Store GLSL version
-    self.glsl_version = self.parsed.version;
-    if (self.glsl_version < 400) {
-        self.config.support.buffers = false; // the extension is not supported in older GLSL
+    if (!self.config.force_support) {
+        if ((self.parsed.version != 0 and self.parsed.version < 400) or (self.parsed.es and self.parsed.version < 310)) {
+            self.config.support.buffers = false; // the extension is not supported in older GLSL
+        }
     }
     self.after_version = self.parsed.version_span.end + 1; // assume there is a line break
     self.last_interface_decl = self.after_version;
@@ -374,25 +393,11 @@ pub fn setup(self: *@This()) !void {
     try self.declareThreadId();
 
     // Run the setup phase of the instruments
-    for (self.config.instruments_any) |instrument| {
-        if (instrument.setup) |s| s(self) catch |err| {
-            try self.addDiagnostic(err, @src(), self.parsed.tree.nodeSpan(tree.root), @errorReturnTrace());
-        };
-    }
-    { // run the setup phase of scoped instruments
-        var it = self.config.instruments_scoped.iterator();
-        while (it.next()) |instruments| {
-            for (instruments.value.items) |instrument| {
-                if (instrument.setup) |s| s(self) catch |err| {
-                    try self.addDiagnostic(err, @src(), self.parsed.tree.nodeSpan(tree.root), @errorReturnTrace());
-                };
-            }
-        }
-    }
+    try self.runAllInstrumentsPhase(tree.root, "setup", .{self});
 
     // Iterate through top-level declarations
     // Traverse the tree top-down
-    {
+    if (tree.nodes.len > 1) { // not only the `file` node
         var node: NodeId = 0;
         while (node < tree.nodes.len) : (node = tree.children(node).end) {
             const tag = tree.tag(node);
@@ -408,20 +413,7 @@ pub fn setup(self: *@This()) !void {
                                     const block = decl.get(.block, tree).?;
 
                                     // Run the constructors phase of the instruments
-                                    for (self.config.instruments_any) |instrument| {
-                                        if (instrument.constructors) |c| c(self, block.node) catch |err| {
-                                            try self.addDiagnostic(err, @src(), tree.nodeSpan(node), @errorReturnTrace());
-                                        };
-                                    }
-
-                                    var it = self.config.instruments_scoped.iterator();
-                                    while (it.next()) |instruments| {
-                                        for (instruments.value.items) |instrument| {
-                                            if (instrument.constructors) |c| c(self, block.node) catch |err| {
-                                                try self.addDiagnostic(err, @src(), tree.nodeSpan(node), @errorReturnTrace());
-                                            };
-                                        }
-                                    }
+                                    try self.runAllInstrumentsPhase(node, "constructors", .{ self, block.node });
                                 }
                             },
                             else => {},
@@ -493,8 +485,8 @@ pub fn setup(self: *@This()) !void {
         }
     }
 
-    if (self.config.support.buffers and self.glsl_version >= 400) {
-        try self.insertStart(try self.config.allocator.dupe(u8, " #extension GL_ARB_shader_storage_buffer_object : require\n"), self.after_version);
+    if (self.config.support.buffers and (self.parsed.version >= 310 or self.config.force_support)) {
+        try self.insertStart(" #extension GL_ARB_shader_storage_buffer_object : require\n", self.after_version);
         // To support SSBOs as instrumentation output channels
     }
 
@@ -517,8 +509,32 @@ pub fn setup(self: *@This()) !void {
     //    target.* = try self.config.allocator.dupe(analyzer.lsp.Position, src.items);
     //}
     //self.channelss.steps = result;
+    // Run the setupDone phase of the instruments
+    try self.runAllInstrumentsPhase(tree.root, "setupDone", .{self});
 }
 
+fn runAllInstrumentsPhase(self: *@This(), node: NodeId, comptime func: String, args: anytype) !void {
+    for (self.config.instruments_any) |instrument| {
+        if (@field(instrument, func)) |f| {
+            @call(.auto, f, args) catch |err| {
+                try self.addDiagnostic(err, @src(), self.parsed.tree.nodeSpan(node), @errorReturnTrace());
+            };
+        }
+    }
+
+    var it = self.config.instruments_scoped.iterator();
+    while (it.next()) |instruments| {
+        for (instruments.value.items) |instrument| {
+            if (@field(instrument, func)) |f| {
+                @call(.auto, f, args) catch |err| {
+                    try self.addDiagnostic(err, @src(), self.parsed.tree.nodeSpan(node), @errorReturnTrace());
+                };
+            }
+        }
+    }
+}
+
+/// TODO add special deshader variables to documentation
 pub fn declareThreadId(self: *@This()) !void {
     // Initialize the global thread id
     switch (self.config.shader_stage) {
@@ -549,14 +565,14 @@ pub fn declareThreadId(self: *@This()) !void {
                     "= gl_GlobalInvocationID.z * gl_NumWorkGroups.x * gl_NumWorkGroups.y * " ++ templates.wg_size ++ " + gl_GlobalInvocationID.y * gl_NumWorkGroups.x * " ++ templates.wg_size ++ " + gl_GlobalInvocationID.x);\n", .{}),
                 self.after_version,
             );
-            if (self.glsl_version < 430) {
+            if (self.parsed.version < 430) {
                 try self.insertStart(
                     try self.print("const uvec3 " ++ templates.wg_size ++ "= uvec3({d},{d},{d});\n", .{ self.config.group_dim[0], self.config.group_dim[1], self.config.group_dim[2] }),
                     self.after_version,
                 );
             } else {
                 try self.insertStart(
-                    try self.config.allocator.dupe(u8, "uvec3 " ++ templates.wg_size ++ "= gl_WorkGroupSize;\n"),
+                    "uvec3 " ++ templates.wg_size ++ "= gl_WorkGroupSize;\n",
                     self.after_version,
                 );
             }
@@ -573,7 +589,6 @@ const StoragePreference = enum { Buffer, Interface, PreferBuffer, PreferInterfac
 pub fn addStorage(
     self: *@This(),
     id: u64,
-    name: String,
     size: usize,
     preference: StoragePreference,
     format: OutputStorage.Location.Format,
@@ -581,19 +596,19 @@ pub fn addStorage(
     component: ?usize,
 ) !*OutputStorage {
     const value = try switch (preference) {
-        .Buffer => OutputStorage.nextBuffer(&self.config, name),
-        .Interface => OutputStorage.nextInterface(&self.config, name, format, fit_into_component, component),
-        .PreferBuffer => OutputStorage.nextPreferBuffer(&self.config, name, format, fit_into_component, component),
-        .PreferInterface => OutputStorage.nextPreferInterface(&self.config, name, format, fit_into_component, component),
+        .Buffer => OutputStorage.nextBuffer(&self.config),
+        .Interface => OutputStorage.nextInterface(&self.config, format, fit_into_component, component),
+        .PreferBuffer => OutputStorage.nextPreferBuffer(&self.config, format, fit_into_component, component),
+        .PreferInterface => OutputStorage.nextPreferInterface(&self.config, format, fit_into_component, component),
     };
 
     const result: *OutputStorage = switch (value.location) {
-        .Interface => blk: {
+        .interface => blk: {
             const local = try self.channels.out.getOrPut(self.config.allocator, id);
             std.debug.assert(!local.found_existing);
             break :blk local.value_ptr;
         },
-        .Buffer => blk: {
+        .buffer => blk: {
             const global = try self.config.program.out.getOrPut(self.config.allocator, id);
             if (!global.found_existing) {
                 const local = try self.channels.out.getOrPut(self.config.allocator, id);
@@ -609,57 +624,61 @@ pub fn addStorage(
 pub fn VarResult(comptime T: type) type {
     return struct {
         found_existing: bool,
-        value_ptr: *T,
+        value_ptr: **T,
     };
 }
 
-fn varImpl(self: *@This(), id: u64, comptime T: type, program_wide: bool, default: ?T, source: *std.AutoArrayHashMapUnmanaged(u64, ?*anyopaque), program_source: *std.AutoArrayHashMapUnmanaged(u64, ?*anyopaque)) !VarResult(T) {
-    if (program_wide) {
-        const global = try program_source.getOrPut(self.config.allocator, id);
+fn varImpl(self: *@This(), id: u64, comptime T: type, default: ?T, source: *std.AutoArrayHashMapUnmanaged(u64, *anyopaque), program_source: ?*std.AutoArrayHashMapUnmanaged(u64, **anyopaque)) !VarResult(T) {
+    if (program_source) |ps| {
+        const global = try ps.getOrPut(self.config.allocator, id);
         if (!global.found_existing) {
             const local = try source.getOrPut(self.config.allocator, id);
             global.value_ptr.* = local.value_ptr;
             local.value_ptr.* = try self.config.allocator.create(T);
             if (default) |d|
-                local.value_ptr.*.* = d;
+                @as(*T, @alignCast(@ptrCast(local.value_ptr.*))).* = d;
         }
         return VarResult(T){
             .found_existing = global.found_existing,
-            .value_ptr = @ptrCast(global.value_ptr.*.*),
+            .value_ptr = @alignCast(@ptrCast(global.value_ptr.*)),
         };
     } else {
         const local = try source.getOrPut(self.config.allocator, id);
         if (!local.found_existing) {
             local.value_ptr.* = try self.config.allocator.create(T);
             if (default) |d|
-                local.value_ptr.*.* = d;
+                @as(*T, @alignCast(@ptrCast(local.value_ptr.*))).* = d;
         }
         return VarResult(T){
             .found_existing = local.found_existing,
-            .value_ptr = local.value_ptr,
+            .value_ptr = @alignCast(@ptrCast(local.value_ptr)),
         };
     }
 }
 
 pub fn controlVar(self: *@This(), id: u64, comptime T: type, program_wide: bool, default: ?T) !VarResult(T) {
-    return varImpl(self, id, T, program_wide, default, &self.channels.controls, &self.config.program.controls);
+    return varImpl(self, id, T, default, &self.channels.controls, if (program_wide) &self.config.program.controls else null);
+}
+
+pub fn scratchVar(self: *@This(), id: u64, comptime T: type, default: ?T) !VarResult(T) {
+    return varImpl(self, id, T, default, &self.scratch, null);
 }
 
 pub fn responseVar(self: *@This(), id: u64, comptime T: type, program_wide: bool, default: ?T) !VarResult(T) {
-    return varImpl(self, id, T, program_wide, default, &self.channels.responses, &self.config.program.responses);
+    return varImpl(self, id, T, default, &self.channels.responses, if (program_wide) &self.config.program.responses else null);
 }
 
 //
 // Stepping and breakpoint code scaffolding functions
 //
 
-/// Shorthand for `std.fmt.allocPrint` with `Processor`'s allocator
-fn print(self: *@This(), comptime fmt: String, args: anytype) !String {
+/// Shorthand for `std.fmt.allocPrint` with `Processor`'s arena allocator (so it doesn't want to be freed individually)
+pub fn print(self: *@This(), comptime fmt: String, args: anytype) !String {
     return std.fmt.allocPrint(self.arena.allocator(), fmt, args);
 }
 
-/// Shorthand for `std.fmt.allocPrintZ` with `Processor`'s allocator
-fn printZ(self: *@This(), comptime fmt: String, args: anytype) !ZString {
+/// Shorthand for `std.fmt.allocPrintZ` with `Processor`'s arena allocator (so it doesn't want to be freed individually)
+pub fn printZ(self: *@This(), comptime fmt: String, args: anytype) !ZString {
     return std.fmt.allocPrintZ(self.arena.allocator(), fmt, args);
 }
 
@@ -722,7 +741,7 @@ pub const TraverseContext = struct {
     }
 };
 
-pub fn extractFunction(tree: analyzer.parse.Tree, node: Processor.NodeId, source: String) !TraverseContext.Function {
+pub fn extractFunction(tree: analyzer.parse.Tree, node: Processor.NodeId, source: String) Error!TraverseContext.Function {
     const func = analyzer.syntax.FunctionDeclaration.tryExtract(tree, node) orelse return Error.InvalidTree;
     const name_token = func.get(.identifier, tree) orelse return Error.InvalidTree;
     const return_type_specifier = func.get(.specifier, tree) orelse return Error.InvalidTree;
@@ -943,10 +962,20 @@ fn processNode(self: *@This(), node: NodeId, context: *TraverseContext) !?String
                 }
             }
         },
-        else => try self.processAllChildren(node, context),
+        else => |tag| if (tag.isSyntax()) try self.processAllChildren(node, context),
     }
     try self.processInstruments(node, context);
     return null;
+}
+
+/// Do not pass compile-time strings to this function, as they are not copied
+pub fn insertStartFree(self: *@This(), string: String, offset: usize) std.mem.Allocator.Error!void {
+    return self.inserts.insertStartFree(string, offset);
+}
+
+/// Do not pass compile-time strings to this function, as they are not copied
+pub fn insertEndFree(self: *@This(), string: String, offset: usize, consume_next: u32) std.mem.Allocator.Error!void {
+    return self.inserts.insertEndFree(string, offset, consume_next);
 }
 
 pub fn insertStart(self: *@This(), string: String, offset: usize) std.mem.Allocator.Error!void {
@@ -976,14 +1005,14 @@ pub fn apply(self: *@This()) !Result {
 
 /// NOTE: When an error union is passed as `value`, the diagnostic is added only if the error has occured (so if you want to include it forcibly, try or catch it before calling this function)
 fn addDiagnostic(self: *@This(), value: anytype, source: ?std.builtin.SourceLocation, span: ?analyzer.parse.Span, trace: ?*std.builtin.StackTrace) std.mem.Allocator.Error!switch (@typeInfo(@TypeOf(value))) {
-    .ErrorUnion => |err_un| err_un.payload,
+    .error_union => |err_un| err_un.payload,
     else => void,
 } {
     const err_name_or_val = switch (@typeInfo(@TypeOf(value))) {
-        .ErrorUnion => if (value) |success| {
+        .error_union => if (value) |success| {
             return success;
         } else |err| @errorName(err),
-        .ErrorSet => @errorName(value),
+        .error_set => @errorName(value),
         else => value,
     };
 
@@ -1004,11 +1033,15 @@ fn addDiagnostic(self: *@This(), value: anytype, source: ?std.builtin.SourceLoca
 
 /// A data structure for storing a collection of "insert" operations to be applied to a source code.
 pub const Inserts = struct {
+    pub const TaggedString = struct {
+        free: bool,
+        string: String,
+    };
     pub const Insert = struct {
         /// offset in the original non-instrumented source code
         offset: usize,
         consume_next: u32 = 0,
-        inserts: std.DoublyLinkedList(String),
+        inserts: std.DoublyLinkedList(TaggedString),
 
         pub fn order(a: @This(), b: @This()) std.math.Order {
             return std.math.order(a.offset, b.offset);
@@ -1018,11 +1051,11 @@ pub const Inserts = struct {
     inserts: Treap = .{},
 
     node_pool: std.heap.MemoryPool(Treap.Node) = undefined,
-    lnode_pool: std.heap.MemoryPool(std.DoublyLinkedList(String).Node) = undefined,
+    lnode_pool: std.heap.MemoryPool(std.DoublyLinkedList(TaggedString).Node) = undefined,
 
     pub fn init(self: *@This(), allocator: std.mem.Allocator) void {
         self.node_pool = std.heap.MemoryPool(Treap.Node).init(allocator);
-        self.lnode_pool = std.heap.MemoryPool(std.DoublyLinkedList(String).Node).init(allocator);
+        self.lnode_pool = std.heap.MemoryPool(std.DoublyLinkedList(TaggedString).Node).init(allocator);
     }
 
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
@@ -1030,7 +1063,9 @@ pub const Inserts = struct {
         var it = self.inserts.inorderIterator();
         while (it.current) |node| : (_ = it.next()) {
             while (node.key.inserts.pop()) |item| {
-                allocator.free(item.data);
+                if (item.data.free) {
+                    allocator.free(item.data.string);
+                }
             }
         }
 
@@ -1041,9 +1076,19 @@ pub const Inserts = struct {
 
     /// Used for variable watches (needto be executed before a breakpoint)
     pub fn insertStart(self: *@This(), string: String, offset: usize) std.mem.Allocator.Error!void {
-        var entry = self.inserts.getEntryFor(.{ .offset = offset, .inserts = std.DoublyLinkedList(String){} });
+        try self.insertStartImpl(string, offset, false);
+    }
+
+    /// Used for variable watches (needto be executed before a breakpoint).
+    /// The `string` will be freed after the `Inserts` is deinitialized.
+    pub fn insertStartFree(self: *@This(), string: String, offset: usize) std.mem.Allocator.Error!void {
+        try self.insertStartImpl(string, offset, true);
+    }
+
+    fn insertStartImpl(self: *@This(), string: String, offset: usize, free: bool) std.mem.Allocator.Error!void {
+        var entry = self.inserts.getEntryFor(.{ .offset = offset, .inserts = std.DoublyLinkedList(TaggedString){} });
         const new_lnode = try self.lnode_pool.create();
-        new_lnode.* = .{ .data = string };
+        new_lnode.* = .{ .data = .{ .string = string, .free = free } };
         if (entry.node) |node| {
             node.key.inserts.prepend(new_lnode);
         } else {
@@ -1056,9 +1101,19 @@ pub const Inserts = struct {
     /// Used for breakpoints (after a breakpoint no action should occur)
     /// Consume next `consume_next` characters after the inserted string
     pub fn insertEnd(self: *@This(), string: String, offset: usize, consume_next: u32) std.mem.Allocator.Error!void {
-        var entry = self.inserts.getEntryFor(Insert{ .offset = offset, .consume_next = consume_next, .inserts = std.DoublyLinkedList(String){} });
+        try self.insertEndImpl(string, offset, consume_next, false);
+    }
+    /// Used for breakpoints (after a breakpoint no action should occur).
+    /// Consume next `consume_next` characters after the inserted string.
+    /// The `string` will be freed after the `Inserts` is deinitialized.
+    pub fn insertEndFree(self: *@This(), string: String, offset: usize, consume_next: u32) std.mem.Allocator.Error!void {
+        try self.insertEndImpl(string, offset, consume_next, true);
+    }
+
+    fn insertEndImpl(self: *@This(), string: String, offset: usize, consume_next: u32, free: bool) std.mem.Allocator.Error!void {
+        var entry = self.inserts.getEntryFor(Insert{ .offset = offset, .consume_next = consume_next, .inserts = std.DoublyLinkedList(TaggedString){} });
         const new_lnode = try self.lnode_pool.create();
-        new_lnode.* = .{ .data = string };
+        new_lnode.* = .{ .data = .{ .string = string, .free = free } };
         if (entry.node) |node| {
             node.key.inserts.append(new_lnode);
             node.key.consume_next += consume_next;
@@ -1087,25 +1142,24 @@ pub const Inserts = struct {
                 const inserts = node.key.inserts;
 
                 const prev_offset =
-                    if (previous) |prev|
-                blk: {
-                    if (prev.key.offset > node.key.offset) {
-                        if (it.next()) |nexter| {
-                            log.debug("Nexter at {d}, cons {d}: {s}", .{ nexter.key.offset, nexter.key.consume_next, nexter.key.inserts.first.?.data });
+                    if (previous) |prev| blk: {
+                        if (prev.key.offset > node.key.offset) {
+                            if (it.next()) |nexter| {
+                                log.debug("Nexter at {d}, cons {d}: {s}", .{ nexter.key.offset, nexter.key.consume_next, nexter.key.inserts.first.?.data.string });
+                            }
+                            // write the rest of code
+                            try parts.appendSlice(allocator, source[prev.key.offset + prev.key.consume_next - offset ..]);
+                            break;
                         }
-                        // write the rest of code
-                        try parts.appendSlice(allocator, source[prev.key.offset + prev.key.consume_next - offset ..]);
-                        break;
-                    }
-                    break :blk prev.key.offset + prev.key.consume_next;
-                } else 0;
+                        break :blk prev.key.offset + prev.key.consume_next;
+                    } else 0;
 
                 try parts.appendSlice(allocator, source[prev_offset - offset .. node.key.offset - offset]);
 
                 var inserts_iter = inserts.first;
                 while (inserts_iter) |inserts_node| : (inserts_iter = inserts_node.next) { //for each part to insert at the same offset
                     const to_insert = inserts_node.data;
-                    try parts.appendSlice(allocator, to_insert);
+                    try parts.appendSlice(allocator, to_insert.string);
                 }
             } else {
                 // write the rest of code
@@ -1141,8 +1195,8 @@ pub const OutputStorage = struct {
         switch (config.shader_stage) {
             .gl_fragment, .vk_fragment, .gl_vertex, .vk_vertex => {
                 if (fit_into_component) |another_stor| {
-                    if (another_stor == .Interface and component != null) {
-                        return OutputStorage{ .location = .{ .Interface = .{ .location = another_stor.Interface.location, .component = component.?, .format = format } } };
+                    if (another_stor == .interface and component != null) {
+                        return OutputStorage{ .location = .{ .interface = .{ .location = another_stor.interface.location, .component = component.?, .format = format } } };
                     }
                 }
                 // these can have output interfaces
@@ -1150,17 +1204,17 @@ pub const OutputStorage = struct {
                 for (config.used_interface.items) |loc| {
                     if (loc > candidate) {
                         if (loc >= config.used_interface.items.len) {
-                            try config.used_interface.append(candidate);
+                            try config.used_interface.append(config.allocator, candidate);
                         } else {
-                            try config.used_interface.insert(loc, candidate);
+                            try config.used_interface.insert(config.allocator, loc, candidate);
                         }
-                        return OutputStorage{ .location = .{ .Interface = .{ .location = candidate, .format = format } } };
+                        return OutputStorage{ .location = .{ .interface = .{ .location = candidate, .format = format } } };
                     }
                     candidate = loc + 1;
                 }
                 if (candidate < config.max_interface) {
-                    try config.used_interface.append(candidate);
-                    return OutputStorage{ .location = .{ .Interface = .{ .location = candidate, .format = format } } };
+                    try config.used_interface.append(config.allocator, candidate);
+                    return OutputStorage{ .location = .{ .interface = .{ .location = candidate, .format = format } } };
                 }
             },
             else => {
@@ -1178,14 +1232,14 @@ pub const OutputStorage = struct {
             var binding_i: usize = 0;
             for (0.., config.used_buffers.items) |i, used| {
                 if (used > binding_i) {
-                    try config.used_buffers.insert(i, binding_i);
-                    return OutputStorage{ .location = .{ .Buffer = binding_i } };
+                    try config.used_buffers.insert(config.allocator, i, binding_i);
+                    return OutputStorage{ .location = .{ .buffer = .{ .binding = binding_i } } };
                 }
                 binding_i = used + 1;
             }
             if (binding_i < config.max_buffers) {
-                try config.used_buffers.append(binding_i);
-                return OutputStorage{ .location = .{ .Buffer = binding_i } };
+                try config.used_buffers.append(config.allocator, binding_i);
+                return OutputStorage{ .location = .{ .buffer = .{ .binding = binding_i } } };
             }
         }
         return Error.OutOfStorage;
@@ -1213,9 +1267,9 @@ pub const OutputStorage = struct {
 
     pub const Location = union(enum) {
         /// binding number (for SSBOs)
-        Buffer: Buffer,
+        buffer: Buffer,
         /// output interface location (attachment, transform feedback varying). Not available for all stages, but is more compatible (GLES...)
-        Interface: Interface,
+        interface: Interface,
 
         pub const Buffer = struct {
             binding: usize,
@@ -1250,5 +1304,5 @@ pub const VariableInstrumentation = struct {
 };
 
 fn FnErrorSet(comptime f: type) type {
-    return @typeInfo(@typeInfo(f).Fn.return_type.?).ErrorUnion.error_set;
+    return @typeInfo(@typeInfo(f).@"fn".return_type.?).error_union.error_set;
 }

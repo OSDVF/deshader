@@ -2,7 +2,7 @@ const std = @import("std");
 const options = @import("options");
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.GeneralPurposeAllocator(.{}).init;
     const allocator = gpa.allocator();
 
     const base_dir = try std.fs.selfExeDirPathAlloc(allocator);

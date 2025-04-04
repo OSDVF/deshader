@@ -1,5 +1,6 @@
 .{
-    .name = "deshader",
+    .name = .deshader,
+    .fingerprint = 0xa63c2de18a00ad91,
     .version = "0.0.1",
     .paths = .{
         "src",
@@ -10,20 +11,20 @@
     },
     .dependencies = .{
         .zig_glfw = .{
-            .url = "https://github.com/osdvf/zig-glfw/archive/21f0fa952f0b866fe59ef51b1507840791ef6c20.tar.gz",
-            .hash = "1220121e676a1a60542cbfca01a086bc3f6253e65ef12a39376b821513979e651fba",
-        },
-        .vulkan_zig = .{
-            .url = "https://github.com/Snektron/vulkan-zig/archive/84b9622f92284fd8d90bc29097da5e58ce51a27f.tar.gz",
-            .hash = "1220ed8dbf35b9391f2d11c984493f80ecef1287bf07c9e29fba967c6912e54bb9b3",
+            .url = "git+https://github.com/OSDVF/zig-glfw.git#23ac1e5803e5f3bcd92db3d7c89c777b69f2acbe",
+            .hash = "zig_glfw-0.2.0-Jti4u7AXBQBd-VSsL7sB-tn_Lp7Nvk-_L-uTHpjNiaPk",
         },
         .zigglgen = .{
-            .url = "git+https://github.com/castholm/zigglgen#701f41808086411f14d3bc2d87fc0b14bd09ceba",
-            .hash = "1220acff2285b51630055c7c062fb62a01b32272297b27e90cd6f85901c1b4d1c48d",
+            .url = "git+https://github.com/castholm/zigglgen.git#d5f381759825ee0bac29bc294d47aa05be4ab7b5",
+            .hash = "zigglgen-0.4.0-bmyqLX_gLQDFXilQ5VQ9fJeOHKU1RFrggOzRqTGBX79W",
         },
         .websocket = .{
-            .url = "git+https://github.com/OSDVF/websocket.zig#df625a9680a539aa5f6a3c2142b20272f8fb042a",
-            .hash = "1220a46da620ec5779a890c623537cfe762b59dac0ca37e980e89fa0a84e72afd819",
+            .url = "git+https://github.com/karlseguin/websocket.zig.git#c1c53b062eab871b95b70409daadfd6ac3d6df61",
+            .hash = "websocket-0.1.0-ZPISdYBIAwB1yO6AFDHRHLaZSmpdh4Bz4dCmaQUqNNWh",
+        },
+        .vulkan = .{
+            .url = "git+https://github.com/Snektron/vulkan-zig.git#42e7a8409b8150e1cbd57a8ff8cec219114bac74",
+            .hash = "vulkan-0.0.0-r7Ytx2dUAwDhoUvuIqliqPUbyDZZi0bl_CQIwspUpHs_",
         },
     },
 }

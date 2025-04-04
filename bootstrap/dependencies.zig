@@ -69,6 +69,7 @@ pub const DependenciesStep = struct {
             .term = null,
             .uid = if (builtin.os.tag == .windows or builtin.os.tag == .wasi) {} else null,
             .gid = if (builtin.os.tag == .windows or builtin.os.tag == .wasi) {} else null,
+            .pgid = if (builtin.os.tag == .windows or builtin.os.tag == .wasi) {} else null,
             .stdin = null,
             .stdout = null,
             .stderr = null,
@@ -89,7 +90,7 @@ pub const DependenciesStep = struct {
         }
     }
 
-    pub fn doAll(step: *std.Build.Step, progressNode: std.Progress.Node) anyerror!void {
+    pub fn doAll(step: *std.Build.Step, options: std.Build.Step.MakeOptions) anyerror!void {
         const self: *DependenciesStep = @fieldParentPtr("step", step);
         if (self.done) {
             std.log.debug("Dependencies already (being) built", .{});
@@ -98,7 +99,7 @@ pub const DependenciesStep = struct {
             defer self.env_map.deinit();
             defer self.step.owner.allocator.destroy(self.env_map);
 
-            const node = progressNode.start("Dependencies", self.sub_steps.items.len);
+            const node = options.progress_node.start("Dependencies", self.sub_steps.items.len);
             defer node.end();
 
             try self.doSubSteps(self.sub_steps.items, node);

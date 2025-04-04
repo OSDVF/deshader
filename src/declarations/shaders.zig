@@ -131,15 +131,15 @@ pub const SourcesPayload = extern struct {
     /// length is the length of the `instrumented` source. If it is 0, then there is no instrumented source.
     /// The instrumented source is also always null-terminated.
     /// Should return `0` when there is no error.
-    compile: ?*const fn (source: SourcesPayload, instrumented: CString, length: i32) callconv(.C) u8 = null,
+    compile: ?*const fn (source: SourcesPayload, instrumented: CString, length: i32) callconv(.c) u8 = null,
     /// Get the instrumented version of the source code. Deshader executes this function when requested by the frontend.
     /// TODO: if the function is not provided, store always the source code somewhere.
-    currentSource: ?*const fn (context: ?*anyopaque, ref: usize, path: ?CString, length: usize) callconv(.C) ?CString = null,
+    currentSource: ?*const fn (context: ?*anyopaque, ref: usize, path: ?CString, length: usize) callconv(.c) ?CString = null,
     /// Free the memory returned by `currentSource`
-    free: ?*const fn (ref: usize, context: ?*anyopaque, string: CString) callconv(.C) void = null,
+    free: ?*const fn (ref: usize, context: ?*anyopaque, string: CString) callconv(.c) void = null,
     /// Function to execute when user wants to save a source in the Deshader editor. Set to override the default behavior.
     /// The function must return 0 if there is no error.
-    save: ?*const fn (ref: usize, index: usize, content: CString, length: usize, physical: ?CString) callconv(.C) u8 = null,
+    save: ?*const fn (ref: usize, index: usize, content: CString, length: usize, physical: ?CString) callconv(.c) u8 = null,
 
     pub fn toString(self: *const @This()) []const u8 {
         return self.stage.toExtension();
@@ -157,5 +157,5 @@ pub const ProgramPayload = extern struct {
     /// The function must return 0 if there is no error.
     ///
     /// If the program was already linked in the past, the function must also re-set all the uniforms and attributes to their original values.
-    link: ?*const fn (self: ProgramPayload) callconv(.C) u8 = null,
+    link: ?*const fn (self: ProgramPayload) callconv(.c) u8 = null,
 };

@@ -27,5 +27,5 @@ pub const Options = struct {
     traces: bool,
     triplet: ?[]const u8,
     valgrind: bool,
-    unwind: bool,
+    unwind: ?std.builtin.UnwindTables,
 };

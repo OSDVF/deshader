@@ -42,7 +42,7 @@ pub const GPA = std.heap.GeneralPurposeAllocator(.{
     .stack_trace_frames = options.memoryFrames,
 });
 
-pub var gpa = GPA{};
+pub var gpa = GPA.init;
 pub var allocator: std.mem.Allocator = undefined;
 pub var initialized = false;
 var self_exe: ?String = null;
@@ -197,7 +197,7 @@ pub fn isPortFree(address: ?String, port: u16) !bool {
 }
 
 var so_path: [:0]const u8 = undefined;
-fn callback(info: ?*const c.struct_dl_phdr_info, _: usize, _: ?*anyopaque) callconv(.C) c_int {
+fn callback(info: ?*const c.struct_dl_phdr_info, _: usize, _: ?*anyopaque) callconv(.c) c_int {
     if (info) |i| if (i.dlpi_name[0] != 0) {
         const s = std.mem.span(i.dlpi_name);
         if (std.mem.endsWith(u8, s, options.deshaderLibName)) {
@@ -215,8 +215,8 @@ pub fn selfDllPathAlloc(a: std.mem.Allocator, concat_with: String) !String {
         if (c.GetModuleHandleExW(c.GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
             c.GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, @ptrCast(&options.version), &hm) != 0)
         {
-            var path: [std.fs.MAX_PATH_BYTES]u8 = undefined;
-            const length = c.GetModuleFileNameA(hm, &path, std.fs.MAX_PATH_BYTES);
+            var path: [std.fs.max_path_bytes]u8 = undefined;
+            const length = c.GetModuleFileNameA(hm, &path, std.fs.max_path_bytes);
             if (length == 0) {
                 return std.os.windows.unexpectedError(std.os.windows.kernel32.GetLastError());
             } else {
@@ -283,14 +283,14 @@ pub fn LoadLibraryEx(path_or_name: String, only_system: bool) !std.os.windows.HM
 pub fn getFullPath(alloc: std.mem.Allocator, path: String) !ZString {
     if (builtin.os.tag == .windows) {
         const path16 = try std.os.windows.sliceToPrefixedFileW(null, path);
-        var buffer: [std.fs.MAX_PATH_BYTES]u16 = undefined;
-        const length = std.os.windows.kernel32.GetFullPathNameW(path16.span().ptr, std.fs.MAX_PATH_BYTES, &buffer, null);
+        var buffer: [std.fs.max_path_bytes]u16 = undefined;
+        const length = std.os.windows.kernel32.GetFullPathNameW(path16.span().ptr, std.fs.max_path_bytes, &buffer, null);
         if (length == 0) {
             return std.os.windows.unexpectedError(std.os.windows.kernel32.GetLastError());
         }
         return try std.unicode.wtf16LeToWtf8AllocZ(alloc, buffer[0..length]);
     } else {
-        var buffer: [std.fs.MAX_PATH_BYTES]u8 = undefined;
+        var buffer: [std.fs.max_path_bytes]u8 = undefined;
         const out = try std.fs.cwd().realpath(path, &buffer);
         return try alloc.dupeZ(u8, out);
     }
@@ -404,7 +404,7 @@ pub fn indexOfSliceMember(comptime T: type, slice: []const T, needle: *const T) 
 
 pub fn nullishEq(comptime T: type, maybe_a: ?T, maybe_b: ?T) bool {
     return if (maybe_a) |a| if (maybe_b) |b| switch (@typeInfo(T)) {
-        .Pointer => |s| std.mem.eql(s.child, a, b),
+        .pointer => |s| std.mem.eql(s.child, a, b),
         else => a == b,
     } else false else maybe_b == null;
 }
@@ -421,4 +421,28 @@ pub fn resize(allocat: std.mem.Allocator, array: anytype, new_size: usize) !@Typ
         @memcpy(new, array);
         return new;
     }
+}
+
+/// Beware, hashing pointers is a footgun, because objects can move around in memory.
+/// Use this only for pointers that are not going to be moved around.
+pub fn AddressContext(comptime T: type) type {
+    return struct {
+        pub fn hash(_: @This(), key: T) u32 {
+            return @truncate(@intFromPtr(key));
+        }
+        pub fn eql(_: @This(), a: T, b: T) bool {
+            return @intFromPtr(a) == @intFromPtr(b);
+        }
+    };
+}
+
+pub fn ArrayAddressContext(comptime T: type) type {
+    return struct {
+        pub fn hash(_: @This(), key: T) u32 {
+            return AddressContext(T).hash(.{}, key);
+        }
+        pub fn eql(_: @This(), a: T, b: T, _: usize) bool {
+            return @intFromPtr(a) == @intFromPtr(b);
+        }
+    };
 }

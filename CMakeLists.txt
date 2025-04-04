@@ -140,10 +140,10 @@ function(deshader_indirect_common_config)
     set_target_properties(deshader_indirect PROPERTIES OUTPUT_NAME deshader)
 endfunction(deshader_indirect_common_config)
 
-string(REGEX MATCH ".*\-Dofmt=(.?.).*" _ ${DESHADER_BUILD_FLAGS} "") # -Dofmt= selects Zig output backend
-set(DESHADER_OFMT ${CMAKE_MATCH_1})
+string(REGEX MATCH ".*\-Dtype=(.?.).*" _ ${DESHADER_BUILD_FLAGS} "") # -Dotype= selects Zig output backend
+set(DESHADER_OTYPE ${CMAKE_MATCH_1})
 
-if(DESHADER_OFMT STREQUAL c- OR DESHADER_OFMT STREQUAL "c ") # Use these commands to compile an application with deshader generated as C code
+if(DESHADER_OTYPE STREQUAL c- OR DESHADER_OTYPE STREQUAL "c ") # Use these commands to compile an application with deshader generated as C code
     message(STATUS "Using deshader as generated c code")
     set(REAL_ZIG_H ${ZIG_LIB_DIR}/zig.h)
     make_directory(${CMAKE_CURRENT_BINARY_DIR}/include)
@@ -197,7 +197,7 @@ if(DESHADER_OFMT STREQUAL c- OR DESHADER_OFMT STREQUAL "c ") # Use these command
     deshader_indirect_common_config()
 
     target_link_libraries(example_editor PUBLIC deshader_indirect)
-elseif(DESHADER_OFMT STREQUAL IR)
+elseif(DESHADER_OTYPE STREQUAL IR)
     message(STATUS "Using deshader as generated IR")
     add_custom_command(
         OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/deshader.ll.o
@@ -219,7 +219,7 @@ elseif(DESHADER_OFMT STREQUAL IR)
 
     deshader_indirect_common_config()
     target_link_libraries(example_editor PUBLIC deshader_indirect)
-elseif(DESHADER_OFMT STREQUAL BC)
+elseif(DESHADER_OTYPE STREQUAL BC)
     message(STATUS "Using deshader as generated BC")
     add_custom_command(
         OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/deshader.bc.o

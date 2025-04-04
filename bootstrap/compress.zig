@@ -16,9 +16,9 @@ pub const CompressStep = struct {
         return self;
     }
 
-    fn make(step: *std.Build.Step, progressNode: std.Progress.Node) anyerror!void {
+    fn make(step: *std.Build.Step, options: std.Build.Step.MakeOptions) anyerror!void {
         const self: *@This() = @fieldParentPtr("step", step);
-        const node = progressNode.start(step.owner.fmt("compressing {s}", .{self.source.getPath(step.owner)}), 1);
+        const node = options.progress_node.start(step.owner.fmt("compressing {s}", .{self.source.getPath(step.owner)}), 1);
 
         self.wrapped() catch |err| {
             try step.addError("compressing failed: {s} at {?}", .{ @errorName(err), @errorReturnTrace() });

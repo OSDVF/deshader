@@ -6,7 +6,7 @@ const String = []const u8;
 pub fn archToVcpkg(t: std.Target.Cpu.Arch) String {
     return switch (t) {
         .x86_64 => "x64",
-        .aarch64, .aarch64_be, .aarch64_32 => "arm64",
+        .aarch64, .aarch64_be => "arm64",
         .arm, .armeb => "arm",
         .mips64, .mips64el => "mips64",
         .powerpc64le => "ppc64le",
@@ -16,7 +16,7 @@ pub fn archToVcpkg(t: std.Target.Cpu.Arch) String {
 
 pub fn archToOSXArch(t: std.Target.Cpu.Arch) String {
     return switch (t) {
-        .aarch64, .aarch64_be, .aarch64_32 => "arm64",
+        .aarch64, .aarch64_be => "arm64",
         else => @tagName(t),
     };
 }

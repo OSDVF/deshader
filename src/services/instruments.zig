@@ -3,6 +3,7 @@ const analyzer = @import("glsl_analyzer");
 const log = @import("common").log;
 const shaders = @import("shaders.zig");
 const debug = @import("debug.zig");
+const decls = @import("../declarations/shaders.zig");
 
 const Processor = @import("processor.zig");
 
@@ -20,7 +21,7 @@ pub const Step = struct {
     pub const breakpoints_id: u64 = 0x0b5ea7;
 
     pub const Controls = struct {
-        breakpoints: std.AutoHashMapUnmanaged(usize, void) = .{},
+        breakpoints: std.AutoHashMapUnmanaged(usize, void) = .empty,
         desired_step: ?u32 = null,
         /// Index for the step counter to check for.
         /// Set to non-null value to enable stepping.
@@ -39,7 +40,7 @@ pub const Step = struct {
             offset: u32,
         } = null,
         /// Uses service's allocator
-        offsets: std.ArrayListUnmanaged(StepOffset) = .{},
+        offsets: std.ArrayListUnmanaged(StepOffset) = .empty,
 
         /// Computes the part index and an offset into its `steps` array from the global step index returned by instrumented shader invocation.
         pub fn localStepOffset(self: *const @This(), global_step: usize) !StepOffset {
@@ -70,6 +71,8 @@ pub const Step = struct {
         offset: usize,
     };
 
+    const Guarded = std.AutoHashMapUnmanaged(Processor.NodeId, void);
+
     const hit_storage = Processor.templates.prefix ++ "global_hit_id";
     const was_hit = Processor.templates.prefix ++ "global_was_hit";
     const step_counter = Processor.templates.prefix ++ "step_counter";
@@ -87,10 +90,21 @@ pub const Step = struct {
         return channels.getResponse(*Responses, id);
     }
 
+    fn guarded(processor: *Processor) !*Guarded {
+        const gop = try processor.scratchVar(id, Guarded, null);
+        if (!gop.found_existing) {
+            @branchHint(.cold);
+            const new = processor.config.allocator.create(Guarded) catch return error.OutOfMemory;
+            new.* = Guarded.empty;
+            gop.value_ptr.* = new;
+        }
+        return @alignCast(@ptrCast(gop.value_ptr.*));
+    }
+
     //
     //#region External interface
     //
-    pub fn disableBreakpoints(service: *shaders, shader_ref: usize) !void {
+    pub fn disableBreakpoints(service: *shaders, shader_ref: shaders.Shader.StageRef) !void {
         const shader: *std.ArrayListUnmanaged(shaders.Shader.SourcePart) = service.Shaders.all.get(shader_ref) orelse return error.TargetNotFound;
         const state = service.state.getPtr(shader_ref) orelse return error.NotInstrumented;
         const c = controls(&shader.program.?.channels).?;
@@ -101,7 +115,7 @@ pub const Step = struct {
     }
 
     /// Continue to next breakpoint hit or end of the shader
-    pub fn @"continue"(service: *shaders, shader_ref: usize) !void {
+    pub fn @"continue"(service: *shaders, shader_ref: shaders.Shader.StageRef) !void {
         const shader = service.Shaders.all.get(shader_ref) orelse return error.TargetNotFound;
         const state = service.state.getPtr(shader_ref) orelse return error.NotInstrumented;
         const c = controls(&shader.items[0].program.?.channels).?;
@@ -119,7 +133,7 @@ pub const Step = struct {
     }
 
     /// Increments the desired step (or also desired breakpoint) selector for the shader `shader_ref`.
-    pub fn advanceStepping(service: *shaders, shader_ref: usize, target: ?u32) !void {
+    pub fn advanceStepping(service: *shaders, shader_ref: shaders.Shader.StageRef, target: ?u32) !void {
         const shader: *std.ArrayListUnmanaged(shaders.Shader.SourcePart) = service.Shaders.all.get(shader_ref) orelse return error.TargetNotFound;
 
         const state = service.state.getPtr(shader_ref) orelse return error.NotInstrumented;
@@ -144,7 +158,7 @@ pub const Step = struct {
         }
     }
 
-    pub fn disableStepping(service: *shaders, shader_ref: usize) !void {
+    pub fn disableStepping(service: *shaders, shader_ref: shaders.Shader.StageRef) !void {
         const state = service.state.getPtr(shader_ref) orelse return error.NotInstrumented;
         const shader: *std.ArrayListUnmanaged(shaders.Shader.SourcePart) = service.Shaders.all.get(shader_ref) orelse return error.TargetNotFound;
         const c = controls(&shader.program.?.channels).?;
@@ -162,7 +176,7 @@ pub const Step = struct {
 
     /// Index into the global hit indication storage for the current thread
     fn bufferIndexer(processor: *Processor, comptime component: String) String {
-        return if (processor.channels.out.get(id).?.location == .Buffer) switch (processor.config.shader_stage) {
+        return if (processor.channels.out.get(id).?.location == .buffer) switch (processor.config.shader_stage) {
             .gl_vertex => if (processor.vulkan) "[gl_VertexIndex/2][(gl_VertexIndex%2)*2+" ++ component ++ "]" else "[gl_VertexID/2][(gl_VertexID%2)*2+" ++ component ++ "]",
             .gl_tess_control => "[gl_InvocationID/2*][(gl_InvocationID%2)*2+" ++ component ++ "]",
             .gl_fragment, .gl_tess_evaluation, .gl_mesh, .gl_task, .gl_compute, .gl_geometry => "[" ++ Processor.templates.global_thread_id ++ "/2][(" ++ Processor.templates.global_thread_id ++ "%2)*2+" ++ component ++ "]",
@@ -171,15 +185,14 @@ pub const Step = struct {
     }
 
     fn checkAndHit(processor: *Processor, comptime cond: String, cond_args: anytype, step_id: usize, comptime ret: String, ret_args: anytype, comptime append: String, args: anytype) !String {
-        const step_storage = processor.channels.out.get(id).?;
+        const name = StepStorageName{ .processor = processor };
         return try processor.print("if((" ++ step_counter ++ "++>={s})" ++ cond ++ "){{{s}{s}={d};{s}{s}=" ++ step_counter ++ ";{s}=true;return " ++ ret ++ ";}}" ++ append, //
-            .{processor.channels.desired_step_ident} ++ cond_args ++ .{ step_storage.name, bufferIndexer(processor, "0"), step_id, step_storage.name, bufferIndexer(processor, "1"), local_was_hit } ++ ret_args ++ args);
+            .{desired_step} ++ cond_args ++ .{ name, bufferIndexer(processor, "0"), step_id, name, bufferIndexer(processor, "1"), local_was_hit } ++ ret_args ++ args);
     }
 
     /// Inserts a guard to break the function `func` if a step or breakpoint was hit already. Should be inserted after a call to any user function.s
     fn guard(processor: *Processor, is_void: bool, func: Processor.Processor.TraverseContext.Function, pos: usize) !void {
-        try processor.insertEnd(try std.fmt.allocPrint(
-            processor.config.allocator,
+        try processor.insertEnd(try processor.print(
             "if(" ++ local_was_hit ++ ")return {s}{s};",
             if (is_void) .{ "", "" } else .{ func.return_type, "(0)" }, //TODO in ESSL struct must be initialized
         ), pos, 0);
@@ -191,30 +204,28 @@ pub const Step = struct {
         return // TODO initialize structs for returning
         if (has_bp)
             if (is_void)
-                processor.checkAndHit(bp_cond, .{processor.channels.desired_bp_ident}, step_id, "", .{}, append, args)
+                checkAndHit(processor, bp_cond, .{desired_bp}, step_id, "", .{}, append, args)
             else
-                processor.checkAndHit(bp_cond, .{processor.channels.desired_bp_ident}, step_id, return_init, .{func.return_type}, append, args)
+                checkAndHit(processor, bp_cond, .{desired_bp}, step_id, return_init, .{func.return_type}, append, args)
         else if (is_void)
-            processor.checkAndHit("", .{}, step_id, "", .{}, append, args)
+            checkAndHit(processor, "", .{}, step_id, "", .{}, append, args)
         else
-            processor.checkAndHit("", .{}, step_id, return_init, .{func.return_type}, append, args);
+            checkAndHit(processor, "", .{}, step_id, return_init, .{func.return_type}, append, args);
     }
 
     /// Recursively add the functionality: break the caller function after a call to a function with the `name`
-    pub fn addGuardsRecursive(self: *@This(), func: Processor.TraverseContext.Function) (std.mem.Allocator.Error || Error)!usize {
-        const tree = self.parsed.tree;
-        const source = self.config.source;
+    pub fn addGuardsRecursive(processor: *Processor, func: Processor.TraverseContext.Function) (std.mem.Allocator.Error || Error || Processor.Error)!usize {
+        const tree = processor.parsed.tree;
+        const source = processor.config.source;
         // find references (function calls) to this function
-        const calls = self.parsed.calls.get(func.name) orelse return 0; // skip if the function is never called
+        const calls = processor.parsed.calls.get(func.name) orelse return 0; // skip if the function is never called
         var processed: usize = calls.items.len;
         for (calls.items) |node| { // it is a .call AST node
             //const call = analyzer.syntax.Call.tryExtract(tree, node) orelse return Error.InvalidTree;
             var innermost_statement_span: ?analyzer.parse.Span = null;
             var in_condition_list = false;
             var branches = std.ArrayListUnmanaged(Processor.NodeId){};
-            defer branches.deinit(self.config.allocator);
-
-            try self.ensureStorageInit();
+            defer branches.deinit(processor.config.allocator);
 
             // walk up the tree bottom-up to find the caller function
             var parent: ?@TypeOf(tree.root) = tree.parent(node);
@@ -225,15 +236,16 @@ pub const Step = struct {
                             const parent_func = try Processor.extractFunction(tree, current, source);
                             const is_parent_void = std.mem.eql(u8, parent_func.return_type, "void");
                             if (branches.items.len > 0) {
+                                const g = try guarded(processor);
                                 for (branches.items) |branch| {
-                                    if (!self.guarded.contains(branch)) {
-                                        try self.guard(is_parent_void, parent_func, branch + 1);
-                                        try self.guarded.put(self.config.allocator, branch, {});
+                                    if (!g.contains(branch)) {
+                                        try guard(processor, is_parent_void, parent_func, branch + 1);
+                                        try g.put(processor.config.allocator, branch, {});
                                     }
                                 }
-                            } else try self.guard(is_parent_void, parent_func, statement.end);
+                            } else try guard(processor, is_parent_void, parent_func, statement.end);
 
-                            processed += try addGuardsRecursive(self, parent_func);
+                            processed += try addGuardsRecursive(processor, parent_func);
                             return processed;
                         } else {
                             log.err("Function call to {s} node {d} has no innermost statement", .{ func.name, node });
@@ -275,7 +287,7 @@ pub const Step = struct {
                                         const branch_children = tree.children(branch);
                                         for (branch_children.start..branch_children.end) |child| {
                                             if (tree.tag(child) == .block) {
-                                                try branches.append(self.config.allocator, tree.nodeSpanExtreme(@intCast(child), .start));
+                                                try branches.append(processor.config.allocator, tree.nodeSpanExtreme(@intCast(child), .start));
                                             }
                                         }
                                     },
@@ -313,7 +325,7 @@ pub const Step = struct {
     //
     //#region Instrumentation frontend interfaces
     //
-    pub fn deinit(state: *shaders.State) void {
+    pub fn deinit(state: *shaders.State) anyerror!void {
         if (controls(&state.params.context.program.channels)) |c| {
             defer c.breakpoints.deinit(state.params.allocator);
         }
@@ -322,15 +334,29 @@ pub const Step = struct {
         }
     }
 
-    pub fn constructors(processor: *Processor, main: Processor.NodeId) anyerror!void {
-        if (processor.channels.out.get(id)) |step_storage| {
-            try processor.insertStart(try processor.print("{s}{s}=0u;{s}{s}=0u;\n", .{
-                step_storage.name,
-                processor.bufferIndexer("0"),
-                step_storage.name,
-                processor.bufferIndexer("1"),
-            }), processor.parsed.tree.nodeSpanExtreme(main, .start) + 1);
+    /// Formatter for inserting the step counter into a string
+    const StepStorageName = struct {
+        processor: *Processor,
+        pub fn format(self: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+            const step_storage = self.processor.channels.out.get(id).?;
+            switch (step_storage.location) {
+                .buffer => |_| try writer.writeAll(hit_storage),
+                .interface => |i| if (self.processor.parsed.version >= 130 or !self.processor.config.shader_stage.isFragment()) //
+                    try writer.writeAll(hit_storage) // will be the step counter
+                else
+                    try writer.print("gl_FragData[{d}]", .{i.location}),
+            }
         }
+    };
+
+    pub fn constructors(processor: *Processor, main: Processor.NodeId) anyerror!void {
+        const step_storage = StepStorageName{ .processor = processor };
+        try processor.insertStart(try processor.print("{}{s}=0u;{}{s}=0u;\n", .{
+            step_storage,
+            bufferIndexer(processor, "0"),
+            step_storage,
+            bufferIndexer(processor, "1"),
+        }), processor.parsed.tree.nodeSpanExtreme(main, .start) + 1);
     }
 
     /// Creates a buffer for outputting the index of breakpoint which each thread has hit
@@ -338,7 +364,6 @@ pub const Step = struct {
     pub fn setup(processor: *Processor) anyerror!void {
         const step_storage = try processor.addStorage(
             id,
-            undefined, // assigned later
             processor.channels.totalThreadsCount() * 2,
             .PreferBuffer,
             .@"2U32",
@@ -346,30 +371,22 @@ pub const Step = struct {
             null,
         );
 
-        step_storage.name = switch (step_storage.location) {
-            .Buffer => |_| try processor.print(hit_storage, .{}),
-            .Interface => |i| if (processor.glsl_version >= 130 or !processor.config.shader_stage.isFragment()) //
-                try processor.print(hit_storage, .{}) // will be the step counter
-            else
-                try processor.print("gl_FragData[{d}]", .{i.location}),
-        };
-
         if (processor.config.support.buffers) {
-            const sync = try processor.addStorage(sync_id, sync_storage, 1, .Buffer, .@"1U32", null, null);
+            const sync = try processor.addStorage(sync_id, 1, .Buffer, .@"1U32", null, null);
             // Declare just the hit synchronisation variable and rely on atomic operations https://stackoverflow.com/questions/56340333/glsl-about-coherent-qualifier
             try processor.insertStart(try processor.print(
                 \\layout(std{d}, binding={d}) buffer DeshaderSync {{
             ++ "uint " ++ sync_storage ++ ";\n" ++ //
                 \\}};
             , .{
-                @as(u16, if (processor.glsl_version >= 430) 430 else 140), //stdXXX
-                sync.location.Buffer,
+                @as(u16, if (processor.parsed.version >= 430) 430 else 140), //stdXXX
+                sync.location.buffer.binding,
             }), processor.after_version);
         }
 
         switch (step_storage.location) {
             // -- Beware of spaces --
-            .Buffer => |buffer| {
+            .buffer => |buffer| {
                 // Declare the global hit storage
                 try processor.insertStart(try processor.print(
                     \\layout(std{d}, binding={d}) buffer DeshaderStepping {{
@@ -378,28 +395,30 @@ pub const Step = struct {
                     \\
                 ++ "uint " ++ step_counter ++ "=0u;\n" //
                 ++ "bool " ++ local_was_hit ++ "=false;\n", .{
-                    @as(u16, if (processor.glsl_version >= 430) 430 else 140), //stdXXX
+                    @as(u16, if (processor.parsed.version >= 430) 430 else 140), //stdXXX
                     buffer.binding,
                     processor.threads_total / 2,
                 }), processor.after_version);
             },
-            .Interface => |location| {
-                try processor.insertStart(try processor.config.allocator.dupe(u8, //
+            .interface => |location| {
+                try processor.insertStart( //
                     "uint " ++ step_counter ++ "=0u;\n" //
-                ++ "bool " ++ local_was_hit ++ "=false;\n"), processor.after_version);
+                    ++ "bool " ++ local_was_hit ++ "=false;\n", processor.after_version);
 
-                if (processor.glsl_version >= 130 or !processor.config.shader_stage.isFragment()) {
+                const storage_name = StepStorageName{ .processor = processor };
+
+                if (processor.parsed.version >= 130 or !processor.config.shader_stage.isFragment()) {
                     try processor.insertStart(
-                        try if (processor.glsl_version >= 440) //TODO or check for ARB_enhanced_layouts support
+                        if (processor.parsed.version >= 440) //TODO or check for ARB_enhanced_layouts support
                             try processor.print(
                                 \\layout(location={d},component={d}) out
-                            ++ " uvec2 {s};\n" //
-                            , .{ location.location, location.component, step_storage.name })
+                            ++ " uvec2 {};\n" //
+                            , .{ location.location, location.component, storage_name })
                         else
                             try processor.print(
                                 \\layout(location={d}) out
-                            ++ " uvec2 {s};\n" //
-                            , .{ location.location, step_storage.name }),
+                            ++ " uvec2 {};\n" //
+                            , .{ location.location, storage_name }),
                         processor.last_interface_decl,
                     );
                 }
@@ -412,17 +431,21 @@ pub const Step = struct {
         try processor.insertEnd("uniform uint " ++ desired_bp ++ ";\n", processor.after_version, 0);
     }
 
+    pub fn setupDone(processor: *Processor) anyerror!void {
+        const g = try guarded(processor);
+        g.deinit(processor.config.allocator);
+        processor.config.allocator.destroy(g);
+    }
+
     /// Adds "source code stepping" instrumentation to the given source code
     pub fn instrument(processor: *Processor, node: Processor.NodeId, context: *Processor.TraverseContext) anyerror!void {
-        const c = controls(&processor.channels).?;
+        const c = controls(&processor.config.program).?;
         const tree = processor.parsed.tree;
         const source = processor.config.source;
         if (analyzer.syntax.Call.tryExtract(tree, node)) |call_ex| {
             const name = call_ex.get(.identifier, tree).?.text(source, tree);
             // _step_(id, ?wrapped_code)
             if (std.mem.eql(u8, name, step_identifier)) {
-                try processor.ensureStorageInit();
-
                 var span = tree.nodeSpan(node);
                 const step_args: analyzer.syntax.ArgumentsList = call_ex.get(.arguments, tree) orelse return Error.InvalidStep;
                 const context_func = context.function orelse return Error.InvalidStep;
@@ -438,10 +461,10 @@ pub const Step = struct {
                 const has_breakpoint = c.breakpoints.contains(step_id);
 
                 // Emit step hit => write to the output debug buffer and return
-                if (controls(&processor.channels).?.desired_step != null or has_breakpoint) {
+                if (controls(&processor.config.program).?.desired_step != null or has_breakpoint) {
                     // insert the step's check'n'break
                     try processor.insertEnd(
-                        try processor.advanceAndCheck(step_id, context_func, parent_is_void, has_breakpoint, "", .{}),
+                        try advanceAndCheck(processor, step_id, context_func, parent_is_void, has_breakpoint, "", .{}),
                         span.start,
                         span.length(),
                     );
@@ -455,7 +478,7 @@ pub const Step = struct {
                 }
 
                 // generate: break the execution after returning from a function if something was hit
-                _ = try processor.addGuardsRecursive(source, context_func);
+                _ = try addGuardsRecursive(processor, context_func);
             }
         }
     }
@@ -469,12 +492,12 @@ pub const Step = struct {
         const r = try processor.responseVar(id, Responses, true, Responses{});
 
         // The id of the first step for each part
-        var step_offset: usize = if (r.value_ptr.offsets.getLastOrNull()) |last|
+        var step_offset: usize = if (r.value_ptr.*.offsets.getLastOrNull()) |last|
             last.offset + (try last.part.possibleSteps()).len
         else
             0;
         for (source_parts) |part| {
-            try r.value_ptr.offsets.append(processor.config.allocator, StepOffset{
+            try r.value_ptr.*.offsets.append(processor.config.allocator, StepOffset{
                 .part = part,
                 .offset = step_offset,
             });
@@ -487,7 +510,7 @@ pub const Step = struct {
     fn preprocessPart(part: *shaders.Shader.SourcePart, step_offset: usize, marked: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator) !usize {
         const part_steps = try part.possibleSteps();
         const part_source = part.getSource().?;
-        const prev_offset: usize = 0;
+        var prev_offset: usize = 0;
 
         for (part_steps.items(.offset), part_steps.items(.wrap_next), 0..) |offset, wrap, index| {
             // insert the previous part
@@ -512,7 +535,7 @@ pub const Step = struct {
         }
 
         // Insert rest of the source
-        try marked.appendSlice(allocator, part_source[prev_offset.*..]);
+        try marked.appendSlice(allocator, part_source[prev_offset..]);
         return part_steps.len;
     }
 
@@ -532,12 +555,13 @@ pub const Step = struct {
     }
 };
 
+/// Stack trace is logged only for the "selected" thread.
 pub const StackTrace = struct {
     pub const tag = analyzer.parse.Tag.call;
     pub const id: u64 = 0x57ac7ace;
     const storage_name = Processor.templates.prefix ++ "stack_trace";
-    pub const thread_selector_id = 0x5e1ec;
-    /// Shader stage specific
+    const cursor_name = storage_name ++ Processor.templates.cursor;
+    /// Each stage has its own thread selector (just for maintaining user selection state persistence per state)
     pub const thread_selector_name = Processor.templates.prefix ++ "selected_thread";
 
     pub const default_max_entries = 32;
@@ -546,77 +570,67 @@ pub const StackTrace = struct {
 
     pub fn maxEntries(channels: *Processor.Result.Channels, allocator: std.mem.Allocator) !*usize {
         // Stored as a raw numeric value instead of a pointer
-        return @ptrCast((try channels.controls.getOrPut(allocator, id, @ptrFromInt(default_max_entries))).value_ptr);
+        return @ptrCast((try channels.controls.getOrPutValue(allocator, id, @ptrFromInt(default_max_entries))).value_ptr);
     }
 
-    pub fn deinit(channels: *Processor.Result.Channels, allocator: std.mem.Allocator) anyerror!void {
-        if (channels.controls.get(id)) |c| {
-            allocator.free(c);
-        }
+    pub fn threadSelector(stage: decls.Stage) String {
+        return switch (stage) { // convert runtime value to comptime string
+            inline else => |s| comptime thread_selector_name ++ "_" ++ s.toString(),
+        };
     }
 
     pub fn setup(processor: *Processor) anyerror!void {
         const max: usize = (try maxEntries(&processor.channels, processor.config.allocator)).*;
         const stack_trace = try processor.addStorage(
             id,
-            storage_name,
             max * @sizeOf(StackTraceT),
             .PreferBuffer,
             .@"4U32",
             null,
             null,
         );
-        const thread_selector_ident = try processor.printZ(thread_selector_name ++ "{s}", .{processor.config.shader_stage.toString()});
-        try processor.channels.controls.put(processor.config.allocator, thread_selector_id, thread_selector_ident.ptr);
 
         try processor.insertStart(try processor.print(
             \\layout(binding={d}) restrict writeonly buffer DeshaderStackTrace {{
-            \\    uint {s}[];
+        ++ "    uint " ++ storage_name ++ "[];" ++
             \\}};
-        ++ "uint {s}" ++ Processor.templates.cursor ++ "=0u;\n", .{
-            stack_trace.location.Buffer,
-            stack_trace.name,
-            stack_trace.name,
+        ++ "uint " ++ cursor_name ++ "=0u;\n", .{
+            stack_trace.location.buffer.binding,
         }), processor.after_version);
 
-        try processor.insertEnd(try processor.print("uniform uint {s};\n", .{processor.channels.thread_selector_ident}), processor.after_version, 0);
+        try processor.insertEnd(try processor.print("uniform uint {s};\n", .{threadSelector(processor.config.shader_stage)}), processor.after_version, 0);
     }
 
     /// Insert a stack trace manipulation before and after a function call
     pub fn instrument(processor: *Processor, node: Processor.NodeId, context: *Processor.TraverseContext) anyerror!void {
-        if (processor.channels.out.get(id)) |st| if (processor.channels.controls.get(thread_selector_id)) |thread_selector| {
-            const thread_selector_ident: CString = @ptrCast(thread_selector);
-            const tree = processor.parsed.tree;
-            if (analyzer.syntax.Call.tryExtract(tree, node)) |call_ex| {
-                const name = call_ex.get(.identifier, tree).?.text(processor.config.source, tree);
+        const tree = processor.parsed.tree;
+        if (analyzer.syntax.Call.tryExtract(tree, node)) |call_ex| {
+            const name = call_ex.get(.identifier, tree).?.text(processor.config.source, tree);
 
-                const function_id = context.scope.functions.get(name) orelse return Error.FunctionNotInScope;
-                // When an user function is called, insert its id into the STACK_TRACE.
-                // if the function is called inside an expr, the stack trace must be manipulated in the set-off expression
-                try context.inserts.insertStart(
-                    try processor.print("({s} == " ++ Processor.global_thread_id ++ " ? " //
-                    ++ "{s}[{s}" ++ Processor.cursor ++ "++]={d}:" ++ Processor.cursor ++ ",", .{
-                        thread_selector_ident,
-                        st.name,
-                        st.name,
-                        function_id,
-                    }),
-                    tree.nodeSpanExtreme(node, .start),
-                );
+            const func = context.scope.functions.get(name) orelse return Error.FunctionNotInScope;
+            // Before a user function is called, insert its id into the STACK_TRACE.
+            // if the function is called inside an expr, the stack trace must be manipulated in the set-off expression
+            try context.inserts.insertStart(
+                try processor.print("({s} == " ++ Processor.templates.global_thread_id ++ " ? " //
+                ++ storage_name ++ "[" ++ cursor_name ++ "++]={d}:" ++ cursor_name ++ ",", .{
+                    threadSelector(processor.config.shader_stage),
+                    func.id,
+                }),
+                tree.nodeSpanExtreme(node, .start),
+            );
 
-                // pop the stack trace after it is exited
-                try context.inserts.insertEnd(
-                    try processor.print(",{s} == " ++ Processor.global_thread_id ++ " ? " //
-                    ++ "{s}[{s}" ++ Processor.cursor ++ "--]=0:" ++ Processor.cursor ++ ")", .{
-                        thread_selector_ident,
-                        st.name,
-                        st.name,
-                    }),
-                    tree.nodeSpanExtreme(node, .end),
-                    0,
-                );
-            }
-        };
+            // the call expression wil be enclosed between (stack_trace_push, call, stack_trace_pop)
+
+            // pop the stack trace after it is exited
+            try context.inserts.insertEnd(
+                try processor.print(",{s} == " ++ Processor.templates.global_thread_id ++ " ? " //
+                ++ storage_name ++ "[--" ++ cursor_name ++ "]=0:" ++ cursor_name ++ ")", .{
+                    threadSelector(processor.config.shader_stage),
+                }),
+                tree.nodeSpanExtreme(node, .end),
+                0,
+            );
+        }
     }
 
     pub fn stackTrace(allocator: std.mem.Allocator, args: debug.StackTraceArguments) !debug.StackTraceResponse {
@@ -655,22 +669,23 @@ pub const StackTrace = struct {
 };
 
 pub const Log = struct {
-    pub const log_storage = Processor.templates.prefix ++ "log";
     pub const id = 0x106;
+
+    const storage_name = Processor.templates.prefix ++ "log";
+    const cursor_name = storage_name ++ Processor.templates.cursor;
 
     pub const default_max_length = 32;
 
-    /// Log storage length (shared for all shader stages when using buffers)
+    /// Log storage length (shared for all shader stages when using buffers). The values is not in this instrument frontend, but should be instead used in the backend.
     pub fn maxLength(channels: *Processor.Result.Channels, allocator: std.mem.Allocator) !*usize {
         // Stored as a raw numeric value instead of a pointer
-        return @ptrCast((try channels.controls.getOrPut(allocator, id, @ptrFromInt(default_max_length))).value_ptr);
+        return @ptrCast((try channels.controls.getOrPutValue(allocator, id, @ptrFromInt(default_max_length))).value_ptr);
     }
 
     pub fn setup(processor: *Processor) anyerror!void {
         if (processor.config.support.buffers) {
             const storage = try processor.addStorage(
                 id,
-                log_storage,
                 (try maxLength(&processor.channels, processor.config.allocator)).*,
                 .PreferBuffer,
                 .@"4U32",
@@ -679,13 +694,11 @@ pub const Log = struct {
             );
             try processor.insertStart(try processor.print(
                 \\layout(binding={d}) restrict writeonly buffer DeshaderLog {{
-            ++ "uint {s}" ++ Processor.templates.cursor ++ ";\n" //
-            ++ "uint {s}[];\n" ++ //
+            ++ "uint " ++ cursor_name ++ ";\n" //
+            ++ "uint " ++ storage_name ++ "[];\n" ++ //
                 \\}};
             , .{
-                storage.location.Buffer,
-                storage.name,
-                storage.name,
+                storage.location.buffer.binding,
             }), processor.after_version);
         }
     }
@@ -714,16 +727,15 @@ pub const Variables = struct {
         const size = try maxSize(&processor.channels, processor.config.allocator).*;
         const storage = try processor.addStorage(
             id,
-            storage_name,
             0,
             .PreferBuffer,
             .@"4U32",
-            if (processor.glsl_version >= 440 and processor.config.shader_stage.isFragment()) if (processor.channels.out.get(Step.id)) |s| s.location else null else null,
+            if (processor.parsed.version >= 440 and processor.config.shader_stage.isFragment()) if (processor.channels.out.get(Step.id)) |s| s.location else null else null,
             1,
         );
 
         switch (storage.location) {
-            .Buffer => |buffer| {
+            .buffer => |buffer| {
                 storage.size = size;
 
                 try processor.insertStart(
@@ -738,9 +750,9 @@ pub const Variables = struct {
                     processor.after_version,
                 );
             },
-            .Interface => |location| {
+            .interface => |location| {
                 if (processor.config.shader_stage.isFragment()) {
-                    if (processor.glsl_version >= 130) {
+                    if (processor.parsed.version >= 130) {
                         try processor.insertStart(try if (location.component != 0)
                             processor.print(
                                 \\layout(location={d},component={d}) out uvec{d} {s}0;
@@ -761,7 +773,6 @@ pub const Variables = struct {
                         defer i += 1;
                         const stor = try processor.addStorage(
                             another + i,
-                            storage_name,
                             0,
                             .PreferBuffer,
                             .@"4U32",
@@ -769,11 +780,11 @@ pub const Variables = struct {
                             null,
                         );
                         switch (stor.location) {
-                            .Interface => |interface| {
+                            .interface => |interface| {
                                 try processor.insertStart(try processor.print("layout(location={d}) out uvec4 {s}{d};", .{ interface.location, storage_name, i }), processor.last_interface_decl);
                                 stor.size = interface_size;
                             },
-                            .Buffer => |buffer| {
+                            .buffer => |buffer| {
                                 try processor.insertStart(try processor.print(
                                     \\layout(binding={d}) restrict buffer DeshaderVariables{s} {{
                                 ++ "uint {s}{d}[];\n" ++ //

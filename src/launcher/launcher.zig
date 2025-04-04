@@ -396,7 +396,7 @@ pub fn main() !u8 {
 }
 
 fn symlinkLibToLib(cwd: std.fs.Dir, target_path: String, symlink_dir: String, dll_name: String, yes: bool) !void {
-    var buffer: [std.fs.MAX_PATH_BYTES]u8 = undefined;
+    var buffer: [std.fs.max_path_bytes]u8 = undefined;
     const symlink_path = try path.join(common.allocator, &[_]String{ symlink_dir, dll_name });
     defer common.allocator.free(symlink_path);
 

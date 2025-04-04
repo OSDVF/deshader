@@ -49,7 +49,7 @@ pub fn isRunning() bool {
 }
 
 pub fn serverThread(port: u16) !void {
-    var gpa = common.GPA{};
+    var gpa = common.GPA.init;
     defer _ = gpa.deinit();
     // the return value of analyzer.main.run() does not contain any specific information in case of running as server
     _ = try analyzer.main.run(gpa.allocator(), &state, .{

@@ -447,7 +447,7 @@ fn rpcHandler(p: *positron.Provider, r: *positron.Provider.Route, c: *serve.Http
                 try self.http.response.setStatusCode(.bad_request);
             }
             var w = try self.http.response.writer();
-            if (@typeInfo(@TypeOf(err)) == .ErrorSet) {
+            if (@typeInfo(@TypeOf(err)) == .error_set) {
                 try w.print("Error: {}", .{err});
             } else {
                 try w.writeAll(err);
