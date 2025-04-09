@@ -246,14 +246,7 @@ pub fn selfExePath() !String {
     if (self_exe) |path| {
         return path;
     }
-    if (builtin.os.tag == .windows) // Wine fails on realpath
-    {
-        var arg = try std.process.argsWithAllocator(allocator);
-        defer arg.deinit();
-        self_exe = try allocator.dupe(u8, arg.next().?);
-    } else {
-        self_exe = try std.fs.selfExePathAlloc(allocator);
-    }
+    self_exe = try process.selfExePath(allocator);
     return self_exe.?;
 }
 

@@ -65,7 +65,7 @@ pub const DependenciesStep = struct {
             .cwd = cwd,
             .env_map = self.env_map,
             .thread_handle = undefined,
-            .err_pipe = null,
+            .err_pipe = if (builtin.os.tag == .windows) {} else null,
             .term = null,
             .uid = if (builtin.os.tag == .windows or builtin.os.tag == .wasi) {} else null,
             .gid = if (builtin.os.tag == .windows or builtin.os.tag == .wasi) {} else null,
@@ -115,8 +115,8 @@ pub const DependenciesStep = struct {
                 std.log.err("Could not parse Bun version: {}", .{err});
                 break :check;
             };
-            if (!(version.major >= 1 and version.minor >= 1 and version.patch >= 34)) {
-                std.log.err("Bun is older than 1.1.34, please update it by running 'bun upgrade'", .{});
+            if (version.order(.{ .major = 1, .minor = 1, .patch = 34 }) == .lt) {
+                std.log.err("Bun {d}.{d}.{d} is older than 1.1.34, please update it by running 'bun upgrade'", .{ version.major, version.minor, version.patch });
             }
         } else |err| {
             std.log.info("Error when checking Bun version {})", .{err});
@@ -137,12 +137,11 @@ pub const DependenciesStep = struct {
     }
 
     /// TODO: how to get install dir when specifying custom triplet?
-    pub fn vcpkg(self: *DependenciesStep, triplet: ?String) !void {
+    pub fn vcpkg(self: *DependenciesStep, triplet: String) !void {
         if (self.target.os.tag == .macos and builtin.os.tag != .macos) {
             compileInstallNameTool(self.step.owner);
         }
         const step = self.step;
-        const use_triplet: String = triplet orelse try arch.targetToVcpkgTriplet(step.owner.allocator, self.target);
 
         const sub_sub = try self.step.owner.allocator.dupe(SubStep, &[_]SubStep{SubStep{
             .name = "Rename VCPKG artifacts",
@@ -160,12 +159,12 @@ pub const DependenciesStep = struct {
                     try doOnEachFileIf(step2, lib_path, hasWrongSuffix, renameSuffix);
                 }
             }.create,
-            .arg = use_triplet,
+            .arg = triplet,
         }});
 
         try self.sub_steps.append(.{
             .name = "Building VCPKG dependencies",
-            .args = step.owner.dupeStrings(&.{ "vcpkg", "install", "--triplet", use_triplet, "--x-install-root=build/vcpkg_installed" }),
+            .args = step.owner.dupeStrings(&.{ "vcpkg", "install", "--triplet", triplet, "--x-install-root=build/vcpkg_installed" }),
             .after = if (self.target.os.tag == .windows) sub_sub else null,
         });
     }

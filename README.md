@@ -73,17 +73,16 @@ Deshader consists of several (mostly third party; mostly forked) components that
     - [/src/launcher/launcher.zig](/src/launcher/launcher.zig)
 - Deshader library
     - [/src/](/src/)
-    - Written in **Zig**
     - [Web View (WebKit2Gtk)](https://github.com/ziglibs/positron) at [/libs/positron/](/libs/positron/) (MIT)
     - Example applications
         - [/examples/](/examples/)
     - Fork of [GLSL Analyzer](https://github.com/nolanderc/glsl_analyzer) at [/libs/glsl_analyzer/](/libs/glsl_analyzer/) (GPL-3.0)
-- A distribution of [Visual Studio Code for web](https://github.com/Felx-B/vscode-web) (MIT)
-    - [/editor/](/editor/)
+- Deshader VSCode extension
+    - [/editor/deshader-vscode/](/editor/deshader-vscode/) (MIT)
     - With node.js packages
     - Managed by **Bun**
-- VSCode extension
-    - [/editor/deshader-vscode/](/editor/deshader-vscode/) (MIT)
+- A distribution of [Visual Studio Code for web](https://github.com/Felx-B/vscode-web) (MIT)
+    - [/editor/](/editor/)
     - With node.js packages
     - Managed by **Bun**
 
@@ -91,6 +90,7 @@ Deshader consists of several (mostly third party; mostly forked) components that
 - [Zig 0.14](https://ziglang.org/) (MIT)
 - Bun 1.2.8 [Install](https://github.com/oven-sh/bun#install) (MIT)
 - [VCPKG](https://vcpkg.io) (MIT)
+    - VCPKG may download another dependencies, such as `pwsh` on Windows, `cmake`... 
 - C libraries
     - Linux
         - gtk-3 (LGPL-2.1) and webkit2gtk 4.0-4.1 (BSD, LGPL-2.1)
@@ -108,9 +108,11 @@ Deshader consists of several (mostly third party; mostly forked) components that
                 - DLL interception does not work for OpenGL under Wine. Intercept on host side instead (however this does not really work for now)
 
 - Building __examples__ requires [Vulkan SDK](https://vulkan.lunarg.com/sdk/home) ([mixed licenses...](https://vulkan.lunarg.com/license/)) (for GLFW)
-- Linux and macOS:
+- for Linux and macOS:
     - `pkg-config`
     - `ld` from `binutils` package
+- for Windows (installable by [Visual Studio Installer](https://visualstudio.microsoft.com/downloads/)):
+    - Build Tools
 - Examples on macOS require `gcc`
 
 ## Building from source
@@ -188,7 +190,7 @@ Deshader components are built with different build systems. They are being calle
     GLEW, GLSLang, GLFW, WolfSSL, nativefiledialog
   </details>
 
-  - `vcpkg install --triplet=x[86/64]-os(-zig) --x-install-root=build/vcpkg_installed`
+  - `vcpkg install --triplet=x(86/64)-[os](-zig) --x-install-root=build/vcpkg_installed`
   - Rename `.dll.a` -> `.lib` in `build/vcpkg_installed/*/lib`
 
 ### Zig dependencies

@@ -119,7 +119,7 @@ pub fn build(b: *std.Build) !void {
         .system_nfd = b.option(bool, "sNFD", "Force usage of system-supplied NFD library (VCPKG has priority otherwise)") orelse false,
         .system_wolfssl = b.option(bool, "sWolfSSL", "Force usage of system-supplied WolfSSL library (VCPKG has priority otherwise)") orelse false,
         .traces = option_traces,
-        .triplet = b.option(String, "triplet", "VCPKG triplet to use for dependencies"),
+        .triplet = b.option(String, "triplet", "VCPKG triplet to use for dependencies") orelse try arch.targetToVcpkgTriplet(b.allocator, target.result),
         .valgrind = b.option(bool, "valgrind", "Enable valgrind support (implicit for debug mode, not supported for macos, ARM, and msvc target)") orelse (option_traces and target.result.abi != .msvc and targetTarget != .macos and target.result.cpu.arch != .arm),
         .unwind = b.option(std.builtin.UnwindTables, "unwind", "Enable unwind tables (implicit for debug mode)"),
     };
@@ -143,17 +143,19 @@ pub fn build(b: *std.Build) !void {
     const framework_path = std.Build.LazyPath{ .cwd_relative = if (targetTarget == .macos) options.sdk orelse b.pathJoin(&.{ std.mem.trim(u8, b.run(&.{ "xcrun", "--sdk", "macosx", "--show-sdk-path" }), "\n \t"), system_framwork_path.cwd_relative }) else "" };
 
     if (target.result.abi == .msvc) {
-        deshader_lib.linkSystemLibrary("shell32");
-        deshader_lib.linkSystemLibrary("libvcruntimed");
-        deshader_lib.linkSystemLibrary("libcmtd");
-        deshader_lib.linkSystemLibrary("libcpmtd");
-    } else {
-        if (targetTarget == .macos) {
+        defineForMSVC(deshader_lib.root_module, target.result);
+    }
+    switch (targetTarget) {
+        .macos => {
             deshader_lib.linkFramework("CoreFoundation");
             deshader_lib.linkFramework("Cocoa");
             deshader_lib.linkFramework("Security");
             deshader_lib.linkFramework("OpenGL");
-        }
+        },
+        .windows => {
+            deshader_lib.linkSystemLibrary("Crypt32");
+        },
+        else => {},
     }
 
     if (!options.lib_assert) {
@@ -328,6 +330,9 @@ pub fn build(b: *std.Build) !void {
         },
     });
     common.addCMacro("_GNU_SOURCE", ""); // To access dl_iterate_phdr
+    if (target.result.abi == .msvc) {
+        defineForMSVC(common, target.result);
+    }
     deshader_lib.root_module.addImport("common", common);
 
     // Symbol Enumeration
@@ -421,9 +426,9 @@ pub fn build(b: *std.Build) !void {
             defer file.close();
             try file.writeAll(
                 if (builtin.os.tag == .windows)
-                    try std.mem.concat(b.allocator, u8, &.{ b.graph.zig_exe, " ar %*" })
+                    "\"%ZIG_PATH%\" ar %*"
                 else
-                    try std.mem.concat(b.allocator, u8, &.{ "#!/bin/sh\n", b.graph.zig_exe, " ar $@" }),
+                    "#!/bin/sh\n \"$ZIG_PATH\" ar $@",
             );
         };
         // Set execution permissions
@@ -668,7 +673,7 @@ pub fn build(b: *std.Build) !void {
                 log.err("Missing libstdc++, trying to link Zig's LibCpp", .{});
                 deshader_lib.linkLibCpp();
             }
-        } else {
+        } else if (target.result.abi != .msvc) { // do not compile libc++ when linking to MSVC stdlibc
             deshader_lib.linkLibCpp();
         }
     }
@@ -713,11 +718,13 @@ pub fn build(b: *std.Build) !void {
             });
 
             // GLFW
-            const example_glfw = try SubExampleStep.create(example_bootstraper, sub_examples.glfw, "examples/" ++ sub_examples.glfw ++ ".zig", exampleModules ++ .{.{ .name = "zig_glfw", .module = zig_glfw_dep.module("zig-glfw") }});
-            try addVcpkgInstalledPaths(b, zig_glfw_dep.module("zig-glfw"), options.triplet, options.lib_debug);
+            const glfw_module = zig_glfw_dep.module("zig-glfw");
+            glfw_module.linkSystemLibrary("gdi32", .{});
+            const example_glfw = try SubExampleStep.create(example_bootstraper, sub_examples.glfw, "examples/" ++ sub_examples.glfw ++ ".zig", exampleModules ++ .{.{ .name = "zig_glfw", .module = glfw_module }});
+            try addVcpkgInstalledPaths(b, glfw_module, options.triplet, options.lib_debug);
             example_glfw.compile.linkLibC();
 
-            const example_sdf = try SubExampleStep.create(example_bootstraper, sub_examples.sdf, "examples/" ++ sub_examples.sdf ++ ".zig", exampleModules ++ .{.{ .name = "zig_glfw", .module = zig_glfw_dep.module("zig-glfw") }});
+            const example_sdf = try SubExampleStep.create(example_bootstraper, sub_examples.sdf, "examples/" ++ sub_examples.sdf ++ ".zig", exampleModules ++ .{.{ .name = "zig_glfw", .module = glfw_module }});
             example_sdf.compile.linkLibC();
 
             // Editor Linked
@@ -727,7 +734,6 @@ pub fn build(b: *std.Build) !void {
             // GLFW in C++
             const example_glfw_cpp = try SubExampleStep.create(example_bootstraper, sub_examples.glfw_cpp, "examples/" ++ sub_examples.glfw ++ ".cpp", .{});
             example_glfw_cpp.compile.addIncludePath(.{ .cwd_relative = b.h_dir });
-            example_glfw_cpp.compile.root_module.addCMacro("_LIBCPP_HAS_NO_WIDE_CHARACTERS", "");
             example_glfw_cpp.compile.linkLibCpp();
             try linkGlew(example_glfw_cpp.install, options.system_glew, options.triplet, options.lib_debug);
 
@@ -736,6 +742,7 @@ pub fn build(b: *std.Build) !void {
                 example_glfw_cpp.compile.addWin32ResourceFile(.{ .file = b.path(b.pathJoin(&.{ "examples", "shaders.rc" })) });
                 example_glfw_cpp.compile.root_module.addCMacro("WIN32", "");
             } else {
+                example_glfw_cpp.compile.root_module.addCMacro("_LIBCPP_HAS_NO_WIDE_CHARACTERS", "");
                 inline for (.{ "fragment.frag", "vertex.vert" }) |shader| {
                     const output = try std.fs.path.join(b.allocator, &.{ b.cache_root.path.?, "shaders", shader ++ ".o" });
                     b.cache_root.handle.access("shaders", .{}) catch try std.fs.makeDirAbsolute(std.fs.path.dirname(output).?);
@@ -774,16 +781,19 @@ pub fn build(b: *std.Build) !void {
             example_linked_cpp.compile.addLibraryPath(.{ .cwd_relative = b.lib_dir }); //implib or .so
             if (targetTarget == .windows) {
                 example_linked_cpp.compile.addLibraryPath(.{ .cwd_relative = b.exe_dir }); // .dll
+            } else {
+                example_linked_cpp.compile.root_module.addCMacro("_LIBCPP_HAS_NO_WIDE_CHARACTERS", "");
             }
             example_linked_cpp.compile.each_lib_rpath = false;
             example_linked_cpp.compile.step.dependOn(&deshader_lib_install.step);
             example_linked_cpp.compile.linkLibCpp();
-            example_linked_cpp.compile.root_module.addCMacro("_LIBCPP_HAS_NO_WIDE_CHARACTERS", "");
 
             // Using unobtrusive Deshader Library commands
             const example_debug_commands = try SubExampleStep.create(example_bootstraper, sub_examples.debug_commands, "examples/debug_commands.cpp", .{});
             example_debug_commands.compile.addIncludePath(.{ .cwd_relative = b.h_dir });
-            example_debug_commands.compile.root_module.addCMacro("_LIBCPP_HAS_NO_WIDE_CHARACTERS", "");
+            if (targetTarget != .windows) {
+                example_debug_commands.compile.root_module.addCMacro("_LIBCPP_HAS_NO_WIDE_CHARACTERS", "");
+            }
             example_debug_commands.compile.linkLibCpp();
             example_debug_commands.compile.addFrameworkPath(framework_path);
             example_debug_commands.compile.addFrameworkPath(system_framwork_path);
@@ -956,22 +966,20 @@ fn fileWithPrefixExists(allocator: std.mem.Allocator, dirname: String, basename:
     return null;
 }
 
-fn addVcpkgInstalledPaths(b: *std.Build, c: anytype, triplet: ?String, debug_lib: bool) !void {
-    const module = if (@hasField(@TypeOf(c.*), "root_module")) c.root_module else c;
+fn addVcpkgInstalledPaths(b: *std.Build, c: anytype, triplet: String, debug_lib: bool) !void {
     const debug = if (debug_lib) "debug" else "";
-    const target = if (module.resolved_target) |t| t.result else builtin.target;
-    c.addIncludePath(b.path(b.pathJoin(&.{ "build", "vcpkg_installed", triplet orelse try arch.targetToVcpkgTriplet(b.allocator, target), "debug", "include" })));
-    c.addIncludePath(b.path(b.pathJoin(&.{ "build", "vcpkg_installed", triplet orelse try arch.targetToVcpkgTriplet(b.allocator, target), "include" })));
-    c.addLibraryPath(b.path(b.pathJoin(&.{ "build", "vcpkg_installed", triplet orelse try arch.targetToVcpkgTriplet(b.allocator, target), debug, "bin" })));
-    c.addLibraryPath(b.path(b.pathJoin(&.{ "build", "vcpkg_installed", triplet orelse try arch.targetToVcpkgTriplet(b.allocator, target), debug, "lib" })));
+    c.addIncludePath(b.path(b.pathJoin(&.{ "build", "vcpkg_installed", triplet, "debug", "include" })));
+    c.addIncludePath(b.path(b.pathJoin(&.{ "build", "vcpkg_installed", triplet, "include" })));
+    c.addLibraryPath(b.path(b.pathJoin(&.{ "build", "vcpkg_installed", triplet, debug, "bin" })));
+    c.addLibraryPath(b.path(b.pathJoin(&.{ "build", "vcpkg_installed", triplet, debug, "lib" })));
 }
 
 /// Must be called at the end of configure phase, because it could dispatch vcpkg installation
-fn linkVcpkgLibrary(compile: anytype, name: String, triplet: ?String, debug: bool) !void {
+fn linkVcpkgLibrary(compile: anytype, name: String, triplet: String, debug: bool) !void {
     const b = if (@hasField(@TypeOf(compile.*), "step")) compile.step.owner else compile.owner;
     const target = if (@hasDecl(@TypeOf(compile.*), "rootModuleTarget")) compile.rootModuleTarget() else if (compile.resolved_target) |r| r.result else builtin.target;
 
-    const vcpkg_dir = b.pathJoin(&.{ "build", "vcpkg_installed", triplet orelse try arch.targetToVcpkgTriplet(b.allocator, target), if (debug) "debug" else "" });
+    const vcpkg_dir = b.pathJoin(&.{ "build", "vcpkg_installed", triplet, if (debug) "debug" else "" });
     b.build_root.handle.access(vcpkg_dir, .{}) catch {
         // VCPKG libraries were not installed previously so all our check would fail. We must wait for VCPKG to install them.
         log.debug("Starting VCPKG installation in configuration phase", .{});
@@ -986,6 +994,7 @@ fn linkVcpkgLibrary(compile: anytype, name: String, triplet: ?String, debug: boo
     defer b.allocator.free(vcpkg_dir_real);
 
     inline for (.{ "lib", "" }) |prefix| {
+        // todo can be .a on MinGW
         if (try fileWithPrefixExists(b.allocator, vcpkg_dir_real, try std.mem.concat(b.allocator, u8, &.{ "lib", std.fs.path.sep_str, prefix, name, target.staticLibSuffix() }))) |full_name| {
             compile.addObjectFile(.{ .cwd_relative = full_name });
             log.info("Linked {s} from VCPKG", .{full_name});
@@ -1001,7 +1010,7 @@ fn linkVcpkgLibrary(compile: anytype, name: String, triplet: ?String, debug: boo
     log.warn("Could not link {s} from VCPKG but maybe it is in system.", .{name});
 }
 
-fn installVcpkgLibrary(i: *std.Build.Step.InstallArtifact, name: String, triplet: ?String, debug_lib: bool) !String {
+fn installVcpkgLibrary(i: *std.Build.Step.InstallArtifact, name: String, triplet: String, debug_lib: bool) !String {
     const b = i.step.owner;
     const target = i.artifact.rootModuleTarget();
     const os = target.os.tag;
@@ -1012,7 +1021,7 @@ fn installVcpkgLibrary(i: *std.Build.Step.InstallArtifact, name: String, triplet
         const dll_path = b.pathJoin(&.{
             "build",
             "vcpkg_installed",
-            triplet orelse try arch.targetToVcpkgTriplet(b.allocator, target),
+            triplet,
             if (debug_lib) "debug" else "",
             "bin",
             name_with_ext,
@@ -1038,10 +1047,12 @@ fn installVcpkgLibrary(i: *std.Build.Step.InstallArtifact, name: String, triplet
     return name;
 }
 
-fn linkGlew(i: *std.Build.Step.InstallArtifact, prefer_system: bool, triplet: ?String, debug_lib: bool) !void {
+fn linkGlew(i: *std.Build.Step.InstallArtifact, prefer_system: bool, triplet: String, debug_lib: bool) !void {
     if (i.artifact.rootModuleTarget().os.tag == .windows) {
+        i.artifact.root_module.linkSystemLibrary("gdi32", .{});
         try addVcpkgInstalledPaths(i.step.owner, i.artifact, triplet, debug_lib);
-        const glew = if (i.artifact.root_module.optimize orelse .Debug == .Debug) "glew32d" else "glew32";
+        const glew = if (debug_lib) "glew32d" else "glew32";
+        i.artifact.linkSystemLibrary(glew);
         try linkVcpkgLibrary(i.artifact, glew, triplet, debug_lib); // VCPKG on x64-windows-cross generates bin/glew32.dll but lib/libglew32.dll.a
         _ = try installVcpkgLibrary(i, glew, triplet, debug_lib);
         i.artifact.linkSystemLibrary2("opengl32", .{ .needed = true });
@@ -1065,7 +1076,7 @@ fn winepath(alloc: std.mem.Allocator, path: String, toWindows: bool) !String {
     }
 }
 
-fn linkWolfSSL(module: *std.Build.Module, install: ?*std.Build.Step.InstallArtifact, prefer_vcpkg: bool, triplet: ?String, debug: bool) !?String {
+fn linkWolfSSL(module: *std.Build.Module, install: ?*std.Build.Step.InstallArtifact, prefer_vcpkg: bool, triplet: String, debug: bool) !?String {
     const target = if (module.resolved_target) |t| t.result else builtin.target;
     const wolfssl_lib_name = "wolfssl";
     if (prefer_vcpkg) {
@@ -1110,7 +1121,7 @@ fn systemHasLib(c: *std.Build.Step.Compile, native_libs_location: String, lib: S
     } else return false;
 }
 
-fn nfd(c: *std.Build.Step.Compile, prefer_system: bool, triplet: ?String, debug: bool) !void {
+fn nfd(c: *std.Build.Step.Compile, prefer_system: bool, triplet: String, debug: bool) !void {
     if (c.rootModuleTarget().os.tag == .linux) {
         // sometimes located here on Linux
         c.addLibraryPath(.{ .cwd_relative = "/usr/lib/nfd/" });
@@ -1171,4 +1182,15 @@ fn uppercaseFirstLetter(a: std.mem.Allocator, s: String) !String {
         return s;
     }
     return try std.mem.concat(a, u8, &.{ &.{std.ascii.toUpper(s[0])}, s[1..] });
+}
+
+fn defineForMSVC(module: *std.Build.Module, target: std.Target) void {
+    module.addCMacro(switch (target.cpu.arch) {
+        .x86_64 => "_AMD64_",
+        .x86 => "_X86_",
+        .arm, .armeb => "_ARM_",
+        .aarch64, .aarch64_be => "_ARM64_",
+        else => |t| @tagName(t),
+    }, "1");
+    module.addCMacro("MIDL_INTERFACE", "struct");
 }

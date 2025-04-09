@@ -7,6 +7,7 @@ const String = []const u8;
 const c = @cImport({
     if (builtin.os.tag == .windows) {
         @cInclude("processthreadsapi.h"); // for GetThreadDescription
+        @cInclude("windows.h"); // for LocalFree
     } else if (builtin.os.tag == .linux) {}
 });
 
@@ -226,13 +227,18 @@ pub fn getSelfThreadName(allocator: std.mem.Allocator) !String {
     var result_buffer: [std.Thread.max_name_len:0]u8 = undefined; // On POSIX, thread names are restricted to 16 bytes
     const thread_id = getSelfThreadId();
     if (builtin.os.tag == .windows) {
-        var buffer: [std.Thread.max_name_len:0]std.os.windows.WCHAR = undefined;
+        var buffer: [*c]std.os.windows.WCHAR = undefined;
         const result = c.GetThreadDescription(thread_id, &buffer);
         if (result == 0) {
             return std.os.windows.unexpectedError(std.os.windows.kernel32.GetLastError());
         }
-        defer std.os.windows.kernel32.LocalFree(buffer);
-        const len = try std.unicode.wtf16LeToWtf8(&result_buffer, buffer);
+        defer _ = c.LocalFree(buffer);
+        const len = std.unicode.wtf16LeToWtf8(&result_buffer, std.mem.span(buffer));
+        if (len == 0) {
+            const exe_path = try selfExePath(allocator);
+            defer allocator.free(exe_path);
+            return allocator.dupe(u8, std.fs.path.basename(exe_path));
+        }
 
         return allocator.dupe(u8, result_buffer[0..len]);
     } else {
@@ -242,5 +248,17 @@ pub fn getSelfThreadName(allocator: std.mem.Allocator) !String {
             .RANGE => unreachable,
             else => |e| return std.posix.unexpectedErrno(e),
         }
+    }
+}
+
+/// Wraps std.fs.selfExePathAlloc or gets argv[0] on Windows to workaround Wine bug
+pub fn selfExePath(allocator: std.mem.Allocator) !String {
+    if (builtin.os.tag == .windows) // Wine fails on realpath
+    {
+        var arg = try std.process.argsWithAllocator(allocator);
+        defer arg.deinit();
+        return try allocator.dupe(u8, arg.next().?);
+    } else {
+        return try std.fs.selfExePathAlloc(allocator);
     }
 }

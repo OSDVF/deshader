@@ -25,7 +25,7 @@ pub const Options = struct {
     system_nfd: bool,
     system_wolfssl: bool,
     traces: bool,
-    triplet: ?[]const u8,
+    triplet: []const u8,
     valgrind: bool,
     unwind: ?std.builtin.UnwindTables,
 };

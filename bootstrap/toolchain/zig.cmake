@@ -1,4 +1,9 @@
+# Substitutes system C toolchain with Zig
+
 set(VCPKG_POLICY_DLLS_WITHOUT_LIBS enabled) # Ignores cmake warning `warning: Import libraries were not present in` because import `.lib`s are generated as `libX.dll.a` instead of `X.lib`
+if(VCPKG_TARGET_IS_WINDOWS)
+    set(VCPKG_TARGET_IS_MINGW ON)
+endif()
 
 if(NOT DEFINED $ENV{ZIG_PATH})
     find_program(ZIG_PATH "zig${CMAKE_EXECUTABLE_SUFFIX}")

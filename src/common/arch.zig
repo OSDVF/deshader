@@ -32,5 +32,5 @@ pub fn targetToVcpkgTriplet(a: std.mem.Allocator, t: std.Target) !String {
         .macos => "osx",
         .linux => "linux",
         else => @tagName(t.os.tag),
-    }, if (native) "" else "-zig" });
+    }, if (native and t.os.tag != .windows) "" else "-zig" }); // Always subtitue MSVC with zig cc on windows, because the libraries would be incompatible
 }

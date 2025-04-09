@@ -1912,8 +1912,8 @@ pub const context_procs = if (builtin.os.tag == .windows)
             return result;
         }
 
-        comptime {
-            @export(wglMakeContextCurrentARB, .{ .name = "wglMakeContextCurrentEXT" });
+        comptime { // also export as wglMakeContextCurrentEXT for compatibility
+            @export(&wglMakeContextCurrentARB, .{ .name = "wglMakeContextCurrentEXT" });
         }
 
         pub export fn wglCreateContextAttribsARB(hdc: *const anyopaque, share: *const anyopaque, attribs: ?[*]c_int) ?*const anyopaque {
@@ -2199,6 +2199,7 @@ fn contextInvalidatedEvent() !void {
 fn deleteContext(c: *const anyopaque, api: anytype, arg: anytype) bool {
     const prev_context = api.get_current.?();
     if (shaders.getService(@ptrCast(c))) |s| {
+        log.info("Deleting context {x} with service {s}", .{ @intFromPtr(c), s.name });
         deinit: {
             if (state.getPtr(s.context)) |c_state| {
                 // TODO when context is stolen, a illegal command is issued here
@@ -2209,9 +2210,9 @@ fn deleteContext(c: *const anyopaque, api: anytype, arg: anytype) bool {
                 c_state.deinit();
                 if (builtin.os.tag != .windows and @call(.auto, api.make_current[0], params ++ .{prev_context}) == 0) break :deinit;
                 wrapErrorHandling(makeCurrent, .{ api, params, prev_context });
+                std.debug.assert(state.remove(s.context));
             }
         }
-        std.debug.assert(state.remove(s.context));
         std.debug.assert(shaders.removeService(@ptrCast(c)));
         // Send a notification to debug adapter client
         contextInvalidatedEvent() catch {};

@@ -190,7 +190,7 @@ pub fn DllMain(instance: std.os.windows.HINSTANCE, reason: std.os.windows.DWORD,
 }
 comptime {
     switch (builtin.os.tag) {
-        .windows => @export(DllMain, .{
+        .windows => @export(&DllMain, .{
             .name = "DllMain",
         }),
         .macos => {
