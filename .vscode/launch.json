@@ -2,15 +2,15 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "GDB - Launcher Hidden & GLFW",
+            "name": "GDB - Launcher Hidden & Quad",
             "type": "gdb",
             "request": "launch",
             "cwd": "${workspaceRoot}",
-            "target": "./zig-out/bin/deshader-examples/glfw",
+            "target": "./zig-out/bin/deshader-examples/quad",
             "preLaunchTask": "Start Editor Server",
             "env": {
                 "DESHADER_LIB": "zig-out/lib/libdeshader.so",
-                "DESHADER_PROCESS": "glfw",
+                "DESHADER_PROCESS": "quad",
                 "POWER_SAVE": 100
             },
             "autorun": [
@@ -19,13 +19,13 @@
             ]
         },
         {
-            "name": "GDB - Launcher GLFW Hidden",
+            "name": "GDB - Launcher Quad Hidden",
             "type": "gdb",
             "request": "launch",
             "cwd": "${workspaceRoot}",
             "target": "./zig-out/bin/deshader-run",
             "preLaunchTask": "Build Launcher",
-            "arguments": "-y zig-out/bin/deshader-examples/glfw",
+            "arguments": "-y zig-out/bin/deshader-examples/quad",
             "env": {
                 "DESHADER_LIB": "zig-out/lib/libdeshader.so",
                 "DESHADER_GUI": "hidden",
@@ -62,7 +62,7 @@
             "program": "${workspaceRoot}/zig-out/bin/deshader-run",
             "args": [
                 "-y",
-                "zig-out/bin/deshader-examples/glfw.exe"
+                "zig-out/bin/deshader-examples/quad.exe"
             ],
             "preLaunchTask": "Build Launcher",
             "cwd": "${workspaceRoot}"
@@ -128,14 +128,14 @@
         {
             "type": "gdb",
             "request": "launch",
-            "name": "GDB - GLFW",
-            "target": "./zig-out/bin/deshader-examples/glfw",
+            "name": "GDB - Quad",
+            "target": "./zig-out/bin/deshader-examples/quad",
             "cwd": "${workspaceRoot}",
             "valuesFormatting": "parseText",
             "preLaunchTask": "Build Examples",
             "env": {
                 "DESHADER_IGNORE_PROCESS": "gdb:zsh:lldb",
-                "DESHADER_PROCESS": "glfw",
+                "DESHADER_PROCESS": "quad",
                 "LD_PRELOAD": "${workspaceRoot}/zig-out/lib/libdeshader.so",
                 "DYLD_INSERT_LIBRARIES": "${workspaceRoot}/zig-out/lib/libdeshader.dylib",
                 "DESHADER_COMMANDS_WS": "8082",
@@ -152,14 +152,14 @@
         {
             "type": "lldb-mi",
             "request": "launch",
-            "name": "LLDB - GLFW",
-            "target": "./zig-out/bin/deshader-examples/glfw",
+            "name": "LLDB - Quad",
+            "target": "./zig-out/bin/deshader-examples/quad",
             "cwd": "${workspaceRoot}",
             "valuesFormatting": "parseText",
             "preLaunchTask": "Build Examples",
             "env": {
                 "DESHADER_IGNORE_PROCESS": "gdb:zsh:lldb",
-                "DESHADER_PROCESS": "glfw",
+                "DESHADER_PROCESS": "quad",
                 "LD_PRELOAD": "${workspaceRoot}/zig-out/lib/libdeshader.so",
                 "DYLD_INSERT_LIBRARIES": "${workspaceRoot}/zig-out/lib/libdeshader.dylib",
                 "DESHADER_COMMANDS_WS": "8082",
@@ -195,15 +195,15 @@
         {
             "type": "cppvsdbg",
             "request": "launch",
-            "name": "Windows - GLFW",
-            "target": "${workspaceRoot}\\zig-out\\bin\\deshader-examples\\glfw.exe",
+            "name": "Windows - Quad",
+            "target": "${workspaceRoot}\\zig-out\\bin\\deshader-examples\\quad.exe",
             "cwd": "${workspaceRoot}",
             "valuesFormatting": "parseText",
             "autorun": [
                 "set environment LD_PRELOAD ${workspaceRoot}/zig-out/lib/libdeshader.so"
             ],
             "env": {
-                "DESHADER_PROCESS": "glfw",
+                "DESHADER_PROCESS": "quad",
                 "DESHADER_COMMANDS_WS": "8082",
                 "DESHADER_START_SERVER": "1",
                 "DESHADER_LSP": "8083",
@@ -215,8 +215,8 @@
         {
             "type": "cppvsdbg",
             "request": "launch",
-            "program": "${workspaceRoot}/zig-out/bin/deshader-examples/glfw.exe",
-            "name": "CPPDBG - GLFW",
+            "program": "${workspaceRoot}/zig-out/bin/deshader-examples/quad.exe",
+            "name": "CPPDBG - Quad",
             "cwd": "${workspaceRoot}/zig-out/bin/",
             "environment": [
                 {
@@ -278,22 +278,22 @@
             "name": "GDB Attach",
             "type": "gdb",
             "request": "attach",
-            "executable": "${workspaceRoot}/zig-out/bin/deshader-examples/glfw.exe",
+            "executable": "${workspaceRoot}/zig-out/bin/deshader-examples/quad.exe",
             "remote": true,
             "target": "localhost:42887",
             "cwd": "${workspaceRoot}",
         },
         {
             "name": "LLDB Attach", // Use for Wine debugging
-            "type": "lldb", // Execute add-dsym zig-out/bin/deshader-glfw.pdb afterwards to get smybols
+            "type": "lldb", // Execute add-dsym zig-out/bin/deshader-quad.pdb afterwards to get smybols
             "request": "attach",
             "pid": "${command:pickMyProcess}",
         },
         {
             "type": "gdb",
             "request": "launch",
-            "name": "GDB - GLFW in C++",
-            "target": "./zig-out/bin/deshader-examples/glfw_cpp",
+            "name": "GDB - Quad in C++",
+            "target": "./zig-out/bin/deshader-examples/quad_cpp",
             "cwd": "${workspaceRoot}",
             "valuesFormatting": "parseText",
             "preLaunchTask": "Build Examples",
@@ -312,12 +312,12 @@
         {
             "type": "gdb",
             "request": "launch",
-            "name": "GDB - GLFW in C++ from CMake",
-            "target": "${workspaceRoot}/build/example_glfw",
+            "name": "GDB - Quad in C++ from CMake",
+            "target": "${workspaceRoot}/build/example_quad",
             "cwd": "${workspaceRoot}",
             "autorun": [
                 "set environment LD_PRELOAD ${workspaceRoot}/build/lib/libdeshader.so",
-                "set environment DESHADER_PROCESS example_glfw"
+                "set environment DESHADER_PROCESS example_quad"
             ],
         },
         {

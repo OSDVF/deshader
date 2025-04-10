@@ -692,15 +692,15 @@ pub fn build(b: *std.Build) !void {
             .optimize = optimize,
         });
         const sub_examples = struct {
-            const glfw = "glfw";
+            const quad = "quad";
             const sdf = "sdf";
             const linked = "linked";
-            const glfw_cpp = "glfw_cpp";
+            const quad_cpp = "quad_cpp";
             const debug_commands = "debug_commands";
             const linked_cpp = "linked_cpp";
         };
         const example_options = b.addOptions();
-        example_options.addOption([]const String, "exampleNames", &.{ sub_examples.glfw, sub_examples.linked, sub_examples.linked_cpp, sub_examples.debug_commands, sub_examples.glfw_cpp });
+        example_options.addOption([]const String, "exampleNames", &.{ sub_examples.quad, sub_examples.linked, sub_examples.linked_cpp, sub_examples.debug_commands, sub_examples.quad_cpp });
         example_bootstraper.root_module.addOptions("options", example_options);
         example_bootstraper.step.dependOn(header_gen_cmd);
 
@@ -717,12 +717,11 @@ pub fn build(b: *std.Build) !void {
                 .optimize = optimize,
             });
 
-            // GLFW
+            // Full screen quad with GLFW
             const glfw_module = zig_glfw_dep.module("zig-glfw");
-            glfw_module.linkSystemLibrary("gdi32", .{});
-            const example_glfw = try SubExampleStep.create(example_bootstraper, sub_examples.glfw, "examples/" ++ sub_examples.glfw ++ ".zig", exampleModules ++ .{.{ .name = "zig_glfw", .module = glfw_module }});
+            const example_quad = try SubExampleStep.create(example_bootstraper, sub_examples.quad, "examples/" ++ sub_examples.quad ++ ".zig", exampleModules ++ .{.{ .name = "zig_glfw", .module = glfw_module }});
             try addVcpkgInstalledPaths(b, glfw_module, options.triplet, options.lib_debug);
-            example_glfw.compile.linkLibC();
+            example_quad.compile.linkLibC();
 
             const example_sdf = try SubExampleStep.create(example_bootstraper, sub_examples.sdf, "examples/" ++ sub_examples.sdf ++ ".zig", exampleModules ++ .{.{ .name = "zig_glfw", .module = glfw_module }});
             example_sdf.compile.linkLibC();
@@ -731,18 +730,19 @@ pub fn build(b: *std.Build) !void {
             const example_editor = try SubExampleStep.create(example_bootstraper, sub_examples.linked, "examples/" ++ sub_examples.linked ++ ".zig", exampleModules);
             example_editor.compile.linkLibrary(deshader_lib);
 
-            // GLFW in C++
-            const example_glfw_cpp = try SubExampleStep.create(example_bootstraper, sub_examples.glfw_cpp, "examples/" ++ sub_examples.glfw ++ ".cpp", .{});
-            example_glfw_cpp.compile.addIncludePath(.{ .cwd_relative = b.h_dir });
-            example_glfw_cpp.compile.linkLibCpp();
-            try linkGlew(example_glfw_cpp.install, options.system_glew, options.triplet, options.lib_debug);
+            // Quad in C++
+            const example_quad_cpp = try SubExampleStep.create(example_bootstraper, sub_examples.quad_cpp, "examples/" ++ sub_examples.quad ++ ".cpp", .{});
+            example_quad_cpp.compile.addIncludePath(.{ .cwd_relative = b.h_dir });
+            example_quad_cpp.compile.linkLibCpp();
+            try linkGlew(example_quad_cpp.install, options.system_glew, options.triplet, options.lib_debug);
 
             // Embed shaders into the executable
             if (targetTarget == .windows) {
-                example_glfw_cpp.compile.addWin32ResourceFile(.{ .file = b.path(b.pathJoin(&.{ "examples", "shaders.rc" })) });
-                example_glfw_cpp.compile.root_module.addCMacro("WIN32", "");
+                glfw_module.linkSystemLibrary("gdi32", .{});
+                example_quad_cpp.compile.addWin32ResourceFile(.{ .file = b.path(b.pathJoin(&.{ "examples", "shaders.rc" })) });
+                example_quad_cpp.compile.root_module.addCMacro("WIN32", "");
             } else {
-                example_glfw_cpp.compile.root_module.addCMacro("_LIBCPP_HAS_NO_WIDE_CHARACTERS", "");
+                example_quad_cpp.compile.root_module.addCMacro("_LIBCPP_HAS_NO_WIDE_CHARACTERS", "");
                 inline for (.{ "fragment.frag", "vertex.vert" }) |shader| {
                     const output = try std.fs.path.join(b.allocator, &.{ b.cache_root.path.?, "shaders", shader ++ ".o" });
                     b.cache_root.handle.access("shaders", .{}) catch try std.fs.makeDirAbsolute(std.fs.path.dirname(output).?);
@@ -767,7 +767,7 @@ pub fn build(b: *std.Build) !void {
                         .cwd_dir = dir,
                     });
                     if (result.term.Exited == 0) {
-                        example_glfw_cpp.compile.addObjectFile(.{ .cwd_relative = output });
+                        example_quad_cpp.compile.addObjectFile(.{ .cwd_relative = output });
                     } else {
                         log.err("Failed to compile shader {s}: {s}", .{ shader, result.stderr });
                     }
@@ -799,7 +799,7 @@ pub fn build(b: *std.Build) !void {
             example_debug_commands.compile.addFrameworkPath(system_framwork_path);
             try linkGlew(example_debug_commands.install, options.system_glew, options.triplet, options.lib_debug);
 
-            inline for (.{ example_glfw, example_sdf, example_glfw_cpp, example_debug_commands }) |example| {
+            inline for (.{ example_quad, example_sdf, example_quad_cpp, example_debug_commands }) |example| {
                 if (options.system_glfw)
                     example.compile.linkSystemLibrary("glfw3")
                 else {
@@ -835,7 +835,7 @@ pub fn build(b: *std.Build) !void {
         const examples_run_cmd = b.step("examples-run", "Run example with injected Deshader debugging");
         examples_run.setEnvironmentVariable("DESHADER_LIB", try std.fs.path.join(b.allocator, &.{ if (targetTarget == .windows) b.exe_dir else b.lib_dir, deshader_lib_name }));
         examples_run.setCwd(.{ .cwd_relative = b.pathJoin(&.{ b.exe_dir, "deshader-examples" }) });
-        examples_run.setEnvironmentVariable("DESHADER_PROCESS", "glfw:glfw_cpp:editor:debug_commands");
+        examples_run.setEnvironmentVariable("DESHADER_PROCESS", "quad:quad_cpp:editor:debug_commands");
         examples_run.setEnvironmentVariable((if (targetTarget == .macos) "DYLD_LIBRARY_PATH" else "LD_LIBRARY_PATH"), b.lib_dir);
         examples_run.addArg("-no-whitelist");
         examples_run.addArg(b.pathJoin(&.{ b.exe_dir, try std.mem.concat(b.allocator, u8, &.{ example_bootstraper.name, target.result.exeFileExt() }) }));
@@ -915,9 +915,9 @@ const SubExampleStep = struct {
         var arena = std.heap.ArenaAllocator.init(b.allocator);
         defer arena.deinit();
         const n_paths = try std.zig.system.NativePaths.detect(arena.allocator(), compile.rootModuleTarget());
-        for (n_paths.lib_dirs.items) |lib_dir| {
+        for (n_paths.lib_dirs.items) |lib_dir| if (pathExists(lib_dir)) |_| {
             subExe.addLibraryPath(.{ .cwd_relative = lib_dir });
-        }
+        };
         for (n_paths.include_dirs.items) |include_dir| {
             subExe.addSystemIncludePath(.{ .cwd_relative = include_dir });
         }
@@ -970,7 +970,9 @@ fn addVcpkgInstalledPaths(b: *std.Build, c: anytype, triplet: String, debug_lib:
     const debug = if (debug_lib) "debug" else "";
     c.addIncludePath(b.path(b.pathJoin(&.{ "build", "vcpkg_installed", triplet, "debug", "include" })));
     c.addIncludePath(b.path(b.pathJoin(&.{ "build", "vcpkg_installed", triplet, "include" })));
-    c.addLibraryPath(b.path(b.pathJoin(&.{ "build", "vcpkg_installed", triplet, debug, "bin" })));
+    if ((if (@hasDecl(@TypeOf(c.*), "rootModuleTarget")) c.rootModuleTarget() else if (c.resolved_target) |r| r.result else builtin.target).os.tag == .windows) {
+        c.addLibraryPath(b.path(b.pathJoin(&.{ "build", "vcpkg_installed", triplet, debug, "bin" })));
+    }
     c.addLibraryPath(b.path(b.pathJoin(&.{ "build", "vcpkg_installed", triplet, debug, "lib" })));
 }
 

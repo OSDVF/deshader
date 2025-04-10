@@ -85,7 +85,7 @@ GLFWwindow* createWindow() {
 }
 
 int main(int argc, char** argv) {
-    std::cout << "Showing GLFW window from C++" << std::endl;
+    std::cout << "Showing Quad window from C++" << std::endl;
 
     if (!glfwInit()) {
         std::cerr << "Failed to initialize GLFW" << std::endl;

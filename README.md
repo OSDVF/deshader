@@ -90,6 +90,7 @@ Deshader consists of several (mostly third party; mostly forked) components that
 - [Zig 0.14](https://ziglang.org/) (MIT)
 - Bun 1.2.8 [Install](https://github.com/oven-sh/bun#install) (MIT)
 - [VCPKG](https://vcpkg.io) (MIT)
+    - Make sure you are [using the latest version](https://github.com/microsoft/vcpkg/issues/15417)
     - VCPKG may download another dependencies, such as `pwsh` on Windows, `cmake`... 
 - C libraries
     - Linux
@@ -206,9 +207,9 @@ Output files will be placed at `./zig-out/`:
         - `generate_stubs`
     - `deshader-examples-all`
     - `deshader-examples/`
-        - `glfw`
+        - `quad`
         - `editor`
-        - `glfw_cpp`
+        - `quad_cpp`
         - `editor_cpp`
 - `lib/` (also `bin/` for Windows)
     - (lib)deshader.[a|so|dll|lib|dylib]
