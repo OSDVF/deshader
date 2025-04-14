@@ -107,9 +107,9 @@ fn waitUnwrappedWindows(self: *std.process.Child) !void {
     self.term = @as(std.process.Child.SpawnError!std.process.Child.Term, x: {
         var exit_code: std.os.windows.DWORD = undefined;
         if (std.os.windows.kernel32.GetExitCodeProcess(self.id, &exit_code) == 0) {
-            break :x std.process.Child.std.process.Child.Term{ .Unknown = 0 };
+            break :x std.process.Child.Term{ .Unknown = 0 };
         } else {
-            break :x std.process.Child.std.process.Child.Term{ .Exited = @as(u8, @truncate(exit_code)) };
+            break :x std.process.Child.Term{ .Exited = @as(u8, @truncate(exit_code)) };
         }
     });
 

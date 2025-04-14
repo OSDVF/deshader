@@ -6,7 +6,7 @@
 	url = https://github.com/OSDVF/positron.git
 [submodule "libs/ctregex"]
 	path = libs/ctregex
-	url = https://github.com/alexnask/ctregex.zig.git
+	url = https://github.com/OSDVF/ctregex.zig.git
 [submodule "libs/zig-header-gen"]
 	path = libs/zig-header-gen
 	url = https://github.com/OSDVF/zig-header-gen.git

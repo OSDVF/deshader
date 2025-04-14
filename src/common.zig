@@ -276,7 +276,7 @@ pub fn LoadLibraryEx(path_or_name: String, only_system: bool) !std.os.windows.HM
 pub fn getFullPath(alloc: std.mem.Allocator, path: String) !ZString {
     if (builtin.os.tag == .windows) {
         const path16 = try std.os.windows.sliceToPrefixedFileW(null, path);
-        var buffer: [std.fs.max_path_bytes]u16 = undefined;
+        var buffer: [std.fs.max_path_bytes:0]u16 = undefined;
         const length = std.os.windows.kernel32.GetFullPathNameW(path16.span().ptr, std.fs.max_path_bytes, &buffer, null);
         if (length == 0) {
             return std.os.windows.unexpectedError(std.os.windows.kernel32.GetLastError());

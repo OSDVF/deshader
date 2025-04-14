@@ -428,12 +428,18 @@ pub const MutliListener = struct {
             }
             var iterator = std.mem.splitScalar(u8, message, 0);
             var request = iterator.first();
-            if (request.len == 0) {
+            if (request.len == 0 or blk: {
+                if (request[request.len - 1] == '\n') {
+                    request = request[0 .. request.len - 1];
+                    if (request.len == 0) {
+                        break :blk true;
+                    } else if (request[request.len - 1] == '\r') {
+                        request = request[0 .. request.len - 1];
+                    }
+                }
+                break :blk request.len == 0;
+            }) {
                 try self.conn.writeText("400: Bad request\n");
-                return;
-            }
-            if (request[request.len - 1] == '\n') {
-                request = request[0 .. request.len - 1];
             }
             const body = iterator.rest();
 

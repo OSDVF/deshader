@@ -56,36 +56,6 @@
             },
         },
         {
-            "name": "CPPDBG - Launcher",
-            "request": "launch",
-            "type": "cppvsdbg",
-            "program": "${workspaceRoot}/zig-out/bin/deshader-run",
-            "args": [
-                "-y",
-                "zig-out/bin/deshader-examples/quad.exe"
-            ],
-            "preLaunchTask": "Build Launcher",
-            "cwd": "${workspaceRoot}"
-        },
-        {
-            "name": "CPPDBG - Launcher GUI",
-            "request": "launch",
-            "type": "cppvsdbg",
-            "program": "${workspaceRoot}/zig-out/bin/deshader-run",
-    
-            "preLaunchTask": "Build Launcher",
-            "cwd": "${workspaceRoot}"
-        },
-        {
-            "name": "CPPDBG - Examples-All",
-            "request": "launch",
-            "type": "cppvsdbg",
-            "program": "${workspaceRoot}/zig-out/bin/deshader-examples-all",
-    
-            "preLaunchTask": "Build Examples",
-            "cwd": "${workspaceRoot}/zig-out/bin/"
-        },
-        {
             "name": "GDB - Generate Stubs",
             "type": "gdb",
             "request": "launch",
@@ -195,33 +165,13 @@
         {
             "type": "cppvsdbg",
             "request": "launch",
-            "name": "Windows - Quad",
-            "target": "${workspaceRoot}\\zig-out\\bin\\deshader-examples\\quad.exe",
-            "cwd": "${workspaceRoot}",
-            "valuesFormatting": "parseText",
-            "autorun": [
-                "set environment LD_PRELOAD ${workspaceRoot}/zig-out/lib/libdeshader.so"
-            ],
-            "env": {
-                "DESHADER_PROCESS": "quad",
-                "DESHADER_COMMANDS_WS": "8082",
-                "DESHADER_START_SERVER": "1",
-                "DESHADER_LSP": "8083",
-                "POWER_SAVE": "100",
-                "__NV_PRIME_RENDER_OFFLOAD": "0",
-                "__GLX_VENDOR_LIBRARY_NAME": "mesa"
-            }
-        },
-        {
-            "type": "cppvsdbg",
-            "request": "launch",
             "program": "${workspaceRoot}/zig-out/bin/deshader-examples/quad.exe",
             "name": "CPPDBG - Quad",
             "cwd": "${workspaceRoot}/zig-out/bin/",
             "environment": [
                 {
-                    "name": "DESHADER_GUI",
-                    "value": "1"
+                    "name": "POWER_SAVE",
+                    "value": "100"
                 }
             ]
         },
@@ -245,6 +195,36 @@
             "name": "CPPDBG - Debug Commands",
             "cwd": "${workspaceRoot}/zig-out/bin/deshader-examples/",
             "preLaunchTask": "Build Examples",
+        },
+        {
+            "name": "CPPDBG - Launcher",
+            "request": "launch",
+            "type": "cppvsdbg",
+            "program": "${workspaceRoot}/zig-out/bin/deshader-run",
+            "args": [
+                "-y",
+                "zig-out/bin/deshader-examples/quad.exe"
+            ],
+            "preLaunchTask": "Build Launcher",
+            "cwd": "${workspaceRoot}"
+        },
+        {
+            "name": "CPPDBG - Launcher GUI",
+            "request": "launch",
+            "type": "cppvsdbg",
+            "program": "${workspaceRoot}/zig-out/bin/deshader-run",
+    
+            "preLaunchTask": "Build Launcher",
+            "cwd": "${workspaceRoot}"
+        },
+        {
+            "name": "CPPDBG - Examples-All",
+            "request": "launch",
+            "type": "cppvsdbg",
+            "program": "${workspaceRoot}/zig-out/bin/deshader-examples-all",
+    
+            "preLaunchTask": "Build Examples",
+            "cwd": "${workspaceRoot}/zig-out/bin/"
         },
         {
             "type": "gdb",
