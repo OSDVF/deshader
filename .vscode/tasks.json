@@ -185,6 +185,7 @@
                 "-freference-trace",
                 "-DlogInterception",
                 "-DmemoryFrames=15",
+                "-Ddependencies=false",
                 "--summary",
                 "none"
             ],

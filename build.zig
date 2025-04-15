@@ -98,6 +98,7 @@ pub fn build(b: *std.Build) !void {
     options = opts.Options{
         .custom_library = b.option([]const String, "customLibrary", "Names of additional libraries to intercept"),
         .editor = b.option(bool, "editor", "Include VSCode editor in Deshader Launcher (default yes)") orelse true,
+        .dependencies = b.option(bool, "dependencies", "Build externally-managed dependencies (libs, editor, extension...) (default yes)") orelse true,
         .ignore_missing = b.option(bool, "ignoreMissing", "Ignore missing VK and GL libraries. GLX, EGL and VK will be required by default") orelse false,
         .include = b.option(String, "include", "Path to directory with additional headers to include"),
         .lib_assert = b.option(bool, "libAssert", "Include assertions in VCPKG libraries (implicit for debug and release safe)") orelse (optimize == .Debug or optimize == .ReleaseSafe),
@@ -196,7 +197,7 @@ pub fn build(b: *std.Build) !void {
     });
 
     dependencies_step = try DependenciesStep.init(b, "dependencies", target.result, env);
-    try dependencies_step.vcpkg(options.triplet);
+    if (options.dependencies) try dependencies_step.vcpkg(options.triplet);
 
     const deshader_lib_name = try std.mem.concat(b.allocator, u8, &.{ if (targetTarget == .windows) "" else "lib", deshader_lib.name, targetTarget.dynamicLibSuffix() });
     const deshader_lib_cmd = b.step("deshader", "Install deshader library");
@@ -635,7 +636,7 @@ pub fn build(b: *std.Build) !void {
     }
 
     if (options.editor) {
-        try dependencies_step.editor(); //TODO do not always do everything
+        if (options.dependencies) try dependencies_step.editor(); //TODO do not always do everything
         PositronSdk.linkPositron(launcher_exe, null, options.linkage == .static);
         launcher_exe.linkLibCpp();
         _ = try linkWolfSSL(serve, launcher_install, !options.system_wolfssl, options.triplet, options.lib_debug);

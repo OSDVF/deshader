@@ -21,6 +21,7 @@
 //! - Runtime Backend ([`backend/gl.zig`](../backends/gl.zig))
 
 const std = @import("std");
+const builtin = @import("builtin");
 const analyzer = @import("glsl_analyzer");
 const log = @import("common").log;
 const decls = @import("../declarations/shaders.zig");
@@ -132,7 +133,7 @@ pub const Result = struct {
     /// Actually it can be modified by the platform specific code (e.g. to set the selected thread location)
     pub const Channels = struct {
         /// Filled with storages created by the individual instruments
-        out: std.AutoArrayHashMapUnmanaged(u64, OutputStorage) = .empty,
+        out: std.AutoArrayHashMapUnmanaged(u64, *OutputStorage) = .empty,
         /// Filled with control variables created by the individual instruments (e.g. desired step)
         controls: std.AutoArrayHashMapUnmanaged(u64, *anyopaque) = .empty,
         /// Provided for storing `result` variables from the platform backend instrument clients (e.g. reached step)
@@ -147,6 +148,9 @@ pub const Result = struct {
         diagnostics: std.ArrayListUnmanaged(analyzer.parse.Diagnostic) = .{},
 
         pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+            for (self.out.values()) |v| {
+                allocator.destroy(v);
+            }
             self.out.deinit(allocator);
             self.controls.deinit(allocator);
             for (self.diagnostics.items) |d| {
@@ -605,14 +609,16 @@ pub fn addStorage(
     const result: *OutputStorage = switch (value.location) {
         .interface => blk: {
             const local = try self.channels.out.getOrPut(self.config.allocator, id);
+            local.value_ptr.* = try self.config.allocator.create(OutputStorage);
             std.debug.assert(!local.found_existing);
-            break :blk local.value_ptr;
+            break :blk local.value_ptr.*;
         },
         .buffer => blk: {
             const global = try self.config.program.out.getOrPut(self.config.allocator, id);
             if (!global.found_existing) {
                 const local = try self.channels.out.getOrPut(self.config.allocator, id);
-                global.value_ptr.* = local.value_ptr;
+                global.value_ptr.* = try self.config.allocator.create(OutputStorage);
+                local.value_ptr.* = global.value_ptr.*;
             }
             break :blk global.value_ptr.*;
         },
@@ -694,6 +700,8 @@ pub const TraverseContext = struct {
     function: ?Function,
     /// Will be either the root `Processor` Inserts array or the `wrapped_expr` Inserts array
     inserts: Inserts,
+    /// A flag to set when an instrument wants to make changes to the source code that corresponds to this contexts
+    instrumented: bool = false,
     /// The nearest parent block node
     block: NodeId,
     /// The nearest parent statement node
@@ -719,6 +727,7 @@ pub const TraverseContext = struct {
 
     /// The returned `Context` has a standalone `inserts` field, which must be deinited using the `Context.inExpressionDeinit()` method.
     pub fn inExpression(self: @This(), allocator: std.mem.Allocator) @This() {
+        std.debug.assert(self.statement != null); // Expression nodes must be in a statement context
         var wrapped_context = TraverseContext{
             .scope = self.scope,
             .inserts = .{},
@@ -772,14 +781,14 @@ pub fn processExpression(self: *@This(), node: NodeId, context: *TraverseContext
 
     var result_var: ?u64 = null;
 
-    if (context.statement) |ss| {
+    if (wrapped_ctx.instrumented) if (context.statement) |ss| {
         const temp_rand = self.rand.next();
         const parent_span = tree.nodeSpan(tree.parent(node).?);
         // insert the wrapped code before the original statement. Assign its result into a temporary var
         try self.insertEnd(
             if (wrapped_type) |w_t|
                 try self.print(
-                    "{s} {s}{x}={s};",
+                    "{s} {s}{x:8}={s};",
                     .{ w_t, templates.temp, temp_rand, wrapped_str },
                 )
             else
@@ -790,22 +799,26 @@ pub fn processExpression(self: *@This(), node: NodeId, context: *TraverseContext
 
         // replace the expression with the temp result variable
         try self.insertEnd(
-            try self.print("{s}{x}", .{ templates.temp, temp_rand }),
+            try self.print("{s}{x:8}", .{ templates.temp, temp_rand }),
             parent_span.start,
             parent_span.length(),
         );
 
         result_var = temp_rand;
-    }
+    } else try self.addDiagnostic(Error.InvalidTree, @src(), tree.nodeSpan(node), @errorReturnTrace());
 
     return wrapped_type;
 }
 
-fn processAllChildren(self: *@This(), node: NodeId, context: *TraverseContext) FnErrorSet(@TypeOf(processNode))!void {
+/// Returns the result of the last child processed
+fn processAllChildren(self: *@This(), node: NodeId, context: *TraverseContext) FnErrorSet(@TypeOf(processNode))!?String {
+    std.debug.assert(self.parsed.tree.tag(node).isSyntax());
     const children = self.parsed.tree.children(node);
+    var result: ?String = null;
     for (children.start..children.end) |child| {
-        _ = try self.processNode(@intCast(child), context);
+        result = try self.processNode(@intCast(child), context);
     }
+    return result;
 }
 
 fn processInstruments(self: *@This(), node: NodeId, context: *TraverseContext) !void {
@@ -814,14 +827,24 @@ fn processInstruments(self: *@This(), node: NodeId, context: *TraverseContext) !
             try self.addDiagnostic(err, @src(), self.parsed.tree.nodeSpan(node), @errorReturnTrace());
         };
     }
-    if (self.config.instruments_scoped.getPtr(self.parsed.tree.tag(node))) |scoped| {
+    const tag = self.parsed.tree.tag(node);
+    if (self.config.instruments_scoped.getPtr(tag)) |scoped| {
         for (scoped.items) |instrument| {
+            log.debug("Instrumenting {s} at {d} by {x}", .{ @tagName(tag), self.parsed.tree.nodeSpanExtreme(node, .start), instrument.id });
             if (instrument.instrument) |i| i(self, node, context) catch |err| {
                 try self.addDiagnostic(err, @src(), self.parsed.tree.nodeSpan(node), @errorReturnTrace());
             };
         }
     }
 }
+
+const IfBranch = analyzer.syntax.Extractor(.if_branch, struct {
+    /// maybe else-if
+    keyword_else: analyzer.syntax.Token(.keyword_else),
+    keyword_if: analyzer.syntax.Token(.keyword_if),
+    condition_list: analyzer.syntax.ConditionList,
+    block: analyzer.syntax.Block,
+});
 
 /// Process a tree node recursively. Depth-first traversal.
 ///
@@ -830,46 +853,57 @@ fn processNode(self: *@This(), node: NodeId, context: *TraverseContext) !?String
     const tree = self.parsed.tree;
     const source = self.config.source;
     switch (tree.tag(node)) { // TODO serialize the recursive traversal
-        .if_branch, .else_branch => |tag| {
-            if (context.statement == null) {
-                // if(a(ahoj) == 1) {
-                //
-                // } else if(a(ahoj) == 2) {
-                //  // we must wrap the elseif
-                // }
+        .if_branch => {
+            // if(a(ahoj) == 1) {
+            //
+            // } else if(a(ahoj) == 2) {
+            //  // we must wrap the elseif
+            // }
 
-                const cond = tree.nodeSpan(node);
-                const kw_end_pos: u32 = cond.start + @as(u32, if (tag == .if_branch) 2 else 4); // e l s e
-                try self.insertStart("{", kw_end_pos);
-                const close_pos = cond.end;
-                try self.insertEnd("}", close_pos, 0);
-                context.statement = .{
-                    .start = kw_end_pos,
-                    .end = close_pos,
-                };
+            const cond = tree.nodeSpan(node);
+            const siblings = tree.children(tree.parent(node).?);
+            var close_pos = cond.end;
+            for (node..siblings.end) |sibling| {
+                const s_tag = tree.tag(sibling);
+                if (s_tag == .if_branch or s_tag == .else_branch) {
+                    close_pos = tree.nodeSpanExtreme(@intCast(sibling), .end);
+                }
             }
+            const is_else_if = tree.tag(tree.children(node).start) == .keyword_else;
+            const after_else_kw: u32 = cond.start + @as(u32, if (is_else_if) 4 else 0); // e l s e
+            try self.insertStart("{", after_else_kw);
+            try self.insertEnd("}", close_pos, 0);
+            const previous = context.statement;
+            context.statement = .{ // now we are in a new statement context
+                .start = after_else_kw,
+                .end = close_pos,
+            };
+            const if_branch = IfBranch.tryExtract(tree, node) orelse return Error.InvalidTree;
+            // Process the condition list
+            _ = try self.processAllChildren(if_branch.get(.condition_list, tree).?.node, context);
+            // Process the block
+            _ = try self.processAllChildren(if_branch.get(.block, tree).?.node, context);
+            context.statement = previous;
         },
         .statement => {
-            if (context.statement == null) {
-                const children = tree.children(node);
-                switch (tree.tag(children.start)) {
-                    .keyword_for, .keyword_while, .keyword_do => {
-                        for (children.start + 1..children.end) |child| {
-                            if (tree.tag(child) == .block) {
-                                const s = tree.nodeSpan(@intCast(child));
-                                context.statement = s;
-                                // wrap in parenthesis
-                                try self.insertStart("{", s.start);
-                                try self.insertEnd("}", s.end, 0);
-                            }
+            const previous = context.statement;
+            const children = tree.children(node);
+            switch (tree.tag(children.start)) {
+                .keyword_for, .keyword_while, .keyword_do => {
+                    for (children.start + 1..children.end) |child| {
+                        if (tree.tag(child) == .block) {
+                            const s = tree.nodeSpan(@intCast(child));
+                            context.statement = s;
+                            // wrap in parenthesis
+                            try self.insertStart("{", s.start);
+                            try self.insertEnd("}", s.end, 0);
                         }
-                    },
-                    else => context.statement = tree.nodeSpan(node),
-                }
-            } else {
-                _ = try self.addDiagnostic(Error.InvalidTree, @src(), tree.nodeSpan(node), null);
+                    }
+                },
+                else => context.statement = tree.nodeSpan(node),
             }
-            try self.processAllChildren(node, context);
+            _ = try self.processAllChildren(node, context);
+            context.statement = previous; // Pop out from the statement context
         },
         .keyword_for => {
             if (ForLoop.tryExtract(tree, node)) |for_loop| {
@@ -882,6 +916,13 @@ fn processNode(self: *@This(), node: NodeId, context: *TraverseContext) !?String
                 }
                 _ = try self.processNode(for_loop.get(.block, tree).?.node, &nested);
             }
+        },
+        .expression_sequence => {
+            var in_expr = context.inExpression(self.config.allocator);
+            defer in_expr.inExpressionDeinit(self.config.allocator);
+
+            try self.processInstruments(node, &in_expr);
+            return try self.processAllChildren(node, &in_expr);
         },
         .arguments_list => {
             if (analyzer.syntax.ArgumentsList.tryExtract(tree, node)) |args| {
@@ -934,13 +975,14 @@ fn processNode(self: *@This(), node: NodeId, context: *TraverseContext) !?String
                         }
                     }
                 }
+                try self.processInstruments(node, context);
                 return result_type;
             }
         },
         .block => {
             var nested = try context.nested(self.config.allocator);
             defer nested.nestedDeinit(self.config.allocator);
-            try self.processAllChildren(node, &nested);
+            _ = try self.processAllChildren(node, &nested);
         },
         .function_declaration => {
             context.function = try extractFunction(tree, node, source);
@@ -952,17 +994,22 @@ fn processNode(self: *@This(), node: NodeId, context: *TraverseContext) !?String
                     .variable => |decl| { // Process all the variable initializations as "wrapped expressions"
                         var it: analyzer.syntax.Variables.Iterator = decl.get(.variables, tree).?.iterator();
                         while (it.next(tree)) |init| {
+                            const previous = context.statement;
+                            if (previous == null) { // Top-level declarations can stand alone without statement. TODO process them even here?
+                                context.statement = tree.nodeSpan(node);
+                            }
                             var wrapped_ctx = context.inExpression(self.config.allocator);
                             defer wrapped_ctx.inExpressionDeinit(self.config.allocator);
 
                             _ = try self.processNode(init.node, &wrapped_ctx);
+                            context.statement = previous;
                         }
                     },
-                    else => {},
+                    else => {}, // functions are filled in the pre-pass
                 }
             }
         },
-        else => |tag| if (tag.isSyntax()) try self.processAllChildren(node, context),
+        else => |tag| _ = if (tag.isSyntax()) try self.processAllChildren(node, context),
     }
     try self.processInstruments(node, context);
     return null;
@@ -1122,6 +1169,20 @@ pub const Inserts = struct {
             entry.key.inserts.append(new_lnode);
             entry.set(new_node);
         }
+        if (builtin.mode == .Debug) if (entry.node) |node| {
+            if (node.prev()) |prev| {
+                if (prev.key.offset + prev.key.consume_next > offset) {
+                    log.warn("Inserting '{s}' at {d} into overlapping '{s}' at {d} (consumes {d}, overlap by {d})", .{
+                        string,
+                        offset,
+                        prev.key.inserts.last.?.data.string,
+                        prev.key.offset,
+                        prev.key.consume_next,
+                        prev.key.offset + prev.key.consume_next - offset,
+                    });
+                }
+            }
+        };
     }
 
     pub fn applyTo(self: *@This(), source: String, allocator: std.mem.Allocator) !?std.ArrayListUnmanaged(u8) {
@@ -1151,10 +1212,20 @@ pub const Inserts = struct {
                             try parts.appendSlice(allocator, source[prev.key.offset + prev.key.consume_next - offset ..]);
                             break;
                         }
-                        break :blk prev.key.offset + prev.key.consume_next;
+                        const prev_combined = prev.key.offset + prev.key.consume_next;
+                        if (prev_combined > node.key.offset) {
+                            log.warn("Previous insert '{s}' at {d} consumes {d} and overlaps by {d} this: '{s}'", .{
+                                prev.key.inserts.last.?.data.string,
+                                prev.key.offset,
+                                prev.key.consume_next,
+                                prev_combined - node.key.offset,
+                                node.key.inserts.first.?.data.string,
+                            });
+                        }
+                        break :blk prev_combined;
                     } else 0;
 
-                try parts.appendSlice(allocator, source[prev_offset - offset .. node.key.offset - offset]);
+                try parts.appendSlice(allocator, source[@min(prev_offset, node.key.offset) - offset .. node.key.offset - offset]);
 
                 var inserts_iter = inserts.first;
                 while (inserts_iter) |inserts_node| : (inserts_iter = inserts_node.next) { //for each part to insert at the same offset

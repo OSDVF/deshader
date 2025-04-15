@@ -479,6 +479,7 @@ pub const Step = struct {
 
                 // generate: break the execution after returning from a function if something was hit
                 _ = try addGuardsRecursive(processor, context_func);
+                context.instrumented = true;
             }
         }
     }
@@ -606,6 +607,9 @@ pub const StackTrace = struct {
         const tree = processor.parsed.tree;
         if (analyzer.syntax.Call.tryExtract(tree, node)) |call_ex| {
             const name = call_ex.get(.identifier, tree).?.text(processor.config.source, tree);
+            if (std.mem.eql(u8, name, Step.step_identifier)) {
+                return;
+            }
 
             const func = context.scope.functions.get(name) orelse return Error.FunctionNotInScope;
             // Before a user function is called, insert its id into the STACK_TRACE.
@@ -630,6 +634,7 @@ pub const StackTrace = struct {
                 tree.nodeSpanExtreme(node, .end),
                 0,
             );
+            context.instrumented = true;
         }
     }
 

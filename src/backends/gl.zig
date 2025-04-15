@@ -674,7 +674,7 @@ fn prepareStorage(instrumentation: *shaders.InstrumentationResult, snapshot: Sna
         //
         // Prepare storages
         //
-        for (instr_state.channels.out.keys(), instr_state.channels.out.values()) |key, *stor| {
+        for (instr_state.channels.out.keys(), instr_state.channels.out.values()) |key, stor| {
             const readback = try c_state.readbacks.getOrPut(common.allocator, key);
             if (!readback.found_existing) {
                 readback.value_ptr.data = try common.allocator.alloc(u8, stor.size);
@@ -1380,6 +1380,13 @@ fn defaultCompileShader(source: decls.SourcesPayload, instrumented: CString, len
             }
         }
         log.info("Shader {d} at path '{?s}' info:\n{s}", .{ shader, paths, info_log });
+        if (length > 0) {
+            log.debug("Shader {d} instrumented source: {s}", .{ shader, instrumented[0..@intCast(length)] });
+        }
+        for (0..source.count) |i| {
+            const s = source.sources.?[i];
+            log.debug("Shader {d} original source {d}: {s}", .{ shader, i, s[0..if (source.lengths) |l| l[i] else std.mem.len(s)] });
+        }
         var success: gl.int = undefined;
         gl.GetShaderiv(shader, gl.COMPILE_STATUS, &success);
         if (success == 0) {

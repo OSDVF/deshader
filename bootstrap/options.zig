@@ -3,6 +3,7 @@ pub const Level = enum { err, warn, info, debug, default }; //cannot use std.log
 
 pub const Options = struct {
     custom_library: ?[]const []const u8,
+    dependencies: bool,
     editor: bool,
     ignore_missing: bool,
     include: ?[]const u8,
