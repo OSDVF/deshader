@@ -593,17 +593,17 @@ const StoragePreference = enum { Buffer, Interface, PreferBuffer, PreferInterfac
 pub fn addStorage(
     self: *@This(),
     id: u64,
-    size: usize,
     preference: StoragePreference,
     format: OutputStorage.Location.Format,
     fit_into_component: ?OutputStorage.Location,
     component: ?usize,
 ) !*OutputStorage {
     const value = try switch (preference) {
-        .Buffer => OutputStorage.nextBuffer(&self.config),
+        .Buffer => if (self.config.program.out.get(id)) |existing| return existing else OutputStorage.nextBuffer(&self.config),
+        .PreferBuffer => if (self.config.program.out.get(id)) |existing| return existing else OutputStorage.nextPreferBuffer(&self.config, format, fit_into_component, component),
+
         .Interface => OutputStorage.nextInterface(&self.config, format, fit_into_component, component),
-        .PreferBuffer => OutputStorage.nextPreferBuffer(&self.config, format, fit_into_component, component),
-        .PreferInterface => OutputStorage.nextPreferInterface(&self.config, format, fit_into_component, component),
+        .PreferInterface => OutputStorage.nextInterface(&self.config, format, fit_into_component, component) catch if (self.config.program.out.get(id)) |existing| return existing else OutputStorage.nextBuffer(&self.config),
     };
 
     const result: *OutputStorage = switch (value.location) {
@@ -624,7 +624,6 @@ pub fn addStorage(
         },
     };
     result.* = value;
-    result.size = size;
     return result;
 }
 pub fn VarResult(comptime T: type) type {
@@ -1314,16 +1313,6 @@ pub const OutputStorage = struct {
             }
         }
         return Error.OutOfStorage;
-    }
-
-    /// Does not copy name
-    fn nextPreferInterface(
-        config: *Processor.Config,
-        format: Location.Format,
-        fit_into: ?OutputStorage.Location,
-        component: ?usize,
-    ) !OutputStorage {
-        return nextInterface(config, format, fit_into, component) catch nextBuffer(config);
     }
 
     /// Does not copy name

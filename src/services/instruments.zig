@@ -77,7 +77,9 @@ pub const Step = struct {
     const was_hit = Processor.templates.prefix ++ "global_was_hit";
     const step_counter = Processor.templates.prefix ++ "step_counter";
     const local_was_hit = Processor.templates.prefix ++ "was_hit";
-    pub const sync_storage = Processor.templates.prefix ++ "global_sync";
+    /// One uint width buffer. Must be initialized to zero.
+    /// Should contain the first thread ID that did break the execution.
+    const sync_storage = Processor.templates.prefix ++ "global_sync";
 
     pub const desired_bp = Processor.templates.prefix ++ "desired_bp";
     pub const desired_step = Processor.templates.prefix ++ "desired_step";
@@ -190,10 +192,14 @@ pub const Step = struct {
             .{desired_step} ++ cond_args ++ .{ name, bufferIndexer(processor, "0"), step_id, name, bufferIndexer(processor, "1"), local_was_hit } ++ ret_args ++ args);
     }
 
-    /// Inserts a guard to break the function `func` if a step or breakpoint was hit already. Should be inserted after a call to any user function.s
+    /// Inserts a guard to break the function `func` if a step or breakpoint was hit already. Should be inserted after a call to any user function.
     fn guard(processor: *Processor, is_void: bool, func: Processor.Processor.TraverseContext.Function, pos: usize) !void {
-        try processor.insertEnd(try processor.print(
-            "if(" ++ local_was_hit ++ ")return {s}{s};",
+        try processor.insertEndFree(try processor.print(
+            "if(" ++ local_was_hit ++ ") {{" ++
+                sync_storage ++ " = " ++ Processor.templates.global_thread_id ++
+                \\ return {s}{s};
+                \\}}
+            ,
             if (is_void) .{ "", "" } else .{ func.return_type, "(0)" }, //TODO in ESSL struct must be initialized
         ), pos, 0);
     }
@@ -350,13 +356,17 @@ pub const Step = struct {
     };
 
     pub fn constructors(processor: *Processor, main: Processor.NodeId) anyerror!void {
+        const body = processor.parsed.tree.nodeSpanExtreme(main, .start) + 1;
+
         const step_storage = StepStorageName{ .processor = processor };
-        try processor.insertStart(try processor.print("{}{s}=0u;{}{s}=0u;\n", .{
+        try processor.insertStartFree(try processor.print("{}{s}=0u;{}{s}=0u;\n", .{
             step_storage,
             bufferIndexer(processor, "0"),
             step_storage,
             bufferIndexer(processor, "1"),
-        }), processor.parsed.tree.nodeSpanExtreme(main, .start) + 1);
+        }), body);
+        // Insert a check if any previous shader stage did not break already
+        try processor.insertStart("if (" ++ sync_storage ++ " != 0) return;", body);
     }
 
     /// Creates a buffer for outputting the index of breakpoint which each thread has hit
@@ -364,15 +374,16 @@ pub const Step = struct {
     pub fn setup(processor: *Processor) anyerror!void {
         const step_storage = try processor.addStorage(
             id,
-            processor.channels.totalThreadsCount() * 2,
             .PreferBuffer,
             .@"2U32",
             null,
             null,
         );
+        step_storage.size = processor.threads_total * 2;
 
         if (processor.config.support.buffers) {
-            const sync = try processor.addStorage(sync_id, 1, .Buffer, .@"1U32", null, null);
+            const sync = try processor.addStorage(sync_id, .Buffer, .@"1U32", null, null);
+            sync.size = 1;
             // Declare just the hit synchronisation variable and rely on atomic operations https://stackoverflow.com/questions/56340333/glsl-about-coherent-qualifier
             try processor.insertStart(try processor.print(
                 \\layout(std{d}, binding={d}) buffer DeshaderSync {{
@@ -390,14 +401,13 @@ pub const Step = struct {
                 // Declare the global hit storage
                 try processor.insertStart(try processor.print(
                     \\layout(std{d}, binding={d}) buffer DeshaderStepping {{
-                ++ "uvec4 " ++ hit_storage ++ "[{d}];\n" ++
+                ++ "uvec4 " ++ hit_storage ++ "[];\n" ++
                     \\}};
                     \\
                 ++ "uint " ++ step_counter ++ "=0u;\n" //
                 ++ "bool " ++ local_was_hit ++ "=false;\n", .{
                     @as(u16, if (processor.parsed.version >= 430) 430 else 140), //stdXXX
                     buffer.binding,
-                    processor.threads_total / 2,
                 }), processor.after_version);
             },
             .interface => |location| {
@@ -584,12 +594,12 @@ pub const StackTrace = struct {
         const max: usize = (try maxEntries(&processor.channels, processor.config.allocator)).*;
         const stack_trace = try processor.addStorage(
             id,
-            max * @sizeOf(StackTraceT),
             .PreferBuffer,
             .@"4U32",
             null,
             null,
         );
+        stack_trace.size = @max(stack_trace.size, max * @sizeOf(StackTraceT), processor.threads_total * @sizeOf(StackTraceT));
 
         try processor.insertStart(try processor.print(
             \\layout(binding={d}) restrict writeonly buffer DeshaderStackTrace {{
@@ -691,12 +701,12 @@ pub const Log = struct {
         if (processor.config.support.buffers) {
             const storage = try processor.addStorage(
                 id,
-                (try maxLength(&processor.channels, processor.config.allocator)).*,
                 .PreferBuffer,
                 .@"4U32",
                 null,
                 null,
             );
+            storage.size = @max(storage.size, (try maxLength(&processor.channels, processor.config.allocator)).*, processor.threads_total);
             try processor.insertStart(try processor.print(
                 \\layout(binding={d}) restrict writeonly buffer DeshaderLog {{
             ++ "uint " ++ cursor_name ++ ";\n" //
@@ -732,7 +742,6 @@ pub const Variables = struct {
         const size = try maxSize(&processor.channels, processor.config.allocator).*;
         const storage = try processor.addStorage(
             id,
-            0,
             .PreferBuffer,
             .@"4U32",
             if (processor.parsed.version >= 440 and processor.config.shader_stage.isFragment()) if (processor.channels.out.get(Step.id)) |s| s.location else null else null,
@@ -769,7 +778,7 @@ pub const Variables = struct {
                     try processor.insertStart(try processor.print("layout(location={d}) out uvec4 " ++ storage_name ++ ";\n", .{location.location}), processor.last_interface_decl);
                 }
 
-                const interface_size: isize = processor.channels.totalThreadsCount() * 4 * @sizeOf(u32);
+                const interface_size: isize = processor.threads_total * 4 * @sizeOf(u32);
                 const remainig: isize = size - interface_size;
                 if (remainig > 0) {
                     storage.size = remainig;
@@ -778,7 +787,6 @@ pub const Variables = struct {
                         defer i += 1;
                         const stor = try processor.addStorage(
                             another + i,
-                            0,
                             .PreferBuffer,
                             .@"4U32",
                             null,

@@ -670,7 +670,6 @@ fn prepareStorage(instrumentation: *shaders.InstrumentationResult, snapshot: Sna
         var instr_state = state_entry.value_ptr.*;
         const shader_ref = state_entry.key_ptr.*;
         const shader_stage = current.Shaders.all.get(shader_ref).?.items[0].stage;
-        const total_threads = instr_state.channels.totalThreadsCount();
         //
         // Prepare storages
         //
@@ -733,7 +732,7 @@ fn prepareStorage(instrumentation: *shaders.InstrumentationResult, snapshot: Sna
                     if (!readback.found_existing) {
                         gl.GenBuffers(1, (&readback.value_ptr.ref)[0..1]);
                         gl.BindBufferBase(gl.SHADER_STORAGE_BUFFER, @intCast(buffer.binding), readback.value_ptr.ref);
-                        gl.NamedBufferStorage(readback.value_ptr.ref, @intCast(total_threads * 2), null, gl.CLIENT_STORAGE_BIT);
+                        gl.NamedBufferStorage(readback.value_ptr.ref, @intCast(readback.value_ptr.data.len), null, gl.CLIENT_STORAGE_BIT);
                     }
                 },
             }
