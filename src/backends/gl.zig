@@ -98,6 +98,12 @@ const ContextState = struct {
                 gl.DeleteTextures(1, @constCast(@ptrCast(&t)));
             }
         }
+        {
+            var it = s.readbacks.valueIterator();
+            while (it.next()) |v| {
+                v.deinit();
+            }
+        }
         s.readbacks.deinit(common.allocator);
         gl.makeProcTableCurrent(prev_proc_table);
     }
@@ -105,12 +111,13 @@ const ContextState = struct {
 
 pub const Readback = struct {
     data: []u8,
-    /// Handle to the storage created in the GL API
+    /// Handle to the storage created in the GL API.
+    /// GL_BUFFER or GL_TEXTURE
     ref: gl.uint,
 
     fn deinit(self: *@This()) void {
         common.allocator.free(self.data);
-        if (gl.IsBuffer(self.ref)) {
+        if (gl.IsBuffer(self.ref) == gl.TRUE) {
             gl.DeleteBuffers(1, (&self.ref)[0..1]);
         } else {
             gl.DeleteTextures(1, (&self.ref)[0..1]);
@@ -399,6 +406,8 @@ fn dispatchDebugImpl(
         shaders.user_action = false;
         // Instrument the currently bound program
         var instrumentation: shaders.InstrumentationResult = try @call(.auto, instrument_func, i_args);
+        defer instrumentation.deinit(current.allocator);
+
         const platform = try prepareStorage(&instrumentation, snapshot);
 
         if (xfb) {
@@ -2203,22 +2212,10 @@ fn contextInvalidatedEvent() !void {
 }
 
 fn deleteContext(c: *const anyopaque, api: anytype, arg: anytype) bool {
-    const prev_context = api.get_current.?();
     if (shaders.getService(@ptrCast(c))) |s| {
         log.info("Deleting context {x} with service {s}", .{ @intFromPtr(c), s.name });
-        deinit: {
-            if (state.getPtr(s.context)) |c_state| {
-                // TODO when context is stolen, a illegal command is issued here
-                // makeCurrent on Windows is illegal here
-                const params = @field(c_state.gl, api.name);
-                if (builtin.os.tag != .windows and @call(.auto, api.make_current[0], params ++ .{c}) == 0) break :deinit;
-                wrapErrorHandling(makeCurrent, .{ api, params, c });
-                c_state.deinit();
-                if (builtin.os.tag != .windows and @call(.auto, api.make_current[0], params ++ .{prev_context}) == 0) break :deinit;
-                wrapErrorHandling(makeCurrent, .{ api, params, prev_context });
-                std.debug.assert(state.remove(s.context));
-            }
-        }
+        if (state.getPtr(s.context)) |c_state| c_state.deinit();
+        std.debug.assert(state.remove(s.context));
         std.debug.assert(shaders.removeService(@ptrCast(c)));
         // Send a notification to debug adapter client
         contextInvalidatedEvent() catch {};

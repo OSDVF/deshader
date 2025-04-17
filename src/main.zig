@@ -237,10 +237,23 @@ fn runOnLoad() !void {
     defer configs.deinit(common.allocator);
     const default = try parseConfigAlloc(common.env.get(common.env_prefix ++ "COMMANDS") orelse common.default_ws_url, common.default_ws_url, common.default_ws_port_n);
     try configs.append(common.allocator, default);
-    if (common.env.get(common.env_prefix ++ "COMMANDS_WS")) |w| if (configNotEqual(try parseConfigAlloc(w, common.default_ws_url, common.default_ws_port_n), configs.getLastOrNull())) |c| try configs.append(common.allocator, c);
-    if (common.env.get(common.env_prefix ++ "COMMANDS_HTTP")) |h| if (configNotEqual(try parseConfigAlloc(h, common.default_http_url, common.default_http_port_n), default)) |c| try configs.append(common.allocator, c);
+    if (common.env.get(common.env_prefix ++ "COMMANDS_WS")) |w| {
+        const c = try parseConfigAlloc(w, common.default_ws_url, common.default_ws_port_n);
+        if (configNotEqual(c, configs.getLastOrNull()))
+            try configs.append(common.allocator, c)
+        else
+            common.allocator.free(c.host);
+    }
+    if (common.env.get(common.env_prefix ++ "COMMANDS_HTTP")) |h| {
+        const c = try parseConfigAlloc(h, common.default_http_url, common.default_http_port_n);
+        if (configNotEqual(c, default))
+            try configs.append(common.allocator, c)
+        else
+            common.allocator.free(c.host);
+    }
 
     commands.instance = try commands.MutliListener.start(common.allocator, configs.items);
+    for (configs.items) |c| common.allocator.free(c.host);
 }
 
 /// Will be called upon Deshader library unload
@@ -252,9 +265,6 @@ fn finalize() callconv(.c) void {
 
     @call(.never_inline, loaders.deinit, .{}); // also deinits gl_shaders
     if (commands.instance) |i| {
-        for (i.ws_configs.items) |c| {
-            @call(.never_inline, std.mem.Allocator.free, .{ common.allocator, c.address });
-        }
         @call(.never_inline, commands.MutliListener.stop, .{i});
         @call(.never_inline, std.mem.Allocator.destroy, .{ common.allocator, i });
     }
@@ -288,9 +298,9 @@ fn parseConfigAlloc(uri: ?String, default: String, default_port: u16) !commands.
     };
 }
 
-fn configNotEqual(a: commands.MutliListener.Config, mb: ?commands.MutliListener.Config) ?commands.MutliListener.Config {
+fn configNotEqual(a: commands.MutliListener.Config, mb: ?commands.MutliListener.Config) bool {
     if (mb) |b| if (a.protocol != b.protocol or !std.ascii.eqlIgnoreCase(a.host, b.host) or a.port != b.port) {
-        return a;
+        return true;
     };
-    return null;
+    return false;
 }

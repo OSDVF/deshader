@@ -334,9 +334,11 @@ pub const Step = struct {
     pub fn deinit(state: *shaders.State) anyerror!void {
         if (controls(&state.params.context.program.channels)) |c| {
             defer c.breakpoints.deinit(state.params.allocator);
+            state.params.allocator.destroy(c);
         }
         if (responses(&state.params.context.program.channels)) |r| {
             defer r.offsets.deinit(state.params.allocator);
+            state.params.allocator.destroy(r);
         }
     }
 

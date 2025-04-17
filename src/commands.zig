@@ -88,7 +88,7 @@ pub const MutliListener = struct {
         for (config) |c| {
             try switch (c.protocol) {
                 .WS => self.ws_configs.append(allocator, websocket.Config{
-                    .address = c.host,
+                    .address = try allocator.dupe(u8, c.host),
                     .port = c.port,
                 }),
                 .HTTP => http_configs.append(allocator, c),
@@ -183,6 +183,9 @@ pub const MutliListener = struct {
                     DeshaderLog.err("Error while shutting down websocket: {}", .{e});
                 }
             }
+        }
+        for (self.ws_configs.items) |c| {
+            self.ws.allocator.free(c.address);
         }
         self.ws_configs.deinit(self.ws.allocator);
         if (self.hasClient()) {
@@ -584,8 +587,8 @@ pub const MutliListener = struct {
     }
 
     /// Parse single parameter value
-    fn parseValue(comptime t: type, value: ?String) !t {
-        const inner = getInnerType(t);
+    fn parseValue(comptime T: type, value: ?String, allocator: std.mem.Allocator) !T {
+        const inner = getInnerType(T);
         if (value) |v| {
             return switch (@typeInfo(inner.type)) {
                 .bool => std.ascii.eqlIgnoreCase(v, "true") or
@@ -604,31 +607,34 @@ pub const MutliListener = struct {
                         // Probably string
                         return v;
                     } else {
-                        const parsed = try std.json.parseFromSlice(inner.type, common.allocator, v, .{});
-                        return parsed.value;
+                        return try std.json.parseFromSliceLeaky(inner.type, allocator, v, .{});
                     }
                 },
                 .@"enum" => if (std.meta.stringToEnum(inner.type, v)) |e| e else return error.InvalidEnumValue,
 
                 // JSON
-                .@"struct" => if (std.json.parseFromSlice(inner.type, common.allocator, v, .{ .ignore_unknown_fields = true })) |p|
-                    p.value
-                else |err|
-                    err,
+                .@"struct" => try std.json.parseFromSliceLeaky(inner.type, allocator, v, .{ .ignore_unknown_fields = true }),
                 else => @compileError("Unsupported type for command parameter " ++ @typeName(inner.type)),
             };
         } else {
             if (inner.isOptional) {
                 return null;
             } else {
-                DeshaderLog.err("Missing parameter of type {}", .{t});
+                DeshaderLog.err("Missing parameter of type {}", .{T});
                 return error.ParameterMissing;
             }
         }
     }
 
-    fn parseArgs(comptime result: type, args: ?ArgumentsMap) !result {
-        const result_type = getInnerType(result);
+    fn Result(comptime T: type) type {
+        return struct {
+            value: T,
+            arena: std.heap.ArenaAllocator,
+        };
+    }
+    fn parseArgs(comptime R: type, args: ?ArgumentsMap) !Result(R) {
+        var arena = std.heap.ArenaAllocator.init(common.allocator);
+        const result_type = getInnerType(R);
         if (args) |sure_args| {
             var result_payload: result_type.type = undefined;
             if (sure_args.count() == 0) {
@@ -642,9 +648,9 @@ pub const MutliListener = struct {
                 if (logParsing) {
                     DeshaderLog.debug("Parsing field: {s}", .{field.name});
                 }
-                @field(result_payload, field.name) = try parseValue(field.type, sure_args.get(field.name));
+                @field(result_payload, field.name) = try parseValue(field.type, sure_args.get(field.name), arena.allocator());
             }
-            return result_payload;
+            return .{ .value = result_payload, .arena = arena };
         } else if (result_type.isOptional) {
             return null;
         }
@@ -656,7 +662,7 @@ pub const MutliListener = struct {
         pub fn @"continue"(args: ?ArgumentsMap) !void {
             shaders.user_action = true;
             const in_params = try parseArgs(dap.ContinueArguments, args);
-            const locator = shaders.Running.Locator.parse(in_params.threadId);
+            const locator = shaders.Running.Locator.parse(in_params.value.threadId);
             try instruments.Step.@"continue"(try locator.service(), locator.shader());
 
             instance.?.unPause();
@@ -665,7 +671,7 @@ pub const MutliListener = struct {
         pub fn terminate(args: ?ArgumentsMap) !void {
             shaders.user_action = true;
             const in_params = try parseArgs(dap.TerminateRequest, args);
-            if (in_params.restart) |r| {
+            if (in_params.value.restart) |r| {
                 if (r) {
                     try noDebug();
                 }
@@ -768,7 +774,7 @@ pub const MutliListener = struct {
         pub fn evaluate(args: ?ArgumentsMap) !String {
             const in_args = try parseArgs(dap.EvaluateArguments, args);
             return std.json.stringifyAlloc(common.allocator, dap.EvaluateResponse{
-                .result = in_args.expression,
+                .result = in_args.value.expression,
                 .type = "TODO",
             }, json_options);
         }
@@ -817,8 +823,8 @@ pub const MutliListener = struct {
 
         pub fn pauseMode(args: ?ArgumentsMap) !void {
             const in_params = try parseArgs(struct { single: bool }, args);
-            if (shaders.single_pause_mode != in_params.single) {
-                shaders.single_pause_mode = in_params.single;
+            if (shaders.single_pause_mode != in_params.value.single) {
+                shaders.single_pause_mode = in_params.value.single;
                 for (shaders.allServices()) |s| {
                     s.invalidate();
                 }
@@ -830,7 +836,7 @@ pub const MutliListener = struct {
             const in_params = try parseArgs(dap.BreakpointLocationArguments, args);
             // bounded by source, lines and cols in params
             var positions: []const analyzer.lsp.Position = undefined;
-            if (try shaders.ServiceLocator.parse(in_params.path)) |context| {
+            if (try shaders.ServiceLocator.parse(in_params.value.path)) |context| {
                 if (context.resource) |r| {
                     switch (r) {
                         .programs => |locator| {
@@ -845,7 +851,7 @@ pub const MutliListener = struct {
                 } else return error.InvalidPath;
             } else return error.InvalidPath;
 
-            const result = try getPossibleBreakpointsAlloc(positions, in_params);
+            const result = try getPossibleBreakpointsAlloc(positions, in_params.value);
             defer common.allocator.free(result);
             return std.json.stringifyAlloc(common.allocator, dap.BreakpointLocationsResponse{
                 .breakpoints = result,
@@ -860,7 +866,7 @@ pub const MutliListener = struct {
         pub fn next(args: ?ArgumentsMap) !void {
             shaders.user_action = true;
             const in_params = try parseArgs(dap.NextArguments, args);
-            const locator = shaders.Running.Locator.parse(in_params.threadId);
+            const locator = shaders.Running.Locator.parse(in_params.value.threadId);
             try instruments.Step.advanceStepping(try locator.service(), locator.shader(), null);
             instance.?.unPause();
         }
@@ -875,16 +881,16 @@ pub const MutliListener = struct {
 
         pub fn addBreakpoint(args: ?ArgumentsMap) !String {
             shaders.user_action = true;
-            const breakpoint = try parseArgs(struct {
+            const in_params = try parseArgs(struct {
                 path: String,
                 line: usize,
                 column: usize,
             }, args);
             const new = dap.SourceBreakpoint{
-                .line = breakpoint.line,
-                .column = breakpoint.column,
+                .line = in_params.value.line,
+                .column = in_params.value.column,
             };
-            const context = try shaders.ServiceLocator.parse(breakpoint.path) orelse return error.InvalidPath;
+            const context = try shaders.ServiceLocator.parse(in_params.value.path) orelse return error.InvalidPath;
             const s = context.service;
             const r = context.resource orelse return error.InvalidPath;
             const result = try s.addBreakpointAlloc(r, new, common.allocator);
@@ -896,13 +902,14 @@ pub const MutliListener = struct {
         pub fn selectThread(args: ?ArgumentsMap) !void {
             shaders.user_action = true;
             const in_params = try parseArgs(struct { shader: usize, thread: []usize, group: ?[]usize }, args);
-            try shaders.selectThread(in_params.shader, in_params.thread, in_params.group);
+            try shaders.selectThread(in_params.value.shader, in_params.value.thread, in_params.value.group);
         }
 
         pub fn setBreakpoints(args: ?ArgumentsMap) !String {
             shaders.user_action = true;
             const in_params = try parseArgs(dap.SetBreakpointsArguments, args);
-            const context = try shaders.ServiceLocator.parse(in_params.path) orelse return error.InvalidPath;
+            defer in_params.arena.deinit();
+            const context = try shaders.ServiceLocator.parse(in_params.value.path) orelse return error.InvalidPath;
             const s = context.service;
             const r = context.resource orelse return error.InvalidPath;
 
@@ -926,7 +933,7 @@ pub const MutliListener = struct {
                 }
             }
 
-            if (in_params.breakpoints) |bps| {
+            if (in_params.value.breakpoints) |bps| {
                 for (bps) |bp| {
                     var bp_result = try shader.addBreakpoint(bp);
                     if (bp_result.id) |id| {
@@ -961,8 +968,8 @@ pub const MutliListener = struct {
 
         pub fn setDataBreakpoint(args: ?ArgumentsMap) !String {
             shaders.user_action = true;
-            const d_breakpoint = try parseArgs(dap.DataBreakpoint, args);
-            const response_b = try shaders.setDataBreakpoint(d_breakpoint);
+            const in_params = try parseArgs(dap.DataBreakpoint, args);
+            const response_b = try shaders.setDataBreakpoint(in_params.value);
             return std.json.stringifyAlloc(common.allocator, response_b, json_options);
         }
 
@@ -980,8 +987,8 @@ pub const MutliListener = struct {
 
         pub fn stackTrace(args: ?ArgumentsMap) !String {
             // Get program and shader ref
-            const parsed_args = try parseArgs(dap.StackTraceArguments, args);
-            const trace = try instruments.StackTrace.stackTrace(common.allocator, parsed_args);
+            const in_params = try parseArgs(dap.StackTraceArguments, args);
+            const trace = try instruments.StackTrace.stackTrace(common.allocator, in_params.value);
             defer {
                 for (trace.stackFrames) |fr| {
                     common.allocator.free(fr.path);
@@ -1061,13 +1068,13 @@ pub const MutliListener = struct {
         /// The path must start with `/sources/` or `/programs/`
         /// path: String, recursive: bool[false]
         pub fn list(args: ?ArgumentsMap) !String {
-            const in_args = try parseArgs(ListArgs, args);
+            const in_params = try parseArgs(ListArgs, args);
 
-            if (try shaders.ServiceLocator.parse(in_args.path)) |context| {
+            if (try shaders.ServiceLocator.parse(in_params.value.path)) |context| {
                 if (context.resource) |res| {
                     const lines = try switch (res) {
-                        .programs => |locator| context.service.Programs.list(common.allocator, locator, in_args.recursive orelse false, in_args.physical orelse true, ">"), //indicate that sources under programs are "symlinks"
-                        .sources => |locator| context.service.Shaders.list(common.allocator, locator, in_args.recursive orelse false, in_args.physical orelse true),
+                        .programs => |locator| context.service.Programs.list(common.allocator, locator, in_params.value.recursive orelse false, in_params.value.physical orelse true, ">"), //indicate that sources under programs are "symlinks"
+                        .sources => |locator| context.service.Shaders.list(common.allocator, locator, in_params.value.recursive orelse false, in_params.value.physical orelse true),
                     };
                     defer {
                         for (lines) |line| {
@@ -1099,8 +1106,8 @@ pub const MutliListener = struct {
         }
 
         pub fn mkdir(args: ?ArgumentsMap) !void {
-            const args_result = try parseArgs(struct { path: String }, args);
-            const locator = try shaders.ServiceLocator.parse(args_result.path) orelse return error.Protected;
+            const in_params = try parseArgs(struct { path: String }, args);
+            const locator = try shaders.ServiceLocator.parse(in_params.value.path) orelse return error.Protected;
             switch (locator.resource orelse return error.Protected) {
                 .programs => |p| {
                     if (!p.nested.isRoot()) { // Nested should be "root" >= no nested
@@ -1115,9 +1122,9 @@ pub const MutliListener = struct {
         }
 
         pub fn readFile(args: ?ArgumentsMap) !String {
-            const args_result = try parseArgs(struct { path: String }, args);
+            const in_params = try parseArgs(struct { path: String }, args);
 
-            if (try shaders.ServiceLocator.parse(args_result.path)) |context| {
+            if (try shaders.ServiceLocator.parse(in_params.value.path)) |context| {
                 if (context.resource) |res| {
                     const shader = try context.service.getSourceByRLocator(res);
                     return if (res.isInstrumented())
@@ -1131,17 +1138,17 @@ pub const MutliListener = struct {
 
         const WriteArgs = struct { path: String, content: String, compile: ?bool, link: ?bool };
         pub fn saveVirtual(args: ?ArgumentsMap) !void {
-            const args_result = try parseArgs(WriteArgs, args);
+            const in_params = try parseArgs(WriteArgs, args);
 
-            const locator = try shaders.ServiceLocator.parse(args_result.path) orelse return error.InvalidPath;
-            try locator.service.setSourceByLocator2(locator.resource orelse return error.InvalidPath, args_result.content, args_result.compile orelse true, args_result.link orelse true);
+            const locator = try shaders.ServiceLocator.parse(in_params.value.path) orelse return error.InvalidPath;
+            try locator.service.setSourceByLocator2(locator.resource orelse return error.InvalidPath, in_params.value.content, in_params.value.compile orelse true, in_params.value.link orelse true);
         }
 
         pub fn savePhysical(args: ?ArgumentsMap) !void {
-            const args_result = try parseArgs(WriteArgs, args);
+            const in_params = try parseArgs(WriteArgs, args);
 
-            const locator = try shaders.ServiceLocator.parse(args_result.path) orelse return error.InvalidPath;
-            try locator.service.saveSource(locator.resource orelse return error.InvalidPath, args_result.content, args_result.compile orelse true, args_result.link orelse true);
+            const locator = try shaders.ServiceLocator.parse(in_params.value.path) orelse return error.InvalidPath;
+            try locator.service.saveSource(locator.resource orelse return error.InvalidPath, in_params.value.content, in_params.value.compile orelse true, in_params.value.link orelse true);
         }
 
         pub fn save(args: ?ArgumentsMap) !void {
@@ -1155,11 +1162,11 @@ pub const MutliListener = struct {
         ///
         /// Returns the new full path for the file. This can be different than the `to` parameter (e.g. when renaming untagged file).
         pub fn rename(args: ?ArgumentsMap) !String {
-            const args_result = try parseArgs(struct { from: String, to: String }, args);
-            const to_unslash = common.noTrailingSlash(args_result.to);
-            const basename_only = common.nullishEq(String, std.fs.path.dirname(common.noTrailingSlash(args_result.from)), std.fs.path.dirname(to_unslash));
+            const in_params = try parseArgs(struct { from: String, to: String }, args);
+            const to_unslash = common.noTrailingSlash(in_params.value.to);
+            const basename_only = common.nullishEq(String, std.fs.path.dirname(common.noTrailingSlash(in_params.value.from)), std.fs.path.dirname(to_unslash));
 
-            const from = try shaders.ServiceLocator.parse(args_result.from) orelse return error.InvalidPath;
+            const from = try shaders.ServiceLocator.parse(in_params.value.from) orelse return error.InvalidPath;
             const from_res = from.resource orelse return error.InvalidPath;
             const from_untagged = basename_only and !from_res.isTagged();
 
@@ -1167,7 +1174,7 @@ pub const MutliListener = struct {
                 var tagged = from;
                 tagged.resource = try tagged.resource.?.toTagged(common.allocator, std.fs.path.basename(to_unslash));
                 break :blk tagged;
-            } else try shaders.ServiceLocator.parse(args_result.to) orelse return error.InvalidPath;
+            } else try shaders.ServiceLocator.parse(in_params.value.to) orelse return error.InvalidPath;
             defer if (from_untagged) switch (to.resource.?) {
                 .programs => |p| common.allocator.free(p.fullPath),
                 else => {},
@@ -1210,8 +1217,8 @@ pub const MutliListener = struct {
 
         // Remove a tag record of a file or a directory
         pub fn untag(args: ?ArgumentsMap) !void {
-            const args_result = try parseArgs(struct { path: String }, args);
-            const locator = try shaders.ServiceLocator.parse(args_result.path) orelse return error.InvalidPath;
+            const in_params = try parseArgs(struct { path: String }, args);
+            const locator = try shaders.ServiceLocator.parse(in_params.value.path) orelse return error.InvalidPath;
             try locator.service.untag(locator.resource orelse return error.InvalidPath);
         }
 
@@ -1220,10 +1227,10 @@ pub const MutliListener = struct {
         };
 
         pub fn stat(args: ?ArgumentsMap) !String {
-            const args_result = try parseArgs(StatRequest, args);
+            const in_params = try parseArgs(StatRequest, args);
 
             // TODO: supress the long stack trace when targeting invalid path?
-            const context = try shaders.ServiceLocator.parse(args_result.path);
+            const context = try shaders.ServiceLocator.parse(in_params.value.path);
             const now = std.time.milliTimestamp();
             // Used for root
             const virtual = storage.StatPayload{

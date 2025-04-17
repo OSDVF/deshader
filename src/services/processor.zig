@@ -145,7 +145,10 @@ pub const Result = struct {
 
         /// Function names. Index in the values array is the function's id (used when creating a stack trace)
         functions: []String,
-        diagnostics: std.ArrayListUnmanaged(analyzer.parse.Diagnostic) = .{},
+        diagnostics: std.ArrayListUnmanaged(struct {
+            d: analyzer.parse.Diagnostic,
+            free: bool = false,
+        }) = .{},
 
         pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
             for (self.out.values()) |v| {
@@ -154,7 +157,8 @@ pub const Result = struct {
             self.out.deinit(allocator);
             self.controls.deinit(allocator);
             for (self.diagnostics.items) |d| {
-                allocator.free(d.message);
+                if (d.free)
+                    allocator.free(d.d.message);
             }
             self.diagnostics.deinit(allocator);
             allocator.free(self.group_dim);
@@ -211,7 +215,7 @@ pub const Instrument = struct {
 
     collect: ?*const fn () void, //TODO
     constructors: ?*const fn (processor: *Processor, main: NodeId) anyerror!void,
-    deinit: ?*const fn (channels: *shaders.State) anyerror!void,
+    deinit: ?*const fn (state: *shaders.State) anyerror!void,
     instrument: ?*const fn (processor: *Processor, node: NodeId, context: *TraverseContext) anyerror!void,
     preprocess: ?*const fn (processor: *Processor, source_parts: []*shaders.Shader.SourcePart, result: *std.ArrayListUnmanaged(u8)) anyerror!void,
     setup: ?*const fn (processor: *Processor) anyerror!void,
@@ -639,9 +643,10 @@ fn varImpl(self: *@This(), id: u64, comptime T: type, default: ?T, source: *std.
         if (!global.found_existing) {
             const local = try source.getOrPut(self.config.allocator, id);
             global.value_ptr.* = local.value_ptr;
-            local.value_ptr.* = try self.config.allocator.create(T);
-            if (default) |d|
+            if (default) |d| {
+                local.value_ptr.* = try self.config.allocator.create(T);
                 @as(*T, @alignCast(@ptrCast(local.value_ptr.*))).* = d;
+            }
         }
         return VarResult(T){
             .found_existing = global.found_existing,
@@ -650,9 +655,10 @@ fn varImpl(self: *@This(), id: u64, comptime T: type, default: ?T, source: *std.
     } else {
         const local = try source.getOrPut(self.config.allocator, id);
         if (!local.found_existing) {
-            local.value_ptr.* = try self.config.allocator.create(T);
-            if (default) |d|
+            if (default) |d| {
+                local.value_ptr.* = try self.config.allocator.create(T);
                 @as(*T, @alignCast(@ptrCast(local.value_ptr.*))).* = d;
+            }
         }
         return VarResult(T){
             .found_existing = local.found_existing,
@@ -741,6 +747,7 @@ pub const TraverseContext = struct {
     /// Deinitialize the `scope` field
     pub fn nestedDeinit(self: *@This(), allocator: std.mem.Allocator) void {
         self.scope.deinit(allocator);
+        allocator.destroy(self.scope);
     }
 
     /// Deinitialize the `inserts` field
@@ -1071,9 +1078,15 @@ fn addDiagnostic(self: *@This(), value: anytype, source: ?std.builtin.SourceLoca
             log.debug("Diagnostic {s}", .{err_name_or_val});
         }
     }
-    try self.channels.diagnostics.append(self.config.allocator, analyzer.parse.Diagnostic{
-        .message = err_name_or_val,
-        .span = span orelse .{ .start = 0, .end = 0 },
+    try self.channels.diagnostics.append(self.config.allocator, .{
+        .d = analyzer.parse.Diagnostic{
+            .message = err_name_or_val,
+            .span = span orelse .{ .start = 0, .end = 0 },
+        },
+        .free = switch (@typeInfo(@TypeOf(value))) {
+            .pointer => |p| p.size == .slice,
+            else => false,
+        },
     });
 }
 

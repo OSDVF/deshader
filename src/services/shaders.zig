@@ -169,18 +169,30 @@ pub fn deinitStatic() void {
 
 pub fn deinit(service: *@This()) void {
     service.allocator.free(service.name);
-    service.bus.deinit();
+    var it = service.state.valueIterator();
+    while (it.next()) |s| {
+        for (service.instruments_any.items) |i| {
+            if (i.deinit) |de| {
+                de(s) catch log.err("Instrument {x} failed to deinit", .{i.id});
+            }
+        }
+        for (service.instruments_scoped.items) |i| {
+            if (i.deinit) |de| {
+                de(s) catch log.err("Instrument {x} failed to deinit", .{i.id});
+            }
+        }
+        s.deinit();
+    }
     service.instruments_any.deinit(service.allocator);
     service.instruments_scoped.deinit(service.allocator);
     service.instrument_clients.deinit(service.allocator);
+
+    service.bus.deinit();
     service.Programs.deinit(.{service.allocator});
     service.Shaders.deinit(.{});
     service.physical_to_virtual.deinit();
     service.dirty_breakpoints.deinit(service.allocator);
-    var it = service.state.valueIterator();
-    while (it.next()) |s| {
-        s.deinit();
-    }
+
     service.state.deinit(service.allocator);
     const a = service.allocator;
     service.* = undefined;
@@ -1236,7 +1248,7 @@ fn createStageInstrumentation(self: *Service, stage: []Shader.SourcePart, params
     if (instrumentation.channels.diagnostics.items.len > 0) {
         log.info("Shader {x} instrumentation diagnostics:", .{stage[0].ref});
         for (instrumentation.channels.diagnostics.items) |diag| {
-            log.info("{d}: {s}", .{ diag.span.start, diag.message }); // TODO line and column pos instead of offset
+            log.info("{d}: {s}", .{ diag.d.span.start, diag.d.message }); // TODO line and column pos instead of offset
         }
     }
 
@@ -1281,6 +1293,10 @@ pub const InstrumentationResult = struct {
     uniforms_invalidated: bool,
     /// Instrumentation state for shader stages in the order as they are executed
     stages: std.AutoArrayHashMapUnmanaged(Shader.StageRef, *State),
+
+    pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+        self.stages.deinit(allocator);
+    }
 };
 
 /// Methods for working with a collection of `SourcePart`s
@@ -1744,6 +1760,7 @@ pub const Shader = struct {
         };
 
         var result_parts = try std.ArrayListUnmanaged(*SourcePart).initCapacity(params.allocator, stage.len);
+        defer result_parts.deinit(params.allocator);
         var already_included = std.StringHashMapUnmanaged(void){};
         defer already_included.deinit(params.allocator);
 
