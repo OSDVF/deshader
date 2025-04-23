@@ -2,7 +2,7 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "GDB - Launcher Hidden & Quad",
+            "name": "GDB - Launcher Hidden & Debug Quad",
             "type": "gdb",
             "request": "launch",
             "cwd": "${workspaceRoot}",
@@ -19,7 +19,7 @@
             ]
         },
         {
-            "name": "GDB - Launcher Quad Hidden",
+            "name": "GDB - Quad & Debug Launcher",
             "type": "gdb",
             "request": "launch",
             "cwd": "${workspaceRoot}",

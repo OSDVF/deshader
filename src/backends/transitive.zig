@@ -109,11 +109,13 @@ pub const TransitiveSymbols = struct {
                             continue :eachRecursiveProc;
                         }
                     }
-                    const symbol = if (options.otype != .Default and builtin.target.cpu.arch == .x86_64) //
-                        createCBackendTrampoline(&@field(transitive_procs, symbol_name)).intercepted
-                    else
-                        createTrampoline(symbol_name).intercepted;
-                    @export(&symbol, .{ .name = symbol_name });
+                    if (options.otype != .None) {
+                        const symbol = if (options.otype != .Default and builtin.target.cpu.arch == .x86_64) //
+                            createCBackendTrampoline(&@field(transitive_procs, symbol_name)).intercepted
+                        else
+                            createTrampoline(symbol_name).intercepted;
+                        @export(&symbol, .{ .name = symbol_name });
+                    }
                     defer i += 1;
                 }
 

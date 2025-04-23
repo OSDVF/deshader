@@ -1264,7 +1264,7 @@ fn createStageInstrumentation(self: *Service, stage: []Shader.SourcePart, params
             if (compile_status != 0) {}
             for (stage) |*sp| {
                 sp.i_stat.size = instrumentation.length;
-                sp.i_stat.dirty();
+                sp.i_stat.stat.dirty();
             }
         } else {
             return error.NoCompileCallback;
@@ -1307,7 +1307,10 @@ pub const Shader = struct {
         root = 0,
         _,
         pub const named_strings = @This().root;
-        pub usingnamespace RefMixin(@This());
+        const ref = RefMixin(@This());
+        pub const toInt = ref.toInt;
+        pub const cast = ref.cast;
+        pub const format = ref.format;
     };
     pub const BreakpointSpecial = struct {
         condition: ?String,
@@ -1422,7 +1425,7 @@ pub const Shader = struct {
         }
 
         pub fn dirty(self: *@This()) void {
-            self.stat.dirty();
+            self.stat.stat.dirty();
             if (self.tag) |t| {
                 t.parent.dirty();
             }
@@ -1484,7 +1487,7 @@ pub const Shader = struct {
                 const path = if (self.tag) |t| try t.fullPathAlloc(self.allocator, true) else null;
                 defer if (path) |p| self.allocator.free(p);
                 if (currentSource(self.context, self.ref.toInt(), if (path) |p| p.ptr else null, if (path) |p| p.len else 0)) |source| {
-                    self.i_stat.touch();
+                    self.i_stat.stat.touch();
                     return std.mem.span(source);
                 }
             } else {
@@ -1839,7 +1842,10 @@ pub const Shader = struct {
         pub const Ref = enum(usize) {
             root = 0,
             _,
-            pub usingnamespace RefMixin(@This());
+            const ref = RefMixin(@This());
+            pub const toInt = ref.toInt;
+            pub const cast = ref.cast;
+            pub const format = ref.format;
         };
         const DirOrStored = StorageT.DirOrStored;
 
@@ -1867,14 +1873,14 @@ pub const Shader = struct {
         }
 
         pub fn dirty(self: *@This()) void {
-            self.stat.dirty();
+            self.stat.stat.dirty();
             if (self.tag) |t| {
                 t.parent.dirty();
             }
         }
 
         pub fn touch(self: *@This()) void {
-            self.stat.touch();
+            self.stat.stat.touch();
             if (self.tag) |t| {
                 t.parent.touch();
             }

@@ -18,57 +18,56 @@ pub fn Bus(comptime Event: type, comptime Async: bool) type {
             try self.listeners.append(self.allocator, .{ .listener = @ptrCast(listener), .context = if (@TypeOf(context) == @TypeOf(null)) null else @ptrCast(context) });
         }
 
-        const sync_only = struct {
-            pub fn dispatch(self: *Self, event: Event) !void {
-                var arena = std.heap.ArenaAllocator.init(self.allocator);
-                defer arena.deinit();
+        /// Usable only for sync buses
+        pub fn dispatch(self: *Self, event: Event) !void {
+            var arena = std.heap.ArenaAllocator.init(self.allocator);
+            defer arena.deinit();
+            for (self.listeners.items) |listener| {
+                try listener.listener(listener.context, event, arena.allocator());
+            }
+        }
+
+        /// Usable only by sync buses
+        pub fn dispatchNoThrow(self: *Self, event: Event) void {
+            var arena = std.heap.ArenaAllocator.init(self.allocator);
+            defer arena.deinit();
+            for (self.listeners.items) |listener| {
+                log.debug("Dispatch sync {} with context {x}.", .{ event, @intFromPtr(listener.context) });
+                listener.listener(listener.context, event, arena.allocator()) catch |err| {
+                    log.err("Error dispatching event {any}: {}\n", .{ event, err });
+                };
+            }
+        }
+
+        /// Usable only by async buses
+        /// The arena will be freed after the queue is emptied
+        pub fn dispatchAsync(self: *Self, event: Event, arena: std.heap.ArenaAllocator) !void {
+            try self.queue.append(self.allocator, .{ .event = event, .arena = arena });
+        }
+
+        /// Usable only by async buses
+        pub fn processQueue(self: *Self) !void {
+            while (self.queue.popOrNull()) |event| {
+                defer event.arena.deinit();
                 for (self.listeners.items) |listener| {
-                    try listener.listener(listener.context, event, arena.allocator());
+                    try listener.listener(listener.context, event.event, event.arena.allocator());
                 }
             }
+        }
 
-            pub fn dispatchNoThrow(self: *Self, event: Event) void {
-                var arena = std.heap.ArenaAllocator.init(self.allocator);
-                defer arena.deinit();
+        /// Usable only by async buses
+        pub fn processQueueNoThrow(self: *Self) void {
+            for (self.queue.items) |*queued| {
+                defer queued.arena.deinit();
                 for (self.listeners.items) |listener| {
-                    log.debug("Dispatch sync {} with context {x}.", .{ event, @intFromPtr(listener.context) });
-                    listener.listener(listener.context, event, arena.allocator()) catch |err| {
-                        log.err("Error dispatching event {any}: {}\n", .{ event, err });
+                    log.debug("Processing event {} with context {x}", .{ queued.event, @intFromPtr(listener.context) });
+                    listener.listener(listener.context, queued.event, queued.arena.allocator()) catch |err| {
+                        log.err("Error dispatching async listener {}: {}\n", .{ queued, err });
                     };
                 }
             }
-        };
-
-        const async_only = struct {
-            /// The arena will be freed after the queue is emptied
-            pub fn dispatchAsync(self: *Self, event: Event, arena: std.heap.ArenaAllocator) !void {
-                try self.queue.append(self.allocator, .{ .event = event, .arena = arena });
-            }
-
-            pub fn processQueue(self: *Self) !void {
-                while (self.queue.popOrNull()) |event| {
-                    defer event.arena.deinit();
-                    for (self.listeners.items) |listener| {
-                        try listener.listener(listener.context, event.event, event.arena.allocator());
-                    }
-                }
-            }
-
-            pub fn processQueueNoThrow(self: *Self) void {
-                for (self.queue.items) |*queued| {
-                    defer queued.arena.deinit();
-                    for (self.listeners.items) |listener| {
-                        log.debug("Processing event {} with context {x}", .{ queued.event, @intFromPtr(listener.context) });
-                        listener.listener(listener.context, queued.event, queued.arena.allocator()) catch |err| {
-                            log.err("Error dispatching async listener {}: {}\n", .{ queued, err });
-                        };
-                    }
-                }
-                self.queue.clearAndFree(self.allocator);
-            }
-        };
-
-        pub usingnamespace if (Async) async_only else sync_only;
+            self.queue.clearAndFree(self.allocator);
+        }
 
         pub fn init(allocator: std.mem.Allocator) @This() {
             return @This(){

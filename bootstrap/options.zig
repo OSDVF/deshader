@@ -1,5 +1,6 @@
 const std = @import("std");
 pub const Level = enum { err, warn, info, debug, default }; //cannot use std.log.Level because it gets corrupted in options generated file
+pub const OutputType = enum { Default, c, IR, BC, None };
 
 pub const Options = struct {
     custom_library: ?[]const []const u8,
@@ -12,9 +13,11 @@ pub const Options = struct {
     lib_dir: ?[]const u8,
     lib_linkage: std.builtin.LinkMode,
     linkage: std.builtin.LinkMode,
+    llvm: bool,
     log_intercept: bool,
     log_level: Level,
     memory_frames: u32,
+    output: OutputType,
     sanitize: bool,
     sdk: ?[]const u8,
     stack_check: bool,

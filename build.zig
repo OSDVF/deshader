@@ -74,26 +74,13 @@ pub fn build(b: *std.Build) !void {
         .macos => "libvulkan.dylib",
         else => "libvulkan.so",
     };
-    const OutputType = enum { Default, c, IR, BC };
-    const option_otype = b.option(OutputType, "otype", "Compiler output type") orelse .Default;
-    if (option_otype == .c) {
-        target.result.ofmt = .c;
-        target.query.ofmt = .c;
-    }
-
-    // Deshader library
-    const deshaderCompileOptions = .{
-        .name = "deshader",
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    };
 
     // Compilation options
     const default_traces = (targetTarget != .windows or builtin.os.tag == .windows) and (optimize == .Debug or optimize == .ReleaseSafe);
     const option_traces = b.option(bool, "traces", "Enable error traces (implicit for debug mode)") orelse default_traces; // important! keep tracing support synced for Deshader Library and Launcher, because there are casts from error aware functions to anyopaque,
-    const option_stack_check = (b.option(bool, "stackCheck", "Enable stack checking (implicit for debug mode, not supported for Windows, ARM)") orelse (optimize == .Debug)) and (targetTarget != .windows and target.result.cpu.arch != .arm);
+    const option_llvm = b.option(bool, "llvm", "Use LLVM for native code generation (default yes)") orelse true;
+    const option_stack_check = (b.option(bool, "stackCheck", "Enable stack checking (implicit for debug mode, not supported for Windows, ARM)") orelse (optimize == .Debug)) and (targetTarget != .windows and target.result.cpu.arch != .arm and option_llvm);
+    const otype = b.option(opts.OutputType, "otype", "Compiler output type. Use None for check for errors only.") orelse .Default;
 
     options = opts.Options{
         .custom_library = b.option([]const String, "customLibrary", "Names of additional libraries to intercept"),
@@ -106,14 +93,16 @@ pub fn build(b: *std.Build) !void {
         .lib_dir = b.option(String, "lib", "Path to directory with additional libraries to link"),
         .lib_linkage = b.option(std.builtin.LinkMode, "libLinkage", "Select linkage type for VCPKG libraries. (default dynamic for OSX and Windows, static for Linux)") orelse if (targetTarget == .windows) std.builtin.LinkMode.dynamic else std.builtin.LinkMode.static,
         .linkage = b.option(std.builtin.LinkMode, "linkage", "Select linkage type for deshader library. Cannot be combined with -Dotype.") orelse .dynamic,
+        .llvm = option_llvm,
         .log_intercept = b.option(bool, "logInterception", "Log intercepted GL and VK procedure list and loader errors to stdout (adds several MB to library size)") orelse false,
         .log_level = b.option(opts.Level, "logLevel", "Set log level for the build") orelse .default,
         .memory_frames = b.option(u32, "memoryFrames", "Number of frames in memory leak backtrace (default 7)") orelse 7,
+        .output = otype,
         .sanitize = b.option(bool, "sanitize", "Enable sanitizers (implicit for debug mode)") orelse default_traces,
         .sdk = b.option(String, "sdk", "SDK path (macOS only, defaults to the one selected by xcode-select)"),
         .stack_check = option_stack_check,
         .stack_protector = b.option(bool, "stackProtector", "Enable stack protector (implicit for debug mode)") orelse option_stack_check,
-        .strip = b.option(bool, "strip", "Strip debug symbols from the library (implicit for release fast and minimal mode)") orelse (optimize != .Debug and optimize != .ReleaseSafe),
+        .strip = b.option(bool, "strip", "Strip debug symbols from the library (implicit for release fast and minimal mode)") orelse (otype == .None) or (optimize != .Debug and optimize != .ReleaseSafe),
         .system_glew = b.option(bool, "sGLEW", "Force usage of system-supplied GLEW library (VCPKG has priority otherwise)") orelse false,
         .system_glfw = b.option(bool, "sGLFW3", "Force usage of system-supplied GLFW3 library (VCPKG has priority otherwise)") orelse false,
         .system_glslang = b.option(bool, "sGLSLang", "Force usage of system-supplied GLSLang library (VCPKG has priority otherwise)") orelse false,
@@ -125,11 +114,25 @@ pub fn build(b: *std.Build) !void {
         .unwind = b.option(std.builtin.UnwindTables, "unwind", "Enable unwind tables (implicit for debug mode)"),
     };
 
+    // Deshader library
+    if (options.output == .c) {
+        target.result.ofmt = .c;
+        target.query.ofmt = .c;
+    }
+    const deshaderCompileOptions = .{
+        .name = "deshader",
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    };
+
     const deshader_lib: *std.Build.Step.Compile = if (options.linkage == .static) b.addStaticLibrary(types.convert(deshaderCompileOptions, std.Build.StaticLibraryOptions{
         .name = undefined,
     })) else b.addSharedLibrary(types.convert(deshaderCompileOptions, std.Build.SharedLibraryOptions{
         .name = undefined,
     }));
+    deshader_lib.use_llvm = options.llvm;
     deshader_lib.root_module.error_tracing = options.traces;
     deshader_lib.root_module.strip = options.strip;
     deshader_lib.root_module.unwind_tables = options.unwind;
@@ -201,7 +204,7 @@ pub fn build(b: *std.Build) !void {
 
     const deshader_lib_name = try std.mem.concat(b.allocator, u8, &.{ if (targetTarget == .windows) "" else "lib", deshader_lib.name, targetTarget.dynamicLibSuffix() });
     const deshader_lib_cmd = b.step("deshader", "Install deshader library");
-    switch (option_otype) {
+    switch (options.output) {
         .BC => {
             deshader_lib.generated_llvm_ir = try b.allocator.create(std.Build.GeneratedFile);
             deshader_lib.generated_llvm_ir.?.* = .{ .step = &deshader_lib.step, .path = try b.cache_root.join(b.allocator, &.{ "llvm", "deshader.ll" }) };
@@ -214,10 +217,18 @@ pub fn build(b: *std.Build) !void {
             deshader_lib_cmd.dependOn(&b.addInstallFileWithDir(deshader_lib.getEmittedLlvmIr(), .lib, "deshader.ll").step);
             deshader_lib.root_module.stack_check = false;
         },
+        .None => {
+            deshader_lib_cmd.dependOn(&deshader_lib.step);
+            b.getInstallStep().dependOn(&deshader_lib.step);
+        },
         else => {},
     }
-    const deshader_lib_install = b.addInstallArtifact(deshader_lib, .{});
-    deshader_lib_cmd.dependOn(&deshader_lib_install.step);
+    {
+        if (options.output != .None) {
+            const deshader_lib_install = b.addInstallArtifact(deshader_lib, .{});
+            deshader_lib_cmd.dependOn(&deshader_lib_install.step);
+        }
+    }
     deshader_lib.addIncludePath(b.path("src/declarations"));
     if (options.include) |includeDir| {
         deshader_lib.addIncludePath(b.path(includeDir));
@@ -228,7 +239,7 @@ pub fn build(b: *std.Build) !void {
 
     if (targetTarget == .windows) {
         const icon = b.addInstallBinFile(b.path("src/deshader.ico"), "deshader.ico");
-        deshader_lib_install.step.dependOn(&icon.step);
+        deshader_lib.step.dependOn(&icon.step);
         deshader_lib.addWin32ResourceFile(.{ .file = b.path(b.pathJoin(&.{ "src", "resources.rc" })) });
     }
 
@@ -301,7 +312,7 @@ pub fn build(b: *std.Build) !void {
     deshader_options.addOption(bool, "logInterception", options.log_intercept);
     deshader_options.addOption(String, "deshaderLibName", deshader_lib_name);
     deshader_options.addOption(opts.Level, "log_level", options.log_level);
-    deshader_options.addOption(OutputType, "otype", option_otype);
+    deshader_options.addOption(opts.OutputType, "otype", options.output);
     deshader_options.addOption(u32, "memoryFrames", options.memory_frames);
     const version = resolve: {
         const version_result = try exec(.{ .allocator = b.allocator, .argv = &.{ "git", "describe", "--tags", "--always", "--abbrev=0", "--exact-match" } });
@@ -518,6 +529,7 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
         .target = target,
     });
+    launcher_exe.use_llvm = options.llvm;
     launcher_exe.root_module.error_tracing = options.traces;
     launcher_exe.root_module.strip = options.strip;
     launcher_exe.root_module.unwind_tables = options.unwind;
@@ -538,7 +550,14 @@ pub fn build(b: *std.Build) !void {
     launcher_exe.root_module.addImport("glsl_analyzer", glsl_analyzer); // TODO externalize glsl_analyzer
 
     const launcher_install = b.addInstallArtifact(launcher_exe, .{});
-    _ = b.step("launcher", "Build Deshader Launcher - a utility to run any application with Deshader").dependOn(&launcher_install.step);
+    {
+        const launcher_cmd = b.step("launcher", "Build Deshader Launcher - a utility to run any application with Deshader");
+        if (options.output == .None) {
+            launcher_cmd.dependOn(&launcher_exe.step);
+        } else {
+            launcher_cmd.dependOn(&launcher_install.step);
+        }
+    }
 
     const launcher_options = b.addOptions();
     launcher_options.addOption(String, "deshaderLibName", deshader_lib_name);
@@ -596,8 +615,10 @@ pub fn build(b: *std.Build) !void {
     {
         // WolfSSL - a serve's dependency
         options.system_wolfssl = options.system_wolfssl and try systemHasLib(deshader_lib, host_libs_location, "wolfssl");
-        if (try linkWolfSSL(serve, deshader_lib_install, !options.system_wolfssl, options.triplet, options.lib_debug)) |lib_name| {
-            try deshader_dependent_dlls.append(lib_name);
+        if (findInstallStep(deshader_lib)) |i| {
+            if (try linkWolfSSL(serve, i, !options.system_wolfssl, options.triplet, options.lib_debug)) |lib_name| {
+                try deshader_dependent_dlls.append(lib_name);
+            }
         }
 
         // Dependent DLLLs must be added to options after the list is populated
@@ -627,7 +648,9 @@ pub fn build(b: *std.Build) !void {
                 deshader_lib.linkSystemLibrary2(lib_name, .{ .preferred_link_mode = .dynamic });
             } else {
                 try linkVcpkgLibrary(deshader_lib, lib_name, options.triplet, options.lib_debug);
-                _ = try installVcpkgLibrary(deshader_lib_install, lib_name, options.triplet, options.lib_debug);
+                if (findInstallStep(deshader_lib)) |i| {
+                    _ = try installVcpkgLibrary(i, lib_name, options.triplet, options.lib_debug);
+                }
             }
         }
 
@@ -702,6 +725,7 @@ pub fn build(b: *std.Build) !void {
         };
         const example_options = b.addOptions();
         example_options.addOption([]const String, "exampleNames", &.{ sub_examples.quad, sub_examples.linked, sub_examples.linked_cpp, sub_examples.debug_commands, sub_examples.quad_cpp });
+        example_bootstraper.use_llvm = options.llvm;
         example_bootstraper.root_module.addOptions("options", example_options);
         example_bootstraper.step.dependOn(header_gen_cmd);
 
@@ -720,30 +744,30 @@ pub fn build(b: *std.Build) !void {
 
             // Full screen quad with GLFW
             const glfw_module = zig_glfw_dep.module("zig-glfw");
-            const example_quad = try SubExampleStep.create(example_bootstraper, sub_examples.quad, "examples/" ++ sub_examples.quad ++ ".zig", exampleModules ++ .{.{ .name = "zig_glfw", .module = glfw_module }});
+            const example_quad = try createSubExample(example_bootstraper, sub_examples.quad, "examples/" ++ sub_examples.quad ++ ".zig", exampleModules ++ .{.{ .name = "zig_glfw", .module = glfw_module }});
             try addVcpkgInstalledPaths(b, glfw_module, options.triplet, options.lib_debug);
-            example_quad.compile.linkLibC();
+            example_quad.linkLibC();
 
-            const example_sdf = try SubExampleStep.create(example_bootstraper, sub_examples.sdf, "examples/" ++ sub_examples.sdf ++ ".zig", exampleModules ++ .{.{ .name = "zig_glfw", .module = glfw_module }});
-            example_sdf.compile.linkLibC();
+            const example_sdf = try createSubExample(example_bootstraper, sub_examples.sdf, "examples/" ++ sub_examples.sdf ++ ".zig", exampleModules ++ .{.{ .name = "zig_glfw", .module = glfw_module }});
+            example_sdf.linkLibC();
 
-            // Editor Linked
-            const example_editor = try SubExampleStep.create(example_bootstraper, sub_examples.linked, "examples/" ++ sub_examples.linked ++ ".zig", exampleModules);
-            example_editor.compile.linkLibrary(deshader_lib);
+            // Deshader Linked to an executable
+            const example_linked = try createSubExample(example_bootstraper, sub_examples.linked, "examples/" ++ sub_examples.linked ++ ".zig", exampleModules);
+            if (options.output != .None) example_linked.linkLibrary(deshader_lib);
 
             // Quad in C++
-            const example_quad_cpp = try SubExampleStep.create(example_bootstraper, sub_examples.quad_cpp, "examples/" ++ sub_examples.quad ++ ".cpp", .{});
-            example_quad_cpp.compile.addIncludePath(.{ .cwd_relative = b.h_dir });
-            example_quad_cpp.compile.linkLibCpp();
-            try linkGlew(example_quad_cpp.install, options.system_glew, options.triplet, options.lib_debug);
+            const example_quad_cpp = try createSubExample(example_bootstraper, sub_examples.quad_cpp, "examples/" ++ sub_examples.quad ++ ".cpp", .{});
+            example_quad_cpp.addIncludePath(.{ .cwd_relative = b.h_dir });
+            example_quad_cpp.linkLibCpp();
+            try linkGlew(example_quad_cpp, options.system_glew, options.triplet, options.lib_debug);
 
             // Embed shaders into the executable
             if (targetTarget == .windows) {
                 glfw_module.linkSystemLibrary("gdi32", .{});
-                example_quad_cpp.compile.addWin32ResourceFile(.{ .file = b.path(b.pathJoin(&.{ "examples", "shaders.rc" })) });
-                example_quad_cpp.compile.root_module.addCMacro("WIN32", "");
+                example_quad_cpp.addWin32ResourceFile(.{ .file = b.path(b.pathJoin(&.{ "examples", "shaders.rc" })) });
+                example_quad_cpp.root_module.addCMacro("WIN32", "");
             } else {
-                example_quad_cpp.compile.root_module.addCMacro("_LIBCPP_HAS_NO_WIDE_CHARACTERS", "");
+                example_quad_cpp.root_module.addCMacro("_LIBCPP_HAS_NO_WIDE_CHARACTERS", "");
                 inline for (.{ "fragment.frag", "vertex.vert" }) |shader| {
                     const output = try std.fs.path.join(b.allocator, &.{ b.cache_root.path.?, "shaders", shader ++ ".o" });
                     b.cache_root.handle.access("shaders", .{}) catch try std.fs.makeDirAbsolute(std.fs.path.dirname(output).?);
@@ -768,7 +792,7 @@ pub fn build(b: *std.Build) !void {
                         .cwd_dir = dir,
                     });
                     if (result.term.Exited == 0) {
-                        example_quad_cpp.compile.addObjectFile(.{ .cwd_relative = output });
+                        example_quad_cpp.addObjectFile(.{ .cwd_relative = output });
                     } else {
                         log.err("Failed to compile shader {s}: {s}", .{ shader, result.stderr });
                     }
@@ -776,60 +800,62 @@ pub fn build(b: *std.Build) !void {
             }
 
             // Linking Deshader with C++ code
-            const example_linked_cpp = try SubExampleStep.create(example_bootstraper, sub_examples.linked_cpp, "examples/linked.cpp", .{});
-            example_linked_cpp.compile.addIncludePath(.{ .cwd_relative = b.h_dir });
-            example_linked_cpp.compile.linkSystemLibrary("deshader");
-            example_linked_cpp.compile.addLibraryPath(.{ .cwd_relative = b.lib_dir }); //implib or .so
-            if (targetTarget == .windows) {
-                example_linked_cpp.compile.addLibraryPath(.{ .cwd_relative = b.exe_dir }); // .dll
-            } else {
-                example_linked_cpp.compile.root_module.addCMacro("_LIBCPP_HAS_NO_WIDE_CHARACTERS", "");
+            const example_linked_cpp = try createSubExample(example_bootstraper, sub_examples.linked_cpp, "examples/linked.cpp", .{});
+            example_linked_cpp.addIncludePath(.{ .cwd_relative = b.h_dir });
+            if (options.output != .None) {
+                example_linked_cpp.linkSystemLibrary("deshader");
+                example_linked_cpp.addLibraryPath(.{ .cwd_relative = b.lib_dir }); //implib or .so
+                example_linked_cpp.step.dependOn(deshader_lib_cmd);
             }
-            example_linked_cpp.compile.each_lib_rpath = false;
-            example_linked_cpp.compile.step.dependOn(&deshader_lib_install.step);
-            example_linked_cpp.compile.linkLibCpp();
+            if (targetTarget == .windows) {
+                example_linked_cpp.addLibraryPath(.{ .cwd_relative = b.exe_dir }); // .dll is in bin folder
+            } else {
+                example_linked_cpp.root_module.addCMacro("_LIBCPP_HAS_NO_WIDE_CHARACTERS", "");
+            }
+            example_linked_cpp.each_lib_rpath = false;
+            example_linked_cpp.linkLibCpp();
 
             // Using unobtrusive Deshader Library commands
-            const example_debug_commands = try SubExampleStep.create(example_bootstraper, sub_examples.debug_commands, "examples/debug_commands.cpp", .{});
-            example_debug_commands.compile.addIncludePath(.{ .cwd_relative = b.h_dir });
+            const example_debug_commands = try createSubExample(example_bootstraper, sub_examples.debug_commands, "examples/debug_commands.cpp", .{});
+            example_debug_commands.addIncludePath(.{ .cwd_relative = b.h_dir });
             if (targetTarget != .windows) {
-                example_debug_commands.compile.root_module.addCMacro("_LIBCPP_HAS_NO_WIDE_CHARACTERS", "");
+                example_debug_commands.root_module.addCMacro("_LIBCPP_HAS_NO_WIDE_CHARACTERS", "");
             }
-            example_debug_commands.compile.linkLibCpp();
-            example_debug_commands.compile.addFrameworkPath(framework_path);
-            example_debug_commands.compile.addFrameworkPath(system_framwork_path);
-            try linkGlew(example_debug_commands.install, options.system_glew, options.triplet, options.lib_debug);
+            example_debug_commands.linkLibCpp();
+            example_debug_commands.addFrameworkPath(framework_path);
+            example_debug_commands.addFrameworkPath(system_framwork_path);
+            try linkGlew(example_debug_commands, options.system_glew, options.triplet, options.lib_debug);
 
             inline for (.{ example_quad, example_sdf, example_quad_cpp, example_debug_commands }) |example| {
                 if (options.system_glfw)
-                    example.compile.linkSystemLibrary("glfw3")
+                    example.linkSystemLibrary("glfw3")
                 else {
-                    example.compile.step.dependOn(&dependencies_step.step);
-                    try linkVcpkgLibrary(example.compile, "glfw3", options.triplet, options.lib_debug);
-                    _ = try installVcpkgLibrary(example.install, "glfw3", options.triplet, options.lib_debug);
+                    example.step.dependOn(&dependencies_step.step);
+                    try linkVcpkgLibrary(example, "glfw3", options.triplet, options.lib_debug);
+                    if (findInstallStep(example)) |i| {
+                        _ = try installVcpkgLibrary(i, "glfw3", options.triplet, options.lib_debug);
+                    }
                 }
 
                 if (!system_libs_available) {
-                    try addVcpkgInstalledPaths(b, example.compile, options.triplet, options.lib_debug);
+                    try addVcpkgInstalledPaths(b, example, options.triplet, options.lib_debug);
                 }
 
                 switch (targetTarget) {
-                    .linux => example.compile.linkSystemLibrary("x11"),
+                    .linux => example.linkSystemLibrary("x11"),
                     .macos => {
-                        example.compile.linkFramework("Cocoa");
-                        example.compile.linkFramework("OpenGL");
-                        example.compile.linkFramework("IOKit");
-                        example.compile.linkFramework("QuartzCore");
-                        example.compile.addFrameworkPath(framework_path);
-                        example.compile.addFrameworkPath(system_framwork_path);
+                        example.linkFramework("Cocoa");
+                        example.linkFramework("OpenGL");
+                        example.linkFramework("IOKit");
+                        example.linkFramework("QuartzCore");
+                        example.addFrameworkPath(framework_path);
+                        example.addFrameworkPath(system_framwork_path);
                     },
                     else => {},
                 }
             }
         }
         examples_cmd.dependOn(stub_gen_cmd);
-        const example_bootstraper_install = b.addInstallArtifact(example_bootstraper, .{});
-        examples_cmd.dependOn(&example_bootstraper_install.step);
 
         // Run examples by `deshader-run`
         const examples_run = b.addRunArtifact(launcher_install.artifact);
@@ -840,8 +866,15 @@ pub fn build(b: *std.Build) !void {
         examples_run.setEnvironmentVariable((if (targetTarget == .macos) "DYLD_LIBRARY_PATH" else "LD_LIBRARY_PATH"), b.lib_dir);
         examples_run.addArg("-no-whitelist");
         examples_run.addArg(b.pathJoin(&.{ b.exe_dir, try std.mem.concat(b.allocator, u8, &.{ example_bootstraper.name, target.result.exeFileExt() }) }));
-        examples_run.step.dependOn(&example_bootstraper_install.step);
         examples_run_cmd.dependOn(&examples_run.step);
+        const example_bootstraper_install = b.addInstallArtifact(example_bootstraper, .{});
+        if (options.output == .None) {
+            examples_cmd.dependOn(&example_bootstraper.step);
+            examples_run.step.dependOn(&example_bootstraper.step);
+        } else {
+            examples_cmd.dependOn(&example_bootstraper_install.step);
+            examples_run.step.dependOn(&example_bootstraper_install.step);
+        }
     }
 
     //
@@ -885,52 +918,52 @@ fn embedCompressedFile(compile: *std.Build.Step.Compile, dependOn: ?*std.Build.S
     compile.step.dependOn(&compress.step);
 }
 
-const SubExampleStep = struct {
-    compile: *std.Build.Step.Compile,
-    install: *std.Build.Step.InstallArtifact,
-
-    pub fn create(compile: *std.Build.Step.Compile, comptime name: String, path: String, modules: anytype) !@This() {
-        var step = &compile.step;
-        const b = compile.step.owner;
-        const is_zig = std.mem.endsWith(u8, path, "zig");
-        const subExe = step.owner.addExecutable(.{
-            .name = name,
-            .root_source_file = if (is_zig) b.path(path) else null,
-            .target = step.owner.resolveTargetQuery(std.Target.Query.fromTarget(compile.rootModuleTarget())),
-            .optimize = compile.root_module.optimize orelse .ReleaseSafe,
+pub fn createSubExample(compile: *std.Build.Step.Compile, comptime name: String, path: String, modules: anytype) !*std.Build.Step.Compile {
+    var step = &compile.step;
+    const b = compile.step.owner;
+    const is_zig = std.mem.endsWith(u8, path, "zig");
+    const subExe = step.owner.addExecutable(.{
+        .name = name,
+        .root_source_file = if (is_zig) b.path(path) else null,
+        .target = step.owner.resolveTargetQuery(std.Target.Query.fromTarget(compile.rootModuleTarget())),
+        .optimize = compile.root_module.optimize orelse .ReleaseSafe,
+    });
+    if (is_zig) {
+        subExe.root_module.error_tracing = options.traces;
+    }
+    subExe.use_llvm = options.llvm;
+    subExe.root_module.strip = options.strip;
+    subExe.root_module.unwind_tables = options.unwind;
+    subExe.root_module.sanitize_c = options.sanitize;
+    subExe.root_module.stack_check = options.stack_check;
+    subExe.root_module.stack_protector = options.stack_protector;
+    subExe.root_module.valgrind = options.valgrind;
+    if (!is_zig) {
+        subExe.addCSourceFile(.{
+            .file = b.path(path),
         });
-        if (is_zig) {
-            subExe.root_module.error_tracing = options.traces;
-        }
-        subExe.root_module.strip = options.strip;
-        subExe.root_module.unwind_tables = options.unwind;
-        subExe.root_module.sanitize_c = options.sanitize;
-        subExe.root_module.stack_check = options.stack_check;
-        subExe.root_module.stack_protector = options.stack_protector;
-        subExe.root_module.valgrind = options.valgrind;
-        if (!is_zig) {
-            subExe.addCSourceFile(.{
-                .file = b.path(path),
-            });
-        }
-        var arena = std.heap.ArenaAllocator.init(b.allocator);
-        defer arena.deinit();
-        const n_paths = try std.zig.system.NativePaths.detect(arena.allocator(), compile.rootModuleTarget());
-        for (n_paths.lib_dirs.items) |lib_dir| if (pathExists(lib_dir)) |_| {
-            subExe.addLibraryPath(.{ .cwd_relative = lib_dir });
-        };
-        for (n_paths.include_dirs.items) |include_dir| {
-            subExe.addSystemIncludePath(.{ .cwd_relative = include_dir });
-        }
-        inline for (modules) |mod| {
-            subExe.root_module.addImport(mod.name, mod.module);
-        }
-        const target = compile.rootModuleTarget().os.tag;
+    }
+    var arena = std.heap.ArenaAllocator.init(b.allocator);
+    defer arena.deinit();
+    const n_paths = try std.zig.system.NativePaths.detect(arena.allocator(), compile.rootModuleTarget());
+    for (n_paths.lib_dirs.items) |lib_dir| if (pathExists(lib_dir)) |_| {
+        subExe.addLibraryPath(.{ .cwd_relative = lib_dir });
+    };
+    for (n_paths.include_dirs.items) |include_dir| {
+        subExe.addSystemIncludePath(.{ .cwd_relative = include_dir });
+    }
+    inline for (modules) |mod| {
+        subExe.root_module.addImport(mod.name, mod.module);
+    }
+    const target = compile.rootModuleTarget().os.tag;
 
-        if (target == .windows) {
-            subExe.linkSystemLibrary("opengl32");
-        }
-        const examples_dirname = "deshader-examples";
+    if (target == .windows) {
+        subExe.linkSystemLibrary("opengl32");
+    }
+    const examples_dirname = "deshader-examples";
+    if (options.output == .None) {
+        step.dependOn(&subExe.step);
+    } else {
         const sep = std.fs.path.sep_str;
         const install = step.owner.addInstallArtifact(
             subExe,
@@ -940,12 +973,9 @@ const SubExampleStep = struct {
             },
         );
         step.dependOn(&install.step);
-        return @This(){
-            .compile = subExe,
-            .install = install,
-        };
     }
-};
+    return subExe;
+}
 
 fn fileWithPrefixExists(allocator: std.mem.Allocator, dirname: String, basename: String) !?String {
     const full_dirname = try std.fs.path.join(allocator, &.{ dirname, std.fs.path.dirname(basename) orelse "" });
@@ -1050,20 +1080,32 @@ fn installVcpkgLibrary(i: *std.Build.Step.InstallArtifact, name: String, triplet
     return name;
 }
 
-fn linkGlew(i: *std.Build.Step.InstallArtifact, prefer_system: bool, triplet: String, debug_lib: bool) !void {
-    if (i.artifact.rootModuleTarget().os.tag == .windows) {
-        i.artifact.root_module.linkSystemLibrary("gdi32", .{});
-        try addVcpkgInstalledPaths(i.step.owner, i.artifact, triplet, debug_lib);
+fn linkGlew(c: *std.Build.Step.Compile, prefer_system: bool, triplet: String, debug_lib: bool) !void {
+    if (c.rootModuleTarget().os.tag == .windows) {
+        c.root_module.linkSystemLibrary("gdi32", .{});
+        try addVcpkgInstalledPaths(c.step.owner, c, triplet, debug_lib);
         const glew = if (debug_lib) "glew32d" else "glew32";
-        i.artifact.linkSystemLibrary(glew);
-        try linkVcpkgLibrary(i.artifact, glew, triplet, debug_lib); // VCPKG on x64-windows-cross generates bin/glew32.dll but lib/libglew32.dll.a
-        _ = try installVcpkgLibrary(i, glew, triplet, debug_lib);
-        i.artifact.linkSystemLibrary2("opengl32", .{ .needed = true });
+        c.linkSystemLibrary(glew);
+        try linkVcpkgLibrary(c, glew, triplet, debug_lib); // VCPKG on x64-windows-cross generates bin/glew32.dll but lib/libglew32.dll.a
+        if (findInstallStep(c)) |i| {
+            _ = try installVcpkgLibrary(i, glew, triplet, debug_lib);
+        }
+        c.linkSystemLibrary2("opengl32", .{ .needed = true });
     } else if (prefer_system) {
-        i.artifact.linkSystemLibrary2("glew", .{ .preferred_link_mode = .dynamic });
+        c.linkSystemLibrary2("glew", .{ .preferred_link_mode = .dynamic });
     } else {
-        try linkVcpkgLibrary(i.artifact, "glew", triplet, debug_lib);
+        try linkVcpkgLibrary(c, "glew", triplet, debug_lib);
     }
+}
+
+fn findInstallStep(c: *std.Build.Step.Compile) ?*std.Build.Step.InstallArtifact {
+    for (c.step.dependants.items) |dep| {
+        if (dep.id == .install_artifact) {
+            const i: *std.Build.Step.InstallArtifact = @fieldParentPtr("step", dep);
+            return i;
+        }
+    }
+    return null;
 }
 
 fn winepath(alloc: std.mem.Allocator, path: String, toWindows: bool) !String {
@@ -1127,10 +1169,10 @@ fn systemHasLib(c: *std.Build.Step.Compile, native_libs_location: String, lib: S
 fn nfd(c: *std.Build.Step.Compile, prefer_system: bool, triplet: String, debug: bool) !void {
     if (c.rootModuleTarget().os.tag == .linux) {
         // sometimes located here on Linux
-        c.addLibraryPath(.{ .cwd_relative = "/usr/lib/nfd/" });
-        c.addIncludePath(.{ .cwd_relative = "/usr/include/nfd/" });
-        c.addLibraryPath(.{ .cwd_relative = "/usr/local/lib/nfd/" });
-        c.addIncludePath(.{ .cwd_relative = "/usr/local/include/nfd/" });
+        if (pathExists("/usr/lib/nfd/")) |p| c.addLibraryPath(.{ .cwd_relative = p });
+        if (pathExists("/usr/include/nfd/")) |p| c.addIncludePath(.{ .cwd_relative = p });
+        if (pathExists("/usr/local/lib/nfd/")) |p| c.addLibraryPath(.{ .cwd_relative = p });
+        if (pathExists("/usr/local/include/nfd/")) |p| c.addIncludePath(.{ .cwd_relative = p });
     }
     if (prefer_system) {
         c.linkSystemLibrary("nfd");

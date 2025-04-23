@@ -90,7 +90,7 @@ pub fn getProductJson(allocator: std.mem.Allocator, https: bool, srv_authority: 
 }
 
 /// Inserts correct authorities into product.json
-fn productJsonHandler(_: *positron.Provider, r: *positron.Provider.Route, c: *serve.HttpContext) positron.Provider.Route.Error!void {
+fn productJsonHandler(_: *positron.Provider, r: *positron.Provider.Route, c: *serve.http.Context) positron.Provider.Route.Error!void {
     const commands_url: [*:0]u8 = @alignCast(@ptrCast(r.context));
     // Generate product.json according to current settings
     const srv_authority = c.request.headers.get("Host") orelse "127.0.0.1:" ++ common.default_editor_port;
@@ -138,13 +138,13 @@ fn decompress(provider: *positron.Provider, comptime file: String, dll_path: Str
     }
 }
 
-fn addCacheHeaders(_: *positron.Provider, _: ?*positron.Provider.Route, c: *serve.HttpContext) positron.Provider.Route.Error!void {
+fn addCacheHeaders(_: *positron.Provider, _: ?*positron.Provider.Route, c: *serve.http.Context) positron.Provider.Route.Error!void {
     if (builtin.mode == .Debug and std.ascii.indexOfIgnoreCase(c.request.url, "deshader-vscode/dist") != null) {
         try c.response.setHeader("Cache-Control", "max-age=0, public");
     } else try c.response.setHeader("Cache-Control", "max-age=1800, public");
 }
 
-fn addDeflateHeaders(p: *positron.Provider, r: ?*positron.Provider.Route, c: *serve.HttpContext) positron.Provider.Route.Error!void {
+fn addDeflateHeaders(p: *positron.Provider, r: ?*positron.Provider.Route, c: *serve.http.Context) positron.Provider.Route.Error!void {
     try c.response.setHeader("Content-Encoding", "deflate");
     try addCacheHeaders(p, r, c);
 }
@@ -437,9 +437,9 @@ fn resolveSelfDllTarget(allocator: std.mem.Allocator) !String {
 }
 
 /// Used to reply to request from the extension inside Deshader Editor
-fn rpcHandler(p: *positron.Provider, r: *positron.Provider.Route, c: *serve.HttpContext) positron.Provider.Route.Error!void {
+fn rpcHandler(p: *positron.Provider, r: *positron.Provider.Route, c: *serve.http.Context) positron.Provider.Route.Error!void {
     const Reject = struct {
-        http: *serve.HttpContext,
+        http: *serve.http.Context,
 
         fn reject(self: *const @This(), err: anytype) !void {
             if (!self.http.response.is_writing_body) {

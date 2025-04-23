@@ -204,7 +204,7 @@ pub const MutliListener = struct {
         const command_route = struct {
             var comm: *const @TypeOf(command) = undefined;
             var free: ?*const fn (@typeInfo(@TypeOf(command)).@"fn".return_type.?) void = null;
-            var writer: serve.HttpResponse.Writer = undefined;
+            var writer: serve.http.Response.Writer = undefined;
             fn log(level: std.log.Level, scope: String, message: String) void {
                 const result = std.fmt.allocPrint(common.allocator, "{s} ({s}): {s}", .{ scope, @tagName(level), message }) catch return;
                 defer common.allocator.free(result);
@@ -221,7 +221,7 @@ pub const MutliListener = struct {
                 };
             }
 
-            fn wrapper(provider: *positron.Provider, _: *Route, context: *serve.HttpContext) Route.Error!void {
+            fn wrapper(provider: *positron.Provider, _: *Route, context: *serve.http.Context) Route.Error!void {
                 if (setting_vars.logIntoResponses) {
                     writer = try context.response.writer();
                     logging.log_listener = log;
@@ -284,7 +284,7 @@ pub const MutliListener = struct {
                                 try writer.writeByte('\n'); //Alwys add a newline to the end
                             }
                         },
-                        serve.HttpStatusCode => try context.response.setStatusCode(result),
+                        serve.http.StatusCode => try context.response.setStatusCode(result),
                         else => unreachable,
                     }
                 } else |err| {
@@ -324,7 +324,7 @@ pub const MutliListener = struct {
             String,
             CStringArray,
             StringArray,
-            HttpStatusCode,
+            StatusCode,
         };
         const decls = @typeInfo(commands).@"struct".decls;
         const comInfo = struct { r: CommandReturnType, a: usize, c: *const anyopaque, free: ?*const anyopaque };
@@ -339,7 +339,7 @@ pub const MutliListener = struct {
                     String => CommandReturnType.String,
                     []const String => CommandReturnType.StringArray,
                     []const CString => CommandReturnType.CStringArray,
-                    serve.HttpStatusCode => CommandReturnType.HttpStatusCode,
+                    serve.http.StatusCode => CommandReturnType.StatusCode,
                     else => @compileError("Command " ++ function.name ++ " has invalid return type. Only void, string, string array, string set, and http status code are available."),
                 },
                 .a = @typeInfo(@TypeOf(command)).@"fn".params.len,
@@ -402,9 +402,9 @@ pub const MutliListener = struct {
                         defer common.allocator.free(flattened);
                         try self.writeAll(if (std.unicode.utf8ValidateSlice(flattened)) .text else .binary, &.{ accepted, command_echo, "\n", flattened, "\n" });
                     },
-                    serve.HttpStatusCode => {
+                    serve.http.StatusCode => {
                         try self.writeAll(.text, &.{
-                            try std.fmt.bufPrint(&http_code_buffer, "{d}", .{@as(serve.HttpStatusCode, result)}),
+                            try std.fmt.bufPrint(&http_code_buffer, "{d}", .{@as(serve.http.StatusCode, result)}),
                             ": ",
                             @tagName(result),
                             "\n",
@@ -487,10 +487,10 @@ pub const MutliListener = struct {
                         2 => handleInner(self, @as(*const fn (?ArgumentsMap, String) anyerror![]const String, @alignCast(@ptrCast(tc.c)))(parsed_args, body), request, @alignCast(@ptrCast(tc.free))),
                         else => unreachable,
                     },
-                    .HttpStatusCode => switch (tc.a) {
-                        0 => handleInner(self, @as(*const fn () anyerror!serve.HttpStatusCode, @alignCast(@ptrCast(tc.c)))(), request, @alignCast(@ptrCast(tc.free))),
-                        1 => handleInner(self, @as(*const fn (?ArgumentsMap) anyerror!serve.HttpStatusCode, @alignCast(@ptrCast(tc.c)))(parsed_args), request, @alignCast(@ptrCast(tc.free))),
-                        2 => handleInner(self, @as(*const fn (?ArgumentsMap, String) anyerror!serve.HttpStatusCode, @alignCast(@ptrCast(tc.c)))(parsed_args, body), request, @alignCast(@ptrCast(tc.free))),
+                    .StatusCode => switch (tc.a) {
+                        0 => handleInner(self, @as(*const fn () anyerror!serve.http.StatusCode, @alignCast(@ptrCast(tc.c)))(), request, @alignCast(@ptrCast(tc.free))),
+                        1 => handleInner(self, @as(*const fn (?ArgumentsMap) anyerror!serve.http.StatusCode, @alignCast(@ptrCast(tc.c)))(parsed_args), request, @alignCast(@ptrCast(tc.free))),
+                        2 => handleInner(self, @as(*const fn (?ArgumentsMap, String) anyerror!serve.http.StatusCode, @alignCast(@ptrCast(tc.c)))(parsed_args, body), request, @alignCast(@ptrCast(tc.free))),
                         else => unreachable,
                     },
                 };

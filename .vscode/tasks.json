@@ -177,6 +177,34 @@
             }
         },
         {
+            "label": "Check errors",
+            "command": "zig",
+            "args": [
+                "build",
+                "examples",
+                "-Dotype=None",
+                "-Dllvm=false"
+            ],
+            "group": "build"
+        },
+        {
+            "label": "Check errors continuously",
+            "command": "zig",
+            "args": [
+                "build",
+                "examples",
+                "-Dotype=None",
+                "-Dllvm=false",
+                "-Ddependencies=false",
+                "-fincremental",
+                "--watch",
+                "--summary",
+                "none"
+            ],
+            "problemMatcher": "$zig",
+            "group": "build"
+        },
+        {
             "label": "Build Examples",
             "command": "zig",
             "args": [
