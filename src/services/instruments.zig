@@ -12,13 +12,12 @@ const CString = []const u8;
 
 pub const Error = error{ InvalidStep, FunctionNotInScope };
 
+/// This instrument is used for stepping and breakpoint logic
 pub const Step = struct {
     pub var step_identifier: String = "_step_";
     pub const tag = analyzer.parse.Tag.call;
     pub const id: u64 = 0x57e9;
     pub const sync_id: u64 = 0x51c;
-
-    pub const breakpoints_id: u64 = 0x0b5ea7;
 
     pub const Controls = struct {
         breakpoints: std.AutoHashMapUnmanaged(usize, void) = .empty,
@@ -186,10 +185,8 @@ pub const Step = struct {
         } else "[" ++ component ++ "]";
     }
 
-    fn checkAndHit(processor: *Processor, comptime cond: String, cond_args: anytype, step_id: usize, comptime ret: String, ret_args: anytype, comptime append: String, args: anytype) !String {
-        const name = StepStorageName{ .processor = processor };
-        return try processor.print("if((" ++ step_counter ++ "++>={s})" ++ cond ++ "){{{s}{s}={d};{s}{s}=" ++ step_counter ++ ";{s}=true;return " ++ ret ++ ";}}" ++ append, //
-            .{desired_step} ++ cond_args ++ .{ name, bufferIndexer(processor, "0"), step_id, name, bufferIndexer(processor, "1"), local_was_hit } ++ ret_args ++ args);
+    fn checkAndHit(processor: *Processor, comptime cond: String, cond_args: anytype, step_id: usize, comptime ret: String, ret_args: anytype) !String {
+        return try processor.print(Processor.templates.prefix ++ "step({d}, " ++ cond ++ "," ++ ret ++ ")", .{step_id} ++ cond_args ++ ret_args);
     }
 
     /// Inserts a guard to break the function `func` if a step or breakpoint was hit already. Should be inserted after a call to any user function.
@@ -204,19 +201,19 @@ pub const Step = struct {
         ), pos, 0);
     }
 
-    fn advanceAndCheck(processor: *Processor, step_id: usize, func: Processor.Processor.TraverseContext.Function, is_void: bool, has_bp: bool, comptime append: String, args: anytype) !String {
+    fn advanceAndCheck(processor: *Processor, step_id: usize, func: Processor.Processor.TraverseContext.Function, is_void: bool, has_bp: bool) !String {
         const bp_cond = "||(" ++ step_counter ++ ">{s})";
         const return_init = "{s}(0)";
         return // TODO initialize structs for returning
         if (has_bp)
             if (is_void)
-                checkAndHit(processor, bp_cond, .{desired_bp}, step_id, "", .{}, append, args)
+                checkAndHit(processor, bp_cond, .{desired_bp}, step_id, "", .{})
             else
-                checkAndHit(processor, bp_cond, .{desired_bp}, step_id, return_init, .{func.return_type}, append, args)
+                checkAndHit(processor, bp_cond, .{desired_bp}, step_id, return_init, .{func.return_type})
         else if (is_void)
-            checkAndHit(processor, "", .{}, step_id, "", .{}, append, args)
+            checkAndHit(processor, "", .{}, step_id, "", .{})
         else
-            checkAndHit(processor, "", .{}, step_id, return_init, .{func.return_type}, append, args);
+            checkAndHit(processor, "", .{}, step_id, return_init, .{func.return_type});
     }
 
     /// Recursively add the functionality: break the caller function after a call to a function with the `name`
@@ -397,6 +394,8 @@ pub const Step = struct {
             }), processor.after_version);
         }
 
+        const storage_name = StepStorageName{ .processor = processor };
+
         switch (step_storage.location) {
             // -- Beware of spaces --
             .buffer => |buffer| {
@@ -416,8 +415,6 @@ pub const Step = struct {
                 try processor.insertStart( //
                     "uint " ++ step_counter ++ "=0u;\n" //
                     ++ "bool " ++ local_was_hit ++ "=false;\n", processor.after_version);
-
-                const storage_name = StepStorageName{ .processor = processor };
 
                 if (processor.parsed.version >= 130 or !processor.config.shader_stage.isFragment()) {
                     try processor.insertStart(
@@ -441,6 +438,18 @@ pub const Step = struct {
         // step and bp selector uniforms
         try processor.insertEnd("uniform uint " ++ desired_step ++ ";\n", processor.after_version, 0);
         try processor.insertEnd("uniform uint " ++ desired_bp ++ ";\n", processor.after_version, 0);
+
+        // #define step check macro
+        try processor.insertEnd(try processor.print(
+            "#define " ++ Processor.templates.prefix ++ "step(id, cond, ret) if((" ++ step_counter ++ "++>=" ++ desired_step ++ ") cond ){{{s}{s}=id;{s}{s}=" ++ step_counter ++ ";{s}=true;return ret;}}\n", //
+            .{
+                storage_name,
+                bufferIndexer(processor, "0"),
+                storage_name,
+                bufferIndexer(processor, "1"),
+                local_was_hit,
+            },
+        ), processor.after_version, 0);
     }
 
     pub fn setupDone(processor: *Processor) anyerror!void {
@@ -476,7 +485,7 @@ pub const Step = struct {
                 if (controls(&processor.config.program).?.desired_step != null or has_breakpoint) {
                     // insert the step's check'n'break
                     try processor.insertEnd(
-                        try advanceAndCheck(processor, step_id, context_func, parent_is_void, has_breakpoint, "", .{}),
+                        try advanceAndCheck(processor, step_id, context_func, parent_is_void, has_breakpoint),
                         span.start,
                         span.length(),
                     );
@@ -501,7 +510,7 @@ pub const Step = struct {
     /// Instrumentation preprocessing
     /// TODO relies on the result being empty
     pub fn preprocess(processor: *Processor, source_parts: []*shaders.Shader.SourcePart, result: *std.ArrayListUnmanaged(u8)) anyerror!void {
-        _ = try processor.controlVar(id, Controls, true, Controls{});
+        const c = try processor.controlVar(id, Controls, true, Controls{});
         const r = try processor.responseVar(id, Responses, true, Responses{});
 
         // The id of the first step for each part
@@ -514,6 +523,11 @@ pub const Step = struct {
                 .part = part,
                 .offset = step_offset,
             });
+            var it = part.breakpoints.keyIterator();
+            while (it.next()) |b| {
+                try c.value_ptr.*.breakpoints.put(processor.config.allocator, b.* + step_offset, {});
+            }
+
             step_offset += try preprocessPart(part, step_offset, result, processor.config.allocator);
         }
     }

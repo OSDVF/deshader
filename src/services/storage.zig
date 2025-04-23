@@ -302,11 +302,15 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime Parted: bo
             }
         }
 
+        fn isRoot(ref_or_root: Stored.Ref) bool {
+            return (@hasField(Stored.Ref, "root") and ref_or_root == .root) or @intFromEnum(ref_or_root) == 0;
+        }
+
         /// If `ref_or_root == 0` this function lists all untagged objects.
         /// Otherwise it lists nested objects under this untagged resource.
         pub fn listUntagged(self: *const @This(), allocator: std.mem.Allocator, ref_or_root: Stored.Ref, nested_postfix: ?String, nested_untagged: ?bool) ![]CString {
             var result = try std.ArrayListUnmanaged(CString).initCapacity(allocator, self.all.count());
-            if ((@hasField(Stored.Ref, "root") and ref_or_root == .root) or @intFromEnum(ref_or_root) == 0) {
+            if (isRoot(ref_or_root)) {
                 var iter = self.all.iterator();
                 while (iter.next()) |items| {
                     if (Parted) {
@@ -333,7 +337,7 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime Parted: bo
             } // 0 can be also a valid ref, so also list its sources
 
             if (Nested != void) { //Specialization
-                const stored_parts = self.all.get(ref_or_root) orelse return Error.TargetNotFound;
+                const stored_parts = self.all.get(ref_or_root) orelse return if (isRoot(ref_or_root)) result.toOwnedSlice(allocator) else Error.TargetNotFound;
                 if (!Parted or stored_parts.items.len > 0) {
                     const stored = if (Parted) stored_parts.items[0] else stored_parts;
                     const has_untagged = try stored.listNested(allocator, "", nested_postfix, nested_untagged, &result);

@@ -724,6 +724,14 @@ pub const MutliListener = struct {
             std.process.abort();
         }
 
+        pub fn clients() ![]const String {
+            const c = try common.allocator.alloc(String, instance.?.ws.items.len);
+            for (instance.?.ws.items, 0..) |ws, i| {
+                c[i] = try std.fmt.allocPrint(common.allocator, "{}", .{ws.address});
+            }
+            return c;
+        }
+
         fn getUnsentBreakpoints(s: *const shaders, breakpoints_to_send: *std.ArrayListUnmanaged(dap.Breakpoint)) !void {
             for (s.dirty_breakpoints.items) |bp| {
                 if (s.Shaders.all.get(bp[0])) |shader| {
@@ -1367,7 +1375,7 @@ pub const MutliListener = struct {
         }
     };
     const free_funcs = struct {
-        pub fn settings(result: anyerror![]const String) void {
+        fn stringArray(result: anyerror![]const String) void {
             const r = result catch return;
             for (r) |line| {
                 common.allocator.free(line);
@@ -1386,6 +1394,7 @@ pub const MutliListener = struct {
         const stat = stringReturning;
         const state = stringReturning;
         //const completion = stringReturning;
+        const clients = stringArray;
         const debug = stringReturning;
         const dataBreakpointInfo = stringReturning;
         const evaluate = stringReturning;
@@ -1400,6 +1409,7 @@ pub const MutliListener = struct {
         //const setFunctionBreakpoint = stringReturning;
         //const setVariable = stringReturning;
         const stackTrace = stringReturning;
+        const settings = stringArray;
         //const stepIn = stringReturning;
         //const stepOut = stringReturning;
         // const variables = stringReturning;
