@@ -133,6 +133,7 @@ pub const Result = struct {
     /// Actually it can be modified by the platform specific code (e.g. to set the selected thread location)
     pub const Channels = struct {
         /// Filled with storages created by the individual instruments
+        /// Do not access this from instruments directly. Use `Processor.outChannel` instead.
         out: std.AutoArrayHashMapUnmanaged(u64, *OutputStorage) = .empty,
         /// Filled with control variables created by the individual instruments (e.g. desired step)
         controls: std.AutoArrayHashMapUnmanaged(u64, *anyopaque) = .empty,
@@ -226,15 +227,15 @@ pub const Instrument = struct {
 /// Physically are the channels always stored in one of program's stage's `Channels` and thes maps inside this struct contains references only
 pub const Channels = struct {
     out: std.AutoArrayHashMapUnmanaged(u64, *Processor.OutputStorage) = .empty,
-    controls: std.AutoArrayHashMapUnmanaged(u64, **anyopaque) = .empty,
-    responses: std.AutoArrayHashMapUnmanaged(u64, **anyopaque) = .empty,
+    controls: std.AutoArrayHashMapUnmanaged(u64, *anyopaque) = .empty,
+    responses: std.AutoArrayHashMapUnmanaged(u64, *anyopaque) = .empty,
 
     pub fn getControl(self: @This(), comptime T: type, id: u64) ?T {
-        return if (self.controls.get(id)) |p| @alignCast(@ptrCast(p.*)) else null;
+        return if (self.controls.get(id)) |p| @alignCast(@ptrCast(p)) else null;
     }
 
     pub fn getResponse(self: @This(), comptime T: type, id: u64) ?T {
-        return if (self.responses.get(id)) |p| @alignCast(@ptrCast(p.*)) else null;
+        return if (self.responses.get(id)) |p| @alignCast(@ptrCast(p)) else null;
     }
 
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
@@ -263,7 +264,7 @@ pub const Config = struct {
     group_dim: []const usize,
     groups_count: ?[]const usize,
     /// Program-wide channels, shared between all shader stages. The channels should be onlly Buffers
-    program: Channels,
+    program: *Channels,
     instruments_any: []const Instrument,
     instruments_scoped: std.EnumMap(analyzer.parse.Tag, std.ArrayListUnmanaged(Instrument)),
     max_buffers: usize,
@@ -633,18 +634,18 @@ pub fn addStorage(
 pub fn VarResult(comptime T: type) type {
     return struct {
         found_existing: bool,
-        value_ptr: **T,
+        value_ptr: *T,
     };
 }
 
-fn varImpl(self: *@This(), id: u64, comptime T: type, default: ?T, source: *std.AutoArrayHashMapUnmanaged(u64, *anyopaque), program_source: ?*std.AutoArrayHashMapUnmanaged(u64, **anyopaque)) !VarResult(T) {
+fn varImpl(self: *@This(), id: u64, comptime T: type, default: ?T, source: *std.AutoArrayHashMapUnmanaged(u64, *anyopaque), program_source: ?*std.AutoArrayHashMapUnmanaged(u64, *anyopaque)) !VarResult(T) {
     if (program_source) |ps| {
         const global = try ps.getOrPut(self.config.allocator, id);
         if (!global.found_existing) {
             const local = try source.getOrPut(self.config.allocator, id);
-            global.value_ptr.* = local.value_ptr;
+            local.value_ptr.* = try self.config.allocator.create(T);
+            global.value_ptr.* = local.value_ptr.*;
             if (default) |d| {
-                local.value_ptr.* = try self.config.allocator.create(T);
                 @as(*T, @alignCast(@ptrCast(local.value_ptr.*))).* = d;
             }
         }
@@ -655,20 +656,24 @@ fn varImpl(self: *@This(), id: u64, comptime T: type, default: ?T, source: *std.
     } else {
         const local = try source.getOrPut(self.config.allocator, id);
         if (!local.found_existing) {
+            local.value_ptr.* = try self.config.allocator.create(T);
             if (default) |d| {
-                local.value_ptr.* = try self.config.allocator.create(T);
                 @as(*T, @alignCast(@ptrCast(local.value_ptr.*))).* = d;
             }
         }
         return VarResult(T){
             .found_existing = local.found_existing,
-            .value_ptr = @alignCast(@ptrCast(local.value_ptr)),
+            .value_ptr = @alignCast(@ptrCast(local.value_ptr.*)),
         };
     }
 }
 
 pub fn controlVar(self: *@This(), id: u64, comptime T: type, program_wide: bool, default: ?T) !VarResult(T) {
     return varImpl(self, id, T, default, &self.channels.controls, if (program_wide) &self.config.program.controls else null);
+}
+
+pub fn outChannel(self: *@This(), id: u64) ?*OutputStorage {
+    return self.channels.out.get(id) orelse self.config.program.out.get(id);
 }
 
 pub fn scratchVar(self: *@This(), id: u64, comptime T: type, default: ?T) !VarResult(T) {

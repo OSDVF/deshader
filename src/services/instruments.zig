@@ -92,14 +92,8 @@ pub const Step = struct {
     }
 
     fn guarded(processor: *Processor) !*Guarded {
-        const gop = try processor.scratchVar(id, Guarded, null);
-        if (!gop.found_existing) {
-            @branchHint(.cold);
-            const new = processor.config.allocator.create(Guarded) catch return error.OutOfMemory;
-            new.* = Guarded.empty;
-            gop.value_ptr.* = new;
-        }
-        return @alignCast(@ptrCast(gop.value_ptr.*));
+        const gop = try processor.scratchVar(id, Guarded, Guarded.empty);
+        return @alignCast(@ptrCast(gop.value_ptr));
     }
 
     //
@@ -177,7 +171,7 @@ pub const Step = struct {
 
     /// Index into the global hit indication storage for the current thread
     fn bufferIndexer(processor: *Processor, comptime component: String) String {
-        return if (processor.channels.out.get(id).?.location == .buffer) switch (processor.config.shader_stage) {
+        return if (processor.outChannel(id).?.location == .buffer) switch (processor.config.shader_stage) {
             .gl_vertex => if (processor.vulkan) "[gl_VertexIndex/2][(gl_VertexIndex%2)*2+" ++ component ++ "]" else "[gl_VertexID/2][(gl_VertexID%2)*2+" ++ component ++ "]",
             .gl_tess_control => "[gl_InvocationID/2*][(gl_InvocationID%2)*2+" ++ component ++ "]",
             .gl_fragment, .gl_tess_evaluation, .gl_mesh, .gl_task, .gl_compute, .gl_geometry => "[" ++ Processor.templates.global_thread_id ++ "/2][(" ++ Processor.templates.global_thread_id ++ "%2)*2+" ++ component ++ "]",
@@ -332,10 +326,12 @@ pub const Step = struct {
         if (controls(&state.params.context.program.channels)) |c| {
             defer c.breakpoints.deinit(state.params.allocator);
             state.params.allocator.destroy(c);
+            std.debug.assert(state.params.context.program.channels.controls.swapRemove(id));
         }
         if (responses(&state.params.context.program.channels)) |r| {
             defer r.offsets.deinit(state.params.allocator);
             state.params.allocator.destroy(r);
+            std.debug.assert(state.params.context.program.channels.responses.swapRemove(id));
         }
     }
 
@@ -343,7 +339,7 @@ pub const Step = struct {
     const StepStorageName = struct {
         processor: *Processor,
         pub fn format(self: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
-            const step_storage = self.processor.channels.out.get(id).?;
+            const step_storage = self.processor.outChannel(id).?;
             switch (step_storage.location) {
                 .buffer => |_| try writer.writeAll(hit_storage),
                 .interface => |i| if (self.processor.parsed.version >= 130 or !self.processor.config.shader_stage.isFragment()) //
@@ -460,7 +456,7 @@ pub const Step = struct {
 
     /// Adds "source code stepping" instrumentation to the given source code
     pub fn instrument(processor: *Processor, node: Processor.NodeId, context: *Processor.TraverseContext) anyerror!void {
-        const c = controls(&processor.config.program).?;
+        const c = controls(processor.config.program).?;
         const tree = processor.parsed.tree;
         const source = processor.config.source;
         if (analyzer.syntax.Call.tryExtract(tree, node)) |call_ex| {
@@ -482,7 +478,7 @@ pub const Step = struct {
                 const has_breakpoint = c.breakpoints.contains(step_id);
 
                 // Emit step hit => write to the output debug buffer and return
-                if (controls(&processor.config.program).?.desired_step != null or has_breakpoint) {
+                if (controls(processor.config.program).?.desired_step != null or has_breakpoint) {
                     // insert the step's check'n'break
                     try processor.insertEnd(
                         try advanceAndCheck(processor, step_id, context_func, parent_is_void, has_breakpoint),
@@ -760,7 +756,7 @@ pub const Variables = struct {
             id,
             .PreferBuffer,
             .@"4U32",
-            if (processor.parsed.version >= 440 and processor.config.shader_stage.isFragment()) if (processor.channels.out.get(Step.id)) |s| s.location else null else null,
+            if (processor.parsed.version >= 440 and processor.config.shader_stage.isFragment()) if (processor.outChannel(Step.id)) |s| s.location else null else null,
             1,
         );
 
