@@ -50,7 +50,12 @@ pub const Step = struct {
         };
     }
 
-    pub fn onResult(service: *shaders, instrumentation: *const shaders.InstrumentationResult, readbacks: *const std.AutoArrayHashMapUnmanaged(decls.InstrumentId, decls.Readback), _: *const decls.PlatformParamsGL) anyerror!void {
+    pub fn onResult(
+        service: *shaders,
+        instrumentation: *const shaders.InstrumentationResult,
+        readbacks: *const std.AutoArrayHashMapUnmanaged(decls.InstrumentId, decls.Readback),
+        _: *const decls.PlatformParamsGL,
+    ) anyerror!void {
         var it = instrumentation.stages.iterator();
         while (it.next()) |entry| {
             // Debug adapter Breakpoint IDs

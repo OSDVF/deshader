@@ -16,7 +16,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const PositronSdk = @import("libs/positron/Sdk.zig");
-const ZigServe = @import("libs/positron/vendor/serve/build.zig");
 const ctregex = @import("libs/ctregex/ctregex.zig");
 const CompressStep = @import("bootstrap/compress.zig").CompressStep;
 const DependenciesStep = @import("bootstrap/dependencies.zig").DependenciesStep;
@@ -28,15 +27,12 @@ const types = @import("src/common/types.zig");
 const String = []const u8;
 
 const log = std.log.scoped(.DeshaderBuild);
-const hasDylibCache = builtin.os.isAtLeast(.macos, .{ .major = 11, .minor = 0, .patch = 1 }) orelse false; // https://developer.apple.com/documentation/macos-release-notes/macos-big-sur-11_0_1-release-notes#Kernel
+// https://developer.apple.com/documentation/macos-release-notes/macos-big-sur-11_0_1-release-notes#Kernel
+const hasDylibCache = builtin.os.isAtLeast(.macos, .{ .major = 11, .minor = 0, .patch = 1 }) orelse false;
+// SAFETY: assigned when created
 var dependencies_step: DependenciesStep = undefined;
+// SAFETY: assigned very early in build()
 var options: opts.Options = undefined;
-
-// Shims for compatibility between Zig versions
-const exec = std.process.Child.run;
-fn openIterableDir(path: String) std.fs.File.OpenError!if (@hasDecl(std.fs, "openIterableDirAbsolute")) std.fs.IterableDir else std.fs.Dir {
-    return if (@hasDecl(std.fs, "openIterableDirAbsolute")) std.fs.openIterableDirAbsolute(path, .{}) else std.fs.openDirAbsolute(path, .{ .iterate = true });
-}
 
 pub fn build(b: *std.Build) !void {
     var target = b.standardTargetOptions(.{});
@@ -59,7 +55,10 @@ pub fn build(b: *std.Build) !void {
     // do not deinit env, because it will be used in DependeciesStep in make phase
     const host_libs_location = switch (targetTarget) {
         .windows => if (builtin.os.tag == .windows) system32 else try winepath(b.allocator, system32, false),
-        .macos => if (builtin.os.tag == .macos) "/" else pathExists("/usr/libexec/darling/") orelse pathExists("/usr/local/libexec/darling/") orelse return error.NoDarling,
+        .macos => if (builtin.os.tag == .macos)
+            "/"
+        else
+            pathExists("/usr/libexec/darling/") orelse pathExists("/usr/local/libexec/darling/") orelse return error.NoDarling,
         else => getLdConfigPath(b),
     };
 
@@ -77,24 +76,55 @@ pub fn build(b: *std.Build) !void {
 
     // Compilation options
     const default_traces = (targetTarget != .windows or builtin.os.tag == .windows) and (optimize == .Debug or optimize == .ReleaseSafe);
-    const option_traces = b.option(bool, "traces", "Enable error traces (implicit for debug mode)") orelse default_traces; // important! keep tracing support synced for Deshader Library and Launcher, because there are casts from error aware functions to anyopaque,
+    // important! keep tracing support synced for Deshader Library and Launcher, because there are casts from error aware functions to anyopaque,
+    const option_traces = b.option(bool, "traces", "Enable error traces (implicit for debug mode)") orelse default_traces;
     const option_llvm = b.option(bool, "llvm", "Use LLVM for native code generation (default yes)") orelse true;
-    const option_stack_check = (b.option(bool, "stackCheck", "Enable stack checking (implicit for debug mode, not supported for Windows, ARM)") orelse (optimize == .Debug)) and (targetTarget != .windows and target.result.cpu.arch != .arm and option_llvm);
+    const option_stack_check = (b.option(bool, "stackCheck", "Enable stack checking (implicit for debug mode, not supported for Windows, ARM)") //
+        orelse //
+            (optimize == .Debug)) and (targetTarget != .windows and target.result.cpu.arch != .arm and option_llvm);
     const otype = b.option(opts.OutputType, "otype", "Compiler output type. Use None for check for errors only.") orelse .Default;
 
     options = opts.Options{
         .custom_library = b.option([]const String, "customLibrary", "Names of additional libraries to intercept"),
         .editor = b.option(bool, "editor", "Include VSCode editor in Deshader Launcher (default yes)") orelse true,
-        .dependencies = b.option(bool, "dependencies", "Build externally-managed dependencies (libs, editor, extension...) (default yes)") orelse true,
-        .ignore_missing = b.option(bool, "ignoreMissing", "Ignore missing VK and GL libraries. GLX, EGL and VK will be required by default") orelse false,
-        .include = b.option(String, "include", "Path to directory with additional headers to include"),
-        .lib_assert = b.option(bool, "libAssert", "Include assertions in VCPKG libraries (implicit for debug and release safe)") orelse (optimize == .Debug or optimize == .ReleaseSafe),
+        .dependencies = b.option(
+            bool,
+            "dependencies",
+            "Build externally-managed dependencies (libs, editor, extension...) (default yes)",
+        ) orelse true,
+        .ignore_missing = b.option(
+            bool,
+            "ignoreMissing",
+            "Ignore missing VK and GL libraries. GLX, EGL and VK will be required by default",
+        ) orelse false,
+        .include = b.option(
+            String,
+            "include",
+            "Path to directory with additional headers to include",
+        ),
+        .lib_assert = b.option(
+            bool,
+            "libAssert",
+            "Include assertions in VCPKG libraries (implicit for debug and release safe)",
+        ) orelse (optimize == .Debug or optimize == .ReleaseSafe),
         .lib_debug = b.option(bool, "libDebug", "Include debug information in VCPKG libraries") orelse (optimize == .Debug),
         .lib_dir = b.option(String, "lib", "Path to directory with additional libraries to link"),
-        .lib_linkage = b.option(std.builtin.LinkMode, "libLinkage", "Select linkage type for VCPKG libraries. (default dynamic for OSX and Windows, static for Linux)") orelse if (targetTarget == .windows) std.builtin.LinkMode.dynamic else std.builtin.LinkMode.static,
-        .linkage = b.option(std.builtin.LinkMode, "linkage", "Select linkage type for deshader library. Cannot be combined with -Dotype.") orelse .dynamic,
+        .lib_linkage = b.option(
+            std.builtin.LinkMode,
+            "libLinkage",
+            "Select linkage type for VCPKG libraries. (default dynamic for OSX and Windows, static for Linux)",
+        ) orelse if (targetTarget == .windows) std.builtin.LinkMode.dynamic else std.builtin.LinkMode.static,
+        .linkage = b.option(
+            std.builtin.LinkMode,
+            "linkage",
+            "Select linkage type for deshader library. Cannot be combined with -Dotype.",
+        ) orelse .dynamic,
         .llvm = option_llvm,
-        .log_intercept = b.option(bool, "logInterception", "Log intercepted GL and VK procedure list and loader errors to stdout (adds several MB to library size)") orelse false,
+        .log_intercept = b.option(
+            bool,
+            "logInterception",
+            "Log intercepted GL and VK procedure list and loader errors to stdout (adds several MB to library size)",
+        ) orelse false,
         .log_level = b.option(opts.Level, "logLevel", "Set log level for the build") orelse .default,
         .memory_frames = b.option(u32, "memoryFrames", "Number of frames in memory leak backtrace (default 7)") orelse 7,
         .output = otype,
@@ -102,15 +132,21 @@ pub fn build(b: *std.Build) !void {
         .sdk = b.option(String, "sdk", "SDK path (macOS only, defaults to the one selected by xcode-select)"),
         .stack_check = option_stack_check,
         .stack_protector = b.option(bool, "stackProtector", "Enable stack protector (implicit for debug mode)") orelse option_stack_check,
-        .strip = b.option(bool, "strip", "Strip debug symbols from the library (implicit for release fast and minimal mode)") orelse (otype == .None) or (optimize != .Debug and optimize != .ReleaseSafe),
+        .strip = b.option(bool, "strip", "Strip debug symbols from the library (implicit for release fast and minimal mode)") orelse
+            (otype == .None) or (optimize != .Debug and optimize != .ReleaseSafe),
         .system_glew = b.option(bool, "sGLEW", "Force usage of system-supplied GLEW library (VCPKG has priority otherwise)") orelse false,
         .system_glfw = b.option(bool, "sGLFW3", "Force usage of system-supplied GLFW3 library (VCPKG has priority otherwise)") orelse false,
         .system_glslang = b.option(bool, "sGLSLang", "Force usage of system-supplied GLSLang library (VCPKG has priority otherwise)") orelse false,
         .system_nfd = b.option(bool, "sNFD", "Force usage of system-supplied NFD library (VCPKG has priority otherwise)") orelse false,
         .system_wolfssl = b.option(bool, "sWolfSSL", "Force usage of system-supplied WolfSSL library (VCPKG has priority otherwise)") orelse false,
         .traces = option_traces,
-        .triplet = b.option(String, "triplet", "VCPKG triplet to use for dependencies") orelse try arch.targetToVcpkgTriplet(b.allocator, target.result),
-        .valgrind = b.option(bool, "valgrind", "Enable valgrind support (implicit for debug mode, not supported for macos, ARM, and msvc target)") orelse (option_traces and target.result.abi != .msvc and targetTarget != .macos and target.result.cpu.arch != .arm),
+        .triplet = b.option(String, "triplet", "VCPKG triplet to use for dependencies") orelse
+            try arch.targetToVcpkgTriplet(b.allocator, target.result),
+        .valgrind = b.option(
+            bool,
+            "valgrind",
+            "Enable valgrind support (implicit for debug mode, not supported for macos, ARM, and msvc target)",
+        ) orelse (option_traces and target.result.abi != .msvc and targetTarget != .macos and target.result.cpu.arch != .arm),
         .unwind = b.option(std.builtin.UnwindTables, "unwind", "Enable unwind tables (implicit for debug mode)"),
     };
 
@@ -127,11 +163,16 @@ pub fn build(b: *std.Build) !void {
         .link_libc = true,
     };
 
-    const deshader_lib: *std.Build.Step.Compile = if (options.linkage == .static) b.addStaticLibrary(types.convert(deshaderCompileOptions, std.Build.StaticLibraryOptions{
-        .name = undefined,
-    })) else b.addSharedLibrary(types.convert(deshaderCompileOptions, std.Build.SharedLibraryOptions{
-        .name = undefined,
-    }));
+    const deshader_lib: *std.Build.Step.Compile = if (options.linkage == .static)
+        b.addStaticLibrary(types.convert(deshaderCompileOptions, std.Build.StaticLibraryOptions{
+            // SAFETY: used only for type resolution
+            .name = undefined,
+        }))
+    else
+        b.addSharedLibrary(types.convert(deshaderCompileOptions, std.Build.SharedLibraryOptions{
+            // SAFETY: used only for type resolution
+            .name = undefined,
+        }));
     deshader_lib.use_llvm = options.llvm;
     deshader_lib.root_module.error_tracing = options.traces;
     deshader_lib.root_module.strip = options.strip;
@@ -144,7 +185,12 @@ pub fn build(b: *std.Build) !void {
     deshader_lib.addLibraryPath(.{ .cwd_relative = host_libs_location });
 
     const system_framwork_path = std.Build.LazyPath{ .cwd_relative = "/System/Library/Frameworks/" };
-    const framework_path = std.Build.LazyPath{ .cwd_relative = if (targetTarget == .macos) options.sdk orelse b.pathJoin(&.{ std.mem.trim(u8, b.run(&.{ "xcrun", "--sdk", "macosx", "--show-sdk-path" }), "\n \t"), system_framwork_path.cwd_relative }) else "" };
+    const framework_path = std.Build.LazyPath{ .cwd_relative = if (targetTarget == .macos)
+        options.sdk orelse b.pathJoin(
+            &.{ std.mem.trim(u8, b.run(&.{ "xcrun", "--sdk", "macosx", "--show-sdk-path" }), "\n \t"), system_framwork_path.cwd_relative },
+        )
+    else
+        "" };
 
     if (target.result.abi == .msvc) {
         defineForMSVC(deshader_lib.root_module, target.result);
@@ -166,7 +212,8 @@ pub fn build(b: *std.Build) !void {
         deshader_lib.root_module.addCMacro("NDEBUG", "");
     }
     // translate zig flags to cflags and cxxflags (will be used when building VCPKG dependencies)
-    var env = try std.process.getEnvMap(std.heap.page_allocator); // uses heap alloctor, because if b.allocator was used, the env would be deallocated after the config phase
+    // uses heap alloctor, because if b.allocator was used, the env would be deallocated after the config phase
+    var env = try std.process.getEnvMap(std.heap.page_allocator);
     defer env.deinit();
 
     inline for (.{ "CFLAGS", "CXXFLAGS" }) |flags| {
@@ -185,7 +232,11 @@ pub fn build(b: *std.Build) !void {
     if (options.sdk) |sdk| {
         try env.put("MACOSSDK", sdk);
     }
-    const targetTriplet = try std.mem.join(b.allocator, "-", &.{ @tagName(target.result.cpu.arch), @tagName(targetTarget), @tagName(target.result.abi) });
+    const targetTriplet = try std.mem.join(
+        b.allocator,
+        "-",
+        &.{ @tagName(target.result.cpu.arch), @tagName(targetTarget), @tagName(target.result.abi) },
+    );
     try env.put("ZIG_LIB_LINKAGE", @tagName(options.lib_linkage));
     try env.put("ZIG_PATH", b.graph.zig_exe);
     try env.put("ZIG_OPTIMIZE", if (options.lib_debug) "debug" else "release");
@@ -202,18 +253,28 @@ pub fn build(b: *std.Build) !void {
     dependencies_step = try DependenciesStep.init(b, "dependencies", target.result, env);
     if (options.dependencies) try dependencies_step.vcpkg(options.triplet);
 
-    const deshader_lib_name = try std.mem.concat(b.allocator, u8, &.{ if (targetTarget == .windows) "" else "lib", deshader_lib.name, targetTarget.dynamicLibSuffix() });
+    const deshader_lib_name = try std.mem.concat(
+        b.allocator,
+        u8,
+        &.{ if (targetTarget == .windows) "" else "lib", deshader_lib.name, targetTarget.dynamicLibSuffix() },
+    );
     const deshader_lib_cmd = b.step("deshader", "Install deshader library");
     switch (options.output) {
         .BC => {
             deshader_lib.generated_llvm_ir = try b.allocator.create(std.Build.GeneratedFile);
-            deshader_lib.generated_llvm_ir.?.* = .{ .step = &deshader_lib.step, .path = try b.cache_root.join(b.allocator, &.{ "llvm", "deshader.ll" }) };
+            deshader_lib.generated_llvm_ir.?.* = .{
+                .step = &deshader_lib.step,
+                .path = try b.cache_root.join(b.allocator, &.{ "llvm", "deshader.ll" }),
+            };
             deshader_lib_cmd.dependOn(&b.addInstallFileWithDir(deshader_lib.getEmittedLlvmBc(), .lib, "deshader.bc").step);
             deshader_lib.root_module.stack_check = false;
         },
         .IR => {
             deshader_lib.generated_llvm_bc = try b.allocator.create(std.Build.GeneratedFile);
-            deshader_lib.generated_llvm_bc.?.* = .{ .step = &deshader_lib.step, .path = try b.cache_root.join(b.allocator, &.{ "llvm", "deshader.bc" }) };
+            deshader_lib.generated_llvm_bc.?.* = .{
+                .step = &deshader_lib.step,
+                .path = try b.cache_root.join(b.allocator, &.{ "llvm", "deshader.bc" }),
+            };
             deshader_lib_cmd.dependOn(&b.addInstallFileWithDir(deshader_lib.getEmittedLlvmIr(), .lib, "deshader.ll").step);
             deshader_lib.root_module.stack_check = false;
         },
@@ -259,6 +320,7 @@ pub fn build(b: *std.Build) !void {
     const zigglgen = @import("zigglgen");
     const string_exts = b.option([]const String, "glExtensions", "OpenGL extensions included in the bindings") orelse &[_]String{
         "ARB_shading_language_include",
+        "ARB_compute_variable_group_size",
     };
     const exts = try b.allocator.alloc(zigglgen.GeneratorOptions.Extension, string_exts.len);
     for (string_exts, exts) |s, *e| {
@@ -304,8 +366,16 @@ pub fn build(b: *std.Build) !void {
     // Deshader internal library options
     const deshader_options = b.addOptions();
     const optionGLAdditionalLoader = b.option(String, "glAddLoader", "Name of additional exposed function which will call GL function loader");
-    const optionvkAddInstanceLoader = b.option(String, "vkAddInstanceLoader", "Name of additional exposed function which will call Vulkan instance function loader");
-    const optionvkAddDeviceLoader = b.option(String, "vkAddDeviceLoader", "Name of additional exposed function which will call Vulkan device function loader");
+    const optionvkAddInstanceLoader = b.option(
+        String,
+        "vkAddInstanceLoader",
+        "Name of additional exposed function which will call Vulkan instance function loader",
+    );
+    const optionvkAddDeviceLoader = b.option(
+        String,
+        "vkAddDeviceLoader",
+        "Name of additional exposed function which will call Vulkan device function loader",
+    );
     deshader_options.addOption(?String, "glAddLoader", optionGLAdditionalLoader);
     deshader_options.addOption(?String, "vkAddDeviceLoader", optionvkAddDeviceLoader);
     deshader_options.addOption(?String, "vkAddInstanceLoader", optionvkAddInstanceLoader);
@@ -315,11 +385,13 @@ pub fn build(b: *std.Build) !void {
     deshader_options.addOption(opts.OutputType, "otype", options.output);
     deshader_options.addOption(u32, "memoryFrames", options.memory_frames);
     const version = resolve: {
-        const version_result = try exec(.{ .allocator = b.allocator, .argv = &.{ "git", "describe", "--tags", "--always", "--abbrev=0", "--exact-match" } });
+        const version_result = try std.process.Child.run(
+            .{ .allocator = b.allocator, .argv = &.{ "git", "describe", "--tags", "--always", "--abbrev=0", "--exact-match" } },
+        );
         if (version_result.term == .Exited and version_result.term.Exited == 0 and std.ascii.isDigit(version_result.stdout[0])) {
             break :resolve version_result.stdout; // tag with a digit => version number
         } else {
-            const rev_result = try exec(.{ .allocator = b.allocator, .argv = &.{ "git", "rev-parse", "--short", "HEAD" } });
+            const rev_result = try std.process.Child.run(.{ .allocator = b.allocator, .argv = &.{ "git", "rev-parse", "--short", "HEAD" } });
             if (rev_result.term == .Exited and rev_result.term.Exited == 0) {
                 break :resolve rev_result.stdout; // else use commit hash
             } else {
@@ -354,11 +426,14 @@ pub fn build(b: *std.Build) !void {
                 "bootstrap/tools/dumpbin.exe",
                 "/exports",
             },
-            .macos => if (b.enable_darling) &.{ "darling", "shell", "nm", "--format=posix", "--defined-only", "-ap" } else &.{ "nm", "--format=posix", "--defined-only", "-ap" },
+            .macos => if (b.enable_darling)
+                &.{ "darling", "shell", "nm", "--format=posix", "--defined-only", "-ap" }
+            else
+                &.{ "nm", "--format=posix", "--defined-only", "-ap" },
             else => &.{ "nm", "--format=posix", "--defined-only", "-DAp" },
         });
         if (b.enable_wine) {
-            _ = try exec(.{ .allocator = b.allocator, .argv = &.{ "wineserver", "-k" } }); // To apply the new WINEDEBUG settings
+            _ = try std.process.Child.run(.{ .allocator = b.allocator, .argv = &.{ "wineserver", "-k" } }); // To apply the new WINEDEBUG settings
             run_symbol_enum.setEnvironmentVariable("WINEDEBUG", "-all"); //otherwise expectStdErrEqual("") will not ignore fixme messages
         }
         for (GlLibNames) |libName| {
@@ -570,12 +645,18 @@ pub fn build(b: *std.Build) !void {
     const launcher_options = b.addOptions();
     launcher_options.addOption(String, "deshaderLibName", deshader_lib_name);
     launcher_options.addOption(u32, "memoryFrames", options.memory_frames);
-    launcher_options.addOption(String, "deshaderRelativeRoot", if (targetTarget == .windows) "." else try std.fs.path.relative(b.allocator, b.exe_dir, b.lib_dir));
+    launcher_options.addOption(String, "deshaderRelativeRoot", if (targetTarget == .windows)
+        "."
+    else
+        try std.fs.path.relative(b.allocator, b.exe_dir, b.lib_dir));
 
     // Editor
     {
         const editor_directory = "editor";
-        const editor_dir_relative = try std.fs.path.relative(b.allocator, if (targetTarget == .windows) b.exe_dir else b.lib_dir, b.pathFromRoot(editor_directory));
+        const editor_dir_relative = try std.fs.path.relative(b.allocator, if (targetTarget == .windows)
+            b.exe_dir
+        else
+            b.lib_dir, b.pathFromRoot(editor_directory));
         if (options.editor) {
             launcher_exe.step.dependOn(&dependencies_step.step);
         }
@@ -594,7 +675,8 @@ pub fn build(b: *std.Build) !void {
             while (editor_files_lines.next()) |line| {
                 const path = try std.fmt.allocPrint(b.allocator, "{s}/{s}", .{ editor_directory, std.mem.trim(u8, line, "\n\r\t ") });
                 try files.append(path);
-                if (optimize != .Debug) { // In debug mode files are served from physical filesystem so one does not need to recompile Deshader each time
+                if (optimize != .Debug) {
+                    // In debug mode files are served from physical filesystem so one does not need to recompile Deshader each time
                     try embedCompressedFile(deshader_lib, if (options.editor) &dependencies_step.step else null, path);
                 }
             }
@@ -732,7 +814,11 @@ pub fn build(b: *std.Build) !void {
             const linked_cpp = "linked_cpp";
         };
         const example_options = b.addOptions();
-        example_options.addOption([]const String, "exampleNames", &.{ sub_examples.quad, sub_examples.linked, sub_examples.linked_cpp, sub_examples.debug_commands, sub_examples.quad_cpp });
+        example_options.addOption(
+            []const String,
+            "exampleNames",
+            &.{ sub_examples.quad, sub_examples.linked, sub_examples.linked_cpp, sub_examples.debug_commands, sub_examples.quad_cpp },
+        );
         example_bootstraper.use_llvm = options.llvm;
         example_bootstraper.root_module.addOptions("options", example_options);
         example_bootstraper.step.dependOn(header_gen_cmd);
@@ -752,19 +838,39 @@ pub fn build(b: *std.Build) !void {
 
             // Full screen quad with GLFW
             const glfw_module = zig_glfw_dep.module("zig-glfw");
-            const example_quad = try createSubExample(example_bootstraper, sub_examples.quad, "examples/" ++ sub_examples.quad ++ ".zig", exampleModules ++ .{.{ .name = "zig_glfw", .module = glfw_module }});
+            const example_quad = try createSubExample(
+                example_bootstraper,
+                sub_examples.quad,
+                "examples/" ++ sub_examples.quad ++ ".zig",
+                exampleModules ++ .{.{ .name = "zig_glfw", .module = glfw_module }},
+            );
             try addVcpkgInstalledPaths(b, glfw_module, options.triplet, options.lib_debug);
             example_quad.linkLibC();
 
-            const example_sdf = try createSubExample(example_bootstraper, sub_examples.sdf, "examples/" ++ sub_examples.sdf ++ ".zig", exampleModules ++ .{.{ .name = "zig_glfw", .module = glfw_module }});
+            const example_sdf = try createSubExample(
+                example_bootstraper,
+                sub_examples.sdf,
+                "examples/" ++ sub_examples.sdf ++ ".zig",
+                exampleModules ++ .{.{ .name = "zig_glfw", .module = glfw_module }},
+            );
             example_sdf.linkLibC();
 
             // Deshader Linked to an executable
-            const example_linked = try createSubExample(example_bootstraper, sub_examples.linked, "examples/" ++ sub_examples.linked ++ ".zig", exampleModules);
+            const example_linked = try createSubExample(
+                example_bootstraper,
+                sub_examples.linked,
+                "examples/" ++ sub_examples.linked ++ ".zig",
+                exampleModules,
+            );
             if (options.output != .None) example_linked.linkLibrary(deshader_lib);
 
             // Quad in C++
-            const example_quad_cpp = try createSubExample(example_bootstraper, sub_examples.quad_cpp, "examples/" ++ sub_examples.quad ++ ".cpp", .{});
+            const example_quad_cpp = try createSubExample(
+                example_bootstraper,
+                sub_examples.quad_cpp,
+                "examples/" ++ sub_examples.quad ++ ".cpp",
+                .{},
+            );
             example_quad_cpp.addIncludePath(.{ .cwd_relative = b.h_dir });
             example_quad_cpp.linkLibCpp();
             try linkGlew(example_quad_cpp, options.system_glew, options.triplet, options.lib_debug);
@@ -784,17 +890,17 @@ pub fn build(b: *std.Build) !void {
                     const result = if (builtin.os.tag == .macos) embed: { // TODO do not run on every configure
                         // https://stackoverflow.com/questions/8923097/compile-a-binary-file-for-linking-osx
                         const stub = try std.fs.path.join(b.allocator, &.{ b.cache_root.path.?, "shaders", "stub.o" });
-                        _ = try exec(.{
+                        _ = try std.process.Child.run(.{
                             .allocator = b.allocator,
                             .cwd_dir = dir,
                             .argv = &.{ "gcc", "-o", stub, "-c", "../bootstrap/stub.c" },
                         });
-                        break :embed try exec(.{
+                        break :embed try std.process.Child.run(.{
                             .allocator = b.allocator,
                             .cwd_dir = dir,
                             .argv = &.{ "ld", "-r", "-o", output, "-sectcreate", "binary", shader, shader, stub },
                         });
-                    } else try exec(.{
+                    } else try std.process.Child.run(.{
                         .allocator = b.allocator,
                         .argv = &.{ "ld", "--relocatable", "--format", "binary", "--output", output, shader },
                         .cwd_dir = dir,
@@ -868,12 +974,17 @@ pub fn build(b: *std.Build) !void {
         // Run examples by `deshader-run`
         const examples_run = b.addRunArtifact(launcher_install.artifact);
         const examples_run_cmd = b.step("examples-run", "Run example with injected Deshader debugging");
-        examples_run.setEnvironmentVariable("DESHADER_LIB", try std.fs.path.join(b.allocator, &.{ if (targetTarget == .windows) b.exe_dir else b.lib_dir, deshader_lib_name }));
+        examples_run.setEnvironmentVariable("DESHADER_LIB", try std.fs.path.join(b.allocator, &.{ if (targetTarget == .windows)
+            b.exe_dir
+        else
+            b.lib_dir, deshader_lib_name }));
         examples_run.setCwd(.{ .cwd_relative = b.pathJoin(&.{ b.exe_dir, "deshader-examples" }) });
         examples_run.setEnvironmentVariable("DESHADER_PROCESS", "quad:quad_cpp:editor:debug_commands");
         examples_run.setEnvironmentVariable((if (targetTarget == .macos) "DYLD_LIBRARY_PATH" else "LD_LIBRARY_PATH"), b.lib_dir);
         examples_run.addArg("-no-whitelist");
-        examples_run.addArg(b.pathJoin(&.{ b.exe_dir, try std.mem.concat(b.allocator, u8, &.{ example_bootstraper.name, target.result.exeFileExt() }) }));
+        examples_run.addArg(
+            b.pathJoin(&.{ b.exe_dir, try std.mem.concat(b.allocator, u8, &.{ example_bootstraper.name, target.result.exeFileExt() }) }),
+        );
         examples_run_cmd.dependOn(&examples_run.step);
         const example_bootstraper_install = b.addInstallArtifact(example_bootstraper, .{});
         if (options.output == .None) {
@@ -976,7 +1087,11 @@ pub fn createSubExample(compile: *std.Build.Step.Compile, comptime name: String,
         const install = step.owner.addInstallArtifact(
             subExe,
             .{
-                .dest_sub_path = try std.mem.concat(step.owner.allocator, u8, &.{ examples_dirname, sep, name, if (target == .windows) ".exe" else "" }),
+                .dest_sub_path = try std.mem.concat(
+                    step.owner.allocator,
+                    u8,
+                    &.{ examples_dirname, sep, name, if (target == .windows) ".exe" else "" },
+                ),
                 .pdb_dir = if (target == .windows) .{ .override = .{ .custom = b.pathJoin(&.{ "bin", examples_dirname }) } } else .default,
             },
         );
@@ -988,7 +1103,7 @@ pub fn createSubExample(compile: *std.Build.Step.Compile, comptime name: String,
 fn fileWithPrefixExists(allocator: std.mem.Allocator, dirname: String, basename: String) !?String {
     const full_dirname = try std.fs.path.join(allocator, &.{ dirname, std.fs.path.dirname(basename) orelse "" });
     defer allocator.free(full_dirname);
-    var dir = openIterableDir(full_dirname) catch return null;
+    var dir = std.fs.openDirAbsolute(full_dirname, .{ .iterate = true }) catch return null;
     defer dir.close();
     var it = dir.iterate();
     var buffer: [std.fs.max_path_bytes]u8 = undefined;
@@ -1009,7 +1124,11 @@ fn addVcpkgInstalledPaths(b: *std.Build, c: anytype, triplet: String, debug_lib:
     const debug = if (debug_lib) "debug" else "";
     c.addIncludePath(b.path(b.pathJoin(&.{ "build", "vcpkg_installed", triplet, "debug", "include" })));
     c.addIncludePath(b.path(b.pathJoin(&.{ "build", "vcpkg_installed", triplet, "include" })));
-    if ((if (@hasDecl(@TypeOf(c.*), "rootModuleTarget")) c.rootModuleTarget() else if (c.resolved_target) |r| r.result else builtin.target).os.tag == .windows) {
+    if ((if (@hasDecl(@TypeOf(c.*), "rootModuleTarget")) c.rootModuleTarget() else if (c.resolved_target) |r|
+        r.result
+    else
+        builtin.target).os.tag == .windows)
+    {
         c.addLibraryPath(b.path(b.pathJoin(&.{ "build", "vcpkg_installed", triplet, debug, "bin" })));
     }
     c.addLibraryPath(b.path(b.pathJoin(&.{ "build", "vcpkg_installed", triplet, debug, "lib" })));
@@ -1018,7 +1137,10 @@ fn addVcpkgInstalledPaths(b: *std.Build, c: anytype, triplet: String, debug_lib:
 /// Must be called at the end of configure phase, because it could dispatch vcpkg installation
 fn linkVcpkgLibrary(compile: anytype, name: String, triplet: String, debug: bool) !void {
     const b = if (@hasField(@TypeOf(compile.*), "step")) compile.step.owner else compile.owner;
-    const target = if (@hasDecl(@TypeOf(compile.*), "rootModuleTarget")) compile.rootModuleTarget() else if (compile.resolved_target) |r| r.result else builtin.target;
+    const target = if (@hasDecl(@TypeOf(compile.*), "rootModuleTarget")) compile.rootModuleTarget() else if (compile.resolved_target) |r|
+        r.result
+    else
+        builtin.target;
 
     const vcpkg_dir = b.pathJoin(&.{ "build", "vcpkg_installed", triplet, if (debug) "debug" else "" });
     b.build_root.handle.access(vcpkg_dir, .{}) catch {
@@ -1027,6 +1149,7 @@ fn linkVcpkgLibrary(compile: anytype, name: String, triplet: String, debug: bool
         try DependenciesStep.doAll(&dependencies_step.step, std.Build.Step.MakeOptions{
             .progress_node = std.Progress.Node{ .index = .none },
             .watch = false,
+            // SAFETY: unused
             .thread_pool = undefined, // won't be used anyway
         });
     };
@@ -1036,11 +1159,19 @@ fn linkVcpkgLibrary(compile: anytype, name: String, triplet: String, debug: bool
 
     inline for (.{ "lib", "" }) |prefix| {
         // todo can be .a on MinGW
-        if (try fileWithPrefixExists(b.allocator, vcpkg_dir_real, try std.mem.concat(b.allocator, u8, &.{ "lib", std.fs.path.sep_str, prefix, name, target.staticLibSuffix() }))) |full_name| {
+        if (try fileWithPrefixExists(b.allocator, vcpkg_dir_real, try std.mem.concat(
+            b.allocator,
+            u8,
+            &.{ "lib", std.fs.path.sep_str, prefix, name, target.staticLibSuffix() },
+        ))) |full_name| {
             compile.addObjectFile(.{ .cwd_relative = full_name });
             log.info("Linked {s} from VCPKG", .{full_name});
             return;
-        } else if (try fileWithPrefixExists(b.allocator, vcpkg_dir_real, try std.mem.concat(b.allocator, u8, &.{ "bin", std.fs.path.sep_str, prefix, name, target.staticLibSuffix() }))) |full_name| {
+        } else if (try fileWithPrefixExists(b.allocator, vcpkg_dir_real, try std.mem.concat(
+            b.allocator,
+            u8,
+            &.{ "bin", std.fs.path.sep_str, prefix, name, target.staticLibSuffix() },
+        ))) |full_name| {
             compile.addObjectFile(.{ .cwd_relative = full_name });
             log.info("Linked {s} from VCPKG", .{full_name});
             return;
@@ -1117,7 +1248,7 @@ fn findInstallStep(c: *std.Build.Step.Compile) ?*std.Build.Step.InstallArtifact 
 }
 
 fn winepath(alloc: std.mem.Allocator, path: String, toWindows: bool) !String {
-    const result = try exec(.{ .allocator = alloc, .argv = &.{ "winepath", if (toWindows) "-w" else "-u", path } });
+    const result = try std.process.Child.run(.{ .allocator = alloc, .argv = &.{ "winepath", if (toWindows) "-w" else "-u", path } });
     if (result.term.Exited == 0) {
         return std.mem.trim(u8, result.stdout, " \n\t");
     } else if (result.term == .Exited) {

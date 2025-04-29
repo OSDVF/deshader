@@ -24,6 +24,7 @@ const common = @import("common");
 pub const uri_scheme = "deshader";
 var server_thread: ?std.Thread = null;
 // Valid only withing running server thread
+// SAFETY: defined iff server_thread != null
 pub var state: analyzer.main.State = undefined;
 
 pub fn serverStart(port: u16) !void {

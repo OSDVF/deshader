@@ -1,0 +1,7 @@
+[
+  {
+    "key": "ctrl+s",
+    "command": "zig.zlint.lint",
+    "when": "resourceLangId == 'zig'"
+  }
+]

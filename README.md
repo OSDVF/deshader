@@ -229,6 +229,23 @@ Output files will be placed at `./zig-out/`:
 
 The files inside `include/` are API definitions for use in your application.
 
+### Development Environment
+#### VSCode
+- Follow extension recommendations in `.vscode/extensions.json`.
+- Add this to your `keybindings.json` to automate [ZLint](https://github.com/DonIsaac/zlint):
+```json
+{
+    "command": "runCommands",
+    "key": "ctrl+s", 
+    "args": {
+      "commands": [
+        "workbench.action.files.save",
+        "zig.zlint.lint"
+      ]
+    },
+    "when": "resourceLangId == zig"
+  }
+```
 # License
 Deshader is licensed under the [GPL-3.0](https://www.gnu.org/licenses/gpl-3.0.html) license. See [LICENSE](LICENSE.md) for more information.  
 This repository also contains third-party software, which is licensed under their respective licenses. See [NOTICES](NOTICES.md) for more information.

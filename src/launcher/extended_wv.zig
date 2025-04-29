@@ -16,12 +16,10 @@
 const std = @import("std");
 const positron = @import("positron");
 const builtin = @import("builtin");
-const serve = @import("serve");
 const common = @import("common");
 const log = std.log.scoped(.wGUI);
 
 const String = []const u8;
-const CString = [*:0]const u8;
 const ZString = [:0]const u8;
 const C = @cImport({
     @cInclude("nfd.h");
@@ -33,12 +31,13 @@ const C = @cImport({
 });
 
 pub const State = struct {
-    view: *positron.View = undefined,
+    view: *positron.View,
     terminate: std.Thread.Condition = .{},
     terminate_mutex: std.Thread.Mutex = .{},
     run_seq: ZString = "",
     /// Is the subprocess target running
     running: bool = false,
+    /// SAFETY: will be assigned in `run()`
     target: std.process.Child = undefined,
 
     pub fn getWebView(self: *@This()) *positron.View {
@@ -152,6 +151,7 @@ pub const State = struct {
 };
 
 pub fn browseFile(_: *State, current: ZString) ?String {
+    // SAFETY: assigned right after by NFD
     var out_path: ?[*:0]C.nfdchar_t = undefined;
     const result: C.nfdresult_t = C.NFD_OpenDialog(null, current.ptr, @ptrCast(&out_path));
     switch (result) {

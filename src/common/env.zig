@@ -22,7 +22,9 @@ const c = @cImport({
     @cInclude("string.h"); //strerror
 });
 
+/// SAFETY: call init() to assign
 var env: std.process.EnvMap = undefined;
+/// SAFETY: call init() to assign
 var allocator: std.mem.Allocator = undefined;
 
 pub fn init(allocat: std.mem.Allocator) !void {
@@ -134,5 +136,8 @@ pub const library_preload = switch (builtin.os.tag) {
 };
 
 pub fn isYes(s: ?String) bool {
-    return if (s) |ys| std.ascii.eqlIgnoreCase(ys, "true") or std.ascii.eqlIgnoreCase(ys, "yes") or std.ascii.eqlIgnoreCase(ys, "y") or std.mem.eql(u8, ys, "1") else false;
+    return if (s) |ys|
+        std.ascii.eqlIgnoreCase(ys, "true") or std.ascii.eqlIgnoreCase(ys, "yes") or std.ascii.eqlIgnoreCase(ys, "y") or std.mem.eql(u8, ys, "1")
+    else
+        false;
 }

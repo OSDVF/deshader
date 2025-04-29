@@ -1,0 +1,24 @@
+{
+    "rules": {
+        "avoid-as": "error",
+        "empty-file": "error",
+        "homeless-try": "error",
+        "line-length": [
+            "error",
+            {
+                "max_length": 150
+            }
+        ],
+        "must-return-ref": "error",
+        "no-catch-return": "error",
+        "no-return-try": "off",
+        "no-unresolved": "error",
+        "unsafe-undefined": "warn",
+        "unused-decls": "error",
+        "useless-error-return": "error"
+    },
+    "ignore": [
+        "libs",
+        "zig-out"
+    ]
+}

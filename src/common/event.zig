@@ -15,7 +15,10 @@ pub fn Bus(comptime Event: type, comptime Async: bool) type {
 
         /// `context` must be a pointer. Pass `null` for no context. The listener then must have the first argument as `_: ?*const anyopaque`.
         pub fn addListener(self: *@This(), context: anytype, listener: *const Listener(PointerOrNull(@TypeOf(context)))) !void {
-            try self.listeners.append(self.allocator, .{ .listener = @ptrCast(listener), .context = if (@TypeOf(context) == @TypeOf(null)) null else @ptrCast(context) });
+            try self.listeners.append(
+                self.allocator,
+                .{ .listener = @ptrCast(listener), .context = if (@TypeOf(context) == @TypeOf(null)) null else @ptrCast(context) },
+            );
         }
 
         /// Usable only for sync buses

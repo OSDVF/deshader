@@ -45,7 +45,14 @@ pub fn main() !void {
             var params: [2]Ast.Node.Index = undefined;
             if (ast.fullFnProto(params[0..1], decl)) |proto| {
                 // Process global function declarations
-                if (proto.name_token) |n| try findFunctionArguments(&ast, proto, try arena_allocator.dupe(u8, ast.tokenSlice(n)), allocator, arena_allocator, &gen);
+                if (proto.name_token) |n| try findFunctionArguments(
+                    &ast,
+                    proto,
+                    try arena_allocator.dupe(u8, ast.tokenSlice(n)),
+                    allocator,
+                    arena_allocator,
+                    &gen,
+                );
             } else if (ast.fullVarDecl(decl)) |v| {
                 // Process declaration of function pointers in structs
                 if (ast.fullContainerDecl(&params, v.ast.init_node)) |c| {
@@ -59,7 +66,10 @@ pub fn main() !void {
                                     try findFunctionArguments(
                                         &ast,
                                         p,
-                                        try std.mem.join(arena_allocator, ".", &.{ ast.tokenSlice(v.ast.mut_token + 1), ast.tokenSlice(f.ast.main_token) }),
+                                        try std.mem.join(arena_allocator, ".", &.{
+                                            ast.tokenSlice(v.ast.mut_token + 1),
+                                            ast.tokenSlice(f.ast.main_token),
+                                        }),
                                         allocator,
                                         arena_allocator,
                                         &gen,
@@ -77,7 +87,14 @@ pub fn main() !void {
     gen.exec(header_gen.C_Generator(.Cpp));
 }
 
-fn findFunctionArguments(ast: *const Ast, proto: Ast.full.FnProto, fn_name: []const u8, allocator: std.mem.Allocator, arena_allocator: std.mem.Allocator, gen: *Generator) !void {
+fn findFunctionArguments(
+    ast: *const Ast,
+    proto: Ast.full.FnProto,
+    fn_name: []const u8,
+    allocator: std.mem.Allocator,
+    arena_allocator: std.mem.Allocator,
+    gen: *Generator,
+) !void {
     var param_names = std.ArrayListUnmanaged([]const u8).empty;
     defer param_names.deinit(arena_allocator);
     // iterate through the parameters

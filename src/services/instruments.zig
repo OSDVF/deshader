@@ -8,7 +8,6 @@ const decls = @import("../declarations/shaders.zig");
 const Processor = @import("processor.zig");
 
 const String = []const u8;
-const CString = []const u8;
 
 pub const Error = error{ InvalidStep, FunctionNotInScope };
 
@@ -176,14 +175,25 @@ pub const Step = struct {
     /// Index into the global hit indication storage for the current thread
     fn bufferIndexer(processor: *Processor, comptime component: String) String {
         return if (processor.outChannel(id).?.location == .buffer) switch (processor.config.shader_stage) {
-            .gl_vertex => if (processor.vulkan) "[gl_VertexIndex/2][(gl_VertexIndex%2)*2+" ++ component ++ "]" else "[gl_VertexID/2][(gl_VertexID%2)*2+" ++ component ++ "]",
+            .gl_vertex => if (processor.vulkan)
+                "[gl_VertexIndex/2][(gl_VertexIndex%2)*2+" ++ component ++ "]"
+            else
+                "[gl_VertexID/2][(gl_VertexID%2)*2+" ++ component ++ "]",
             .gl_tess_control => "[gl_InvocationID/2*][(gl_InvocationID%2)*2+" ++ component ++ "]",
-            .gl_fragment, .gl_tess_evaluation, .gl_mesh, .gl_task, .gl_compute, .gl_geometry => "[" ++ Processor.templates.global_thread_id ++ "/2][(" ++ Processor.templates.global_thread_id ++ "%2)*2+" ++ component ++ "]",
+            .gl_fragment, .gl_tess_evaluation, .gl_mesh, .gl_task, .gl_compute, .gl_geometry => //
+            "[" ++ Processor.templates.global_thread_id ++ "/2][(" ++ Processor.templates.global_thread_id ++ "%2)*2+" ++ component ++ "]",
             else => unreachable,
         } else "[" ++ component ++ "]";
     }
 
-    fn checkAndHit(processor: *Processor, comptime cond: String, cond_args: anytype, step_id: usize, comptime ret: String, ret_args: anytype) !String {
+    fn checkAndHit(
+        processor: *Processor,
+        comptime cond: String,
+        cond_args: anytype,
+        step_id: usize,
+        comptime ret: String,
+        ret_args: anytype,
+    ) !String {
         return try processor.print(Processor.templates.prefix ++ "step({d}, " ++ cond ++ "," ++ ret ++ ")", .{step_id} ++ cond_args ++ ret_args);
     }
 
@@ -199,7 +209,13 @@ pub const Step = struct {
         ), pos, 0);
     }
 
-    fn advanceAndCheck(processor: *Processor, step_id: usize, func: Processor.Processor.TraverseContext.Function, is_void: bool, has_bp: bool) !String {
+    fn advanceAndCheck(
+        processor: *Processor,
+        step_id: usize,
+        func: Processor.Processor.TraverseContext.Function,
+        is_void: bool,
+        has_bp: bool,
+    ) !String {
         const bp_cond = "||(" ++ step_counter ++ ">{s})";
         const return_init = "{s}(0)";
         return // TODO initialize structs for returning
@@ -215,7 +231,10 @@ pub const Step = struct {
     }
 
     /// Recursively add the functionality: break the caller function after a call to a function with the `name`
-    pub fn addGuardsRecursive(processor: *Processor, func: Processor.TraverseContext.Function) (std.mem.Allocator.Error || Error || Processor.Error)!usize {
+    pub fn addGuardsRecursive(
+        processor: *Processor,
+        func: Processor.TraverseContext.Function,
+    ) (std.mem.Allocator.Error || Error || Processor.Error)!usize {
         const tree = processor.parsed.tree;
         const source = processor.config.source;
         // find references (function calls) to this function
@@ -383,7 +402,8 @@ pub const Step = struct {
         if (processor.config.support.buffers) {
             const sync = try processor.addStorage(sync_id, .Buffer, .@"1U32", null, null);
             sync.size = 1;
-            // Declare just the hit synchronisation variable and rely on atomic operations https://stackoverflow.com/questions/56340333/glsl-about-coherent-qualifier
+            // Declare just the hit synchronisation variable and rely on atomic operations
+            // https://stackoverflow.com/questions/56340333/glsl-about-coherent-qualifier
             try processor.insertStart(try processor.print(
                 \\layout(std{d}, binding={d}) restrict coherent buffer DeshaderSync {{
             ++ "uint " ++ sync_storage ++ ";\n" ++ //
@@ -444,7 +464,8 @@ pub const Step = struct {
 
         // #define step check macro
         try processor.insertEnd(try processor.print(
-            "#define " ++ Processor.templates.prefix ++ "step(id, cond, ret) if((" ++ step_counter ++ "++>=" ++ desired_step ++ ") cond ){{{s}{s}=id;{s}{s}=" ++ step_counter ++ ";{s}=true;return ret;}}\n", //
+            "#define " ++ Processor.templates.prefix ++ "step(id, cond, ret) if((" ++ step_counter ++ "++>=" ++ desired_step ++ ") cond )" ++
+                "{{{s}{s}=id;{s}{s}=" ++ step_counter ++ ";{s}=true;return ret;}}\n",
             .{
                 storage_name,
                 bufferIndexer(processor, "0"),
@@ -476,7 +497,8 @@ pub const Step = struct {
                 var args_it = step_args.iterator();
 
                 const step_arg: analyzer.syntax.Argument = args_it.next(tree) orelse return Error.InvalidStep; // get the first argument
-                const step_arg_expr: analyzer.syntax.Expression = step_arg.get(.expression, tree) orelse return Error.InvalidStep; // extract the expression node construct from the argument
+                // extract the expression node construct from the argument
+                const step_arg_expr: analyzer.syntax.Expression = step_arg.get(.expression, tree) orelse return Error.InvalidStep;
                 // step hit records are 1-based, 0 is reserved for no hit
                 const step_id = try std.fmt.parseInt(usize, tree.nodeSpan(step_arg_expr.node).text(source), 0);
 
@@ -537,7 +559,12 @@ pub const Step = struct {
 
     /// Fill `marked` with the insturmented version of the source part
     /// Returns the number of steps in the part
-    fn preprocessPart(part: *shaders.Shader.SourcePart, step_offset: usize, marked: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator) !usize {
+    fn preprocessPart(
+        part: *shaders.Shader.SourcePart,
+        step_offset: usize,
+        marked: *std.ArrayListUnmanaged(u8),
+        allocator: std.mem.Allocator,
+    ) !usize {
         const part_steps = try part.possibleSteps();
         const part_source = part.getSource().?;
         var prev_offset: usize = 0;
@@ -628,7 +655,11 @@ pub const StackTrace = struct {
             stack_trace.location.buffer.binding,
         }), processor.after_version);
 
-        try processor.insertEnd(try processor.print("uniform uint {s};\n", .{threadSelector(processor.config.shader_stage)}), processor.after_version, 0);
+        try processor.insertEnd(
+            try processor.print("uniform uint {s};\n", .{threadSelector(processor.config.shader_stage)}),
+            processor.after_version,
+            0,
+        );
     }
 
     /// Insert a stack trace manipulation before and after a function call
@@ -710,7 +741,8 @@ pub const Log = struct {
 
     pub const default_max_length = 32;
 
-    /// Log storage length (shared for all shader stages when using buffers). The values is not in this instrument frontend, but should be instead used in the backend.
+    /// Log storage length (shared for all shader stages when using buffers). The values is not in this instrument frontend,
+    /// but should be instead used in the backend.
     pub fn maxLength(channels: *Processor.Result.StageChannels, allocator: std.mem.Allocator) !*usize {
         // Stored as a raw numeric value instead of a pointer
         return @ptrCast((try channels.controls.getOrPutValue(allocator, id, @ptrFromInt(default_max_length))).value_ptr);
@@ -763,7 +795,10 @@ pub const Variables = struct {
             id,
             .PreferBuffer,
             .@"4U32",
-            if (processor.parsed.version >= 440 and processor.config.shader_stage.isFragment()) if (processor.outChannel(Step.id)) |s| s.location else null else null,
+            if (processor.parsed.version >= 440 and processor.config.shader_stage.isFragment())
+                if (processor.outChannel(Step.id)) |s| s.location else null
+            else
+                null,
             1,
         );
 
@@ -786,15 +821,21 @@ pub const Variables = struct {
             .interface => |location| {
                 if (processor.config.shader_stage.isFragment()) {
                     if (processor.parsed.version >= 130) {
-                        try processor.insertStart(try if (location.component != 0)
-                            processor.print(
-                                \\layout(location={d},component={d}) out uvec{d} {s}0;
-                            , .{ location.location, location.component, 4 - location.component, storage_name })
-                        else
-                            processor.print("layout(location={d}) out uvec4 {s};\n", .{ location.location, storage_name }), processor.last_interface_decl);
+                        try processor.insertStart(
+                            try if (location.component != 0)
+                                processor.print(
+                                    \\layout(location={d},component={d}) out uvec{d} {s}0;
+                                , .{ location.location, location.component, 4 - location.component, storage_name })
+                            else
+                                processor.print("layout(location={d}) out uvec4 {s};\n", .{ location.location, storage_name }),
+                            processor.last_interface_decl,
+                        );
                     } // else gl_FragData is implicit
                 } else {
-                    try processor.insertStart(try processor.print("layout(location={d}) out uvec4 " ++ storage_name ++ ";\n", .{location.location}), processor.last_interface_decl);
+                    try processor.insertStart(
+                        try processor.print("layout(location={d}) out uvec4 " ++ storage_name ++ ";\n", .{location.location}),
+                        processor.last_interface_decl,
+                    );
                 }
 
                 const interface_size: isize = processor.threads_total * 4 * @sizeOf(u32);
@@ -813,7 +854,10 @@ pub const Variables = struct {
                         );
                         switch (stor.location) {
                             .interface => |interface| {
-                                try processor.insertStart(try processor.print("layout(location={d}) out uvec4 {s}{d};", .{ interface.location, storage_name, i }), processor.last_interface_decl);
+                                try processor.insertStart(
+                                    try processor.print("layout(location={d}) out uvec4 {s}{d};", .{ interface.location, storage_name, i }),
+                                    processor.last_interface_decl,
+                                );
                                 stor.size = interface_size;
                             },
                             .buffer => |buffer| {

@@ -48,7 +48,9 @@ const OriginalLibDir: ?String = switch (builtin.os.tag) {
     else => @compileError("Unsupported OS"),
 };
 const DefaultDllNames = .{ "opengl32.dll", "vulkan-1.dll" };
+/// SAFETY: initialized in `findDeshader()`
 var deshader_lib: std.DynLib = undefined;
+/// SAFETY: initialized in main()
 var this_dir: String = undefined;
 var will_show_gui = false;
 var yes_to_replace = false;
@@ -107,7 +109,8 @@ pub fn main() !u8 {
     // Show gui when no arguments are provided
     const gui_env = common.env.get(common.env_prefix ++ "GUI");
     const explicit_gui = cli_args.options.editor;
-    cli_args.options.editor = common.env.isYes(gui_env) or cli_args.options.editor or (cli_args.positionals.len == 0 and cli_args.raw_start_index == null);
+    cli_args.options.editor = common.env.isYes(gui_env) or cli_args.options.editor or
+        (cli_args.positionals.len == 0 and cli_args.raw_start_index == null);
     will_show_gui = cli_args.options.gui or cli_args.options.editor;
 
     if (cli_args.options.gui) {
@@ -225,20 +228,27 @@ pub fn main() !u8 {
             var deshader_path_buffer = try common.allocator.alloc(if (builtin.os.tag == .windows) u16 else u8, std.fs.MAX_NAME_BYTES);
             defer common.allocator.free(deshader_path_buffer);
             const deshader_path = switch (builtin.os.tag) {
-                .windows => try std.unicode.utf16leToUtf8Alloc(common.allocator, try std.os.windows.GetModuleFileNameW(deshader_lib.inner.dll, @ptrCast(deshader_path_buffer), std.fs.max_path_bytes - 1)),
+                .windows => try std.unicode.utf16leToUtf8Alloc(
+                    common.allocator,
+                    try std.os.windows.GetModuleFileNameW(deshader_lib.inner.dll, @ptrCast(deshader_path_buffer), std.fs.max_path_bytes - 1),
+                ),
                 .linux => resolve: {
                     if (c.dlinfo(deshader_lib.inner.handle, c.RTLD_DI_ORIGIN, @ptrCast(deshader_path_buffer)) != 0) {
                         const err = c.dlerror();
                         log.err("Failed to get deshader library path: {s}", .{err});
                         return error.DeshaderPathResolutionFailed;
                     }
-                    break :resolve try path.join(common.allocator, &[_]String{ deshader_path_buffer[0..std.mem.indexOfScalar(u8, deshader_path_buffer, 0).?], options.deshaderLibName });
+                    break :resolve try path.join(
+                        common.allocator,
+                        &[_]String{ deshader_path_buffer[0..std.mem.indexOfScalar(u8, deshader_path_buffer, 0).?], options.deshaderLibName },
+                    );
                 },
                 .macos => resolve: {
                     const version_symbol = deshader_lib.lookup(*const anyopaque, "deshaderVersion") orelse {
                         log.err("Could not find deshaderVersion symbol in the Deshader Library.", .{});
                         return error.DeshaderVersionNotFound;
                     };
+                    // SAFETY: assigned right after by the loader
                     var info: c.Dl_info = undefined;
                     if (c.dladdr(version_symbol, &info) == 0) {
                         return error.DlAddr;
@@ -273,7 +283,10 @@ pub fn main() !u8 {
             };
             defer if (!realpath_not_working) common.allocator.free(target_realpath);
             var target = std.process.Child.init(cli_args.positionals, common.allocator);
-            target.cwd_dir = if (cli_args.options.directory) |w| if (std.fs.path.isAbsolute(w)) if (std.fs.openDirAbsolute(w, .{ .access_sub_paths = false }) catch null) |dir| dir else null else null else null;
+            target.cwd_dir = if (cli_args.options.directory) |w| if (std.fs.path.isAbsolute(w)) if (std.fs.openDirAbsolute(
+                w,
+                .{ .access_sub_paths = false },
+            ) catch null) |dir| dir else null else null else null;
             defer if (target.cwd_dir) |*d| d.close();
 
             if (specified_libs_dir orelse OriginalLibDir) |dir| {
@@ -380,7 +393,10 @@ pub fn main() !u8 {
                     try gui.serverJoin();
                 },
                 .Hidden => {
-                    log.info("Editor is hidden. Runs on {d}. Use 'q' to quit, 'e' to show editor, 'h' for help", .{cli_args.options.port orelse common.default_editor_port_n});
+                    log.info(
+                        "Editor is hidden. Runs on {d}. Use 'q' to quit, 'e' to show editor, 'h' for help",
+                        .{cli_args.options.port orelse common.default_editor_port_n},
+                    );
                     controller(null, null, null, cli_args) catch |e| if (e == error.NotOpenForReading) {
                         log.warn("Stdin closed. Contiuining without user input", .{});
                         try gui.serverJoin();
@@ -472,6 +488,7 @@ fn dlopenAbsolute(p: String) !std.DynLib {
     }
 }
 fn browseFile() ?String {
+    // SAFETY: assigned right after by NFD
     var out_path: [*:0]c.nfdchar_t = undefined;
     const result: c.nfdresult_t = c.NFD_OpenDialog(null, null, @ptrCast(&out_path));
     switch (result) {
@@ -500,7 +517,10 @@ const SearchPaths = struct {
         self.i += 1;
         switch (self.i - 1) {
             0 => return try common.allocator.dupe(u8, specified_deshader_path orelse return self.nextAlloc()), // DESHADER_LIB as absolute path
-            1 => return try std.fs.path.join(common.allocator, &.{ specified_deshader_path orelse return self.nextAlloc(), options.deshaderLibName }), // DESHADER_LIB as directory
+            1 => return try std.fs.path.join(
+                common.allocator,
+                &.{ specified_deshader_path orelse return self.nextAlloc(), options.deshaderLibName },
+            ), // DESHADER_LIB as directory
             2 => { // libdeshader.so in cwd
                 if (std.fs.cwd().access(options.deshaderLibName, .{})) {
                     return try common.getFullPath(common.allocator, options.deshaderLibName);
@@ -508,11 +528,14 @@ const SearchPaths = struct {
                     return self.nextAlloc();
                 }
             },
-            3 => return try std.fs.path.join(common.allocator, &.{ this_dir, options.deshaderRelativeRoot, options.deshaderLibName }), // RPATH-like relative path
+            // RPATH-like relative path
+            3 => return try std.fs.path.join(common.allocator, &.{ this_dir, options.deshaderRelativeRoot, options.deshaderLibName }),
             4 => return try common.allocator.dupe(u8, options.deshaderLibName), // Just the library name
             5 => { // Pick from system directories
                 if (will_show_gui) {
-                    const err = "Failed to load Deshader library. Specify its location in environment variable DESHADER_LIB. Would you like to find it now?";
+                    const err =
+                        \\Failed to load Deshader library. Specify its location in environment variable DESHADER_LIB. Would you like to find it now?"
+                    ;
                     switch (builtin.os.tag) {
                         .windows => {
                             const result = c.MessageBoxA(null, err, "Deshader Error", c.MB_OK | c.MB_ICONERROR);

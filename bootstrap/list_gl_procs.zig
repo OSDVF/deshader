@@ -10,7 +10,14 @@ pub const ListGlProcsStep = struct {
     generated_file: std.Build.GeneratedFile,
     target: std.Target.Os.Tag,
 
-    pub fn init(b: *std.Build, target: std.Target.Os.Tag, name: String, libNames: []const String, symbolPrefixes: []const String, symbolEnumeratorOutput: std.Build.LazyPath) *@This() {
+    pub fn init(
+        b: *std.Build,
+        target: std.Target.Os.Tag,
+        name: String,
+        libNames: []const String,
+        symbolPrefixes: []const String,
+        symbolEnumeratorOutput: std.Build.LazyPath,
+    ) *@This() {
         const self = b.allocator.create(ListGlProcsStep) catch @panic("OOM");
         self.* = @This(){
             .step = std.Build.Step.init(.{
@@ -20,6 +27,7 @@ pub const ListGlProcsStep = struct {
                 .makeFn = make,
             }),
             .symbolsOutput = symbolEnumeratorOutput,
+            // SAFETY: assigned right after
             .generated_file = undefined,
             .libNames = libNames,
             .symbolPrefixes = symbolPrefixes,

@@ -55,7 +55,10 @@ pub const Parsed = struct {
         self.arena_state.promote(allocator).deinit();
     }
 
-    pub fn parseSource(parent_allocator: std.mem.Allocator, text: []const u8) (std.fmt.ParseIntError || std.mem.Allocator.Error || analyzer.parse.Parser.Error)!@This() {
+    pub fn parseSource(
+        parent_allocator: std.mem.Allocator,
+        text: []const u8,
+    ) (std.fmt.ParseIntError || std.mem.Allocator.Error || analyzer.parse.Parser.Error)!@This() {
         var arena = std.heap.ArenaAllocator.init(parent_allocator);
         errdefer arena.deinit();
 
@@ -319,13 +322,17 @@ config: Config,
 //
 threads_total: usize = 0, // Sum of all threads dimesions sizes
 /// Dimensions of the output buffer (vertex count / screen resolution / global threads count)
+// SAFETY: assigned in setup()
 threads: []usize = undefined,
 
 /// Offset of #version directive (if any was found)
 after_version: usize = 0,
+// SAFETY: assigned in setup()
 arena: std.heap.ArenaAllocator = undefined,
 channels: Result.StageChannels = .{ // undefined fields will be assigned in setup()
+    // SAFETY: assigned in setup()
     .group_dim = undefined,
+    // SAFETY: assigned in setup()
     .functions = undefined,
 },
 last_interface_decl: usize = 0,
@@ -333,7 +340,9 @@ last_interface_node: NodeId = 0,
 last_interface_location: usize = 0,
 uses_dual_source_blend: bool = false,
 vulkan: bool = false,
+// SAFETY: assigned in setup()
 parsed: Parsed = undefined,
+// SAFETY: assigned in setup()
 rand: std.Random.DefaultPrng = undefined,
 scratch: std.AutoArrayHashMapUnmanaged(Instrument.Id, *anyopaque) = .empty,
 
@@ -350,7 +359,7 @@ pub const templates = struct {
     pub const prefix = "deshader_";
     pub const cursor = "cursor";
     const temp = prefix ++ "temp";
-    pub const temp_thread_counts = prefix ++ "threads";
+    pub const local_thread_counts = prefix ++ "threads";
     /// Provided as a identifier of the current thread in global space
     pub const global_thread_id = prefix ++ "global_id";
     pub const wg_size = Processor.templates.prefix ++ "workgroup_size";
@@ -492,12 +501,30 @@ pub fn setup(self: *@This()) !void {
                                                                     self.uses_dual_source_blend = true;
                                                                 },
                                                                 .location => {
-                                                                    location = std.fmt.parseInt(usize, tree.nodeSpan(assignment.get(.value, tree).?.node).text(source), 0) catch location;
+                                                                    location = std.fmt.parseInt(
+                                                                        usize,
+                                                                        tree.nodeSpan(assignment.get(.value, tree).?.node).text(source),
+                                                                        0,
+                                                                    ) catch location;
                                                                 },
                                                             }
                                                         }
                                                     },
-                                                    else => {},
+                                                    .other => |other| {
+                                                        if (std.mem.eql(u8, tree.nodeSpan(other.getNode()).text(source), "local_size_variable")) {
+                                                            for (self.parsed.ignored) |i| {
+                                                                if (std.mem.indexOf(
+                                                                    u8,
+                                                                    i.text(self.config.source),
+                                                                    "ARB_compute_variable_group_size",
+                                                                ) != null) {
+                                                                    // TODO more precise check
+                                                                    log.debug("Found generic size compute shader", .{});
+                                                                    break;
+                                                                }
+                                                            }
+                                                        }
+                                                    },
                                                 }
                                             }
                                         }
@@ -516,7 +543,8 @@ pub fn setup(self: *@This()) !void {
                             }
                         }
                         if (self.last_interface_node == node) {
-                            self.last_interface_location = location orelse (self.last_interface_location + 1); // TODO implicit locations až se vzbudíš, TODO glBindFragDataLocation
+                            // TODO implicit locations až se vzbudíš, TODO glBindFragDataLocation
+                            self.last_interface_location = location orelse (self.last_interface_location + 1);
                         }
                     }
                 },
@@ -579,35 +607,44 @@ pub fn declareThreadId(self: *@This()) !void {
     // Initialize the global thread id
     switch (self.config.shader_stage) {
         .gl_fragment, .vk_fragment => {
-            try self.insertStart(try self.print(
-                "const uvec2 " ++ templates.temp_thread_counts ++ "= uvec2({d}, {d});\n" ++
-                    "uint " ++ templates.global_thread_id ++ " = uint(gl_FragCoord.y) * " ++ templates.temp_thread_counts ++ ".x + uint(gl_FragCoord.x);\n",
-                .{ self.threads[0], self.threads[1] },
-            ), self.after_version);
+            try self.insertStart(
+                try self.print(
+                    "const uvec2 " ++ templates.local_thread_counts ++ "= uvec2({d}, {d});\n" ++
+                        "uint " ++ templates.global_thread_id ++ " = uint(gl_FragCoord.y) * " ++ templates.local_thread_counts ++
+                        ".x + uint(gl_FragCoord.x);\n",
+                    .{ self.threads[0], self.threads[1] },
+                ),
+                self.after_version,
+            );
         },
         .gl_geometry => {
             try self.insertStart(try self.print(
-                "const uint " ++ templates.temp_thread_counts ++ "= {d};\n" ++
-                    "uint " ++ templates.global_thread_id ++ "= gl_PrimitiveIDIn * " ++ templates.temp_thread_counts ++ " + gl_InvocationID;\n",
+                "const uint " ++ templates.local_thread_counts ++ "= {d};\n" ++
+                    "uint " ++ templates.global_thread_id ++ "= gl_PrimitiveIDIn * " ++ templates.local_thread_counts ++ " + gl_InvocationID;\n",
                 .{self.threads[0]},
             ), self.after_version);
         },
         .gl_tess_evaluation => {
             try self.insertStart(try self.print(
-                "ivec2 " ++ templates.temp_thread_counts ++ "= ivec2(gl_TessCoord.xy * float({d}-1) + 0.5);\n" ++
-                    "uint " ++ templates.global_thread_id ++ " =" ++ templates.temp_thread_counts ++ ".y * {d} + " ++ templates.temp_thread_counts ++ ".x;\n",
+                "ivec2 " ++ templates.local_thread_counts ++ "= ivec2(gl_TessCoord.xy * float({d}-1) + 0.5);\n" ++
+                    "uint " ++ templates.global_thread_id ++ " =" ++ templates.local_thread_counts ++ ".y * {d} + " ++
+                    templates.local_thread_counts ++ ".x;\n",
                 .{ self.threads[0], self.threads[0] },
             ), self.after_version);
         },
         .gl_mesh, .gl_task, .gl_compute => {
             try self.insertStart(
                 try self.print("uint " ++ templates.global_thread_id ++
-                    "= gl_GlobalInvocationID.z * gl_NumWorkGroups.x * gl_NumWorkGroups.y * " ++ templates.wg_size ++ " + gl_GlobalInvocationID.y * gl_NumWorkGroups.x * " ++ templates.wg_size ++ " + gl_GlobalInvocationID.x);\n", .{}),
+                    "= gl_GlobalInvocationID.z * gl_NumWorkGroups.x * gl_NumWorkGroups.y * " ++ templates.wg_size ++
+                    " + gl_GlobalInvocationID.y * gl_NumWorkGroups.x * " ++ templates.wg_size ++ " + gl_GlobalInvocationID.x);\n", .{}),
                 self.after_version,
             );
             if (self.parsed.version < 430) {
                 try self.insertStart(
-                    try self.print("const uvec3 " ++ templates.wg_size ++ "= uvec3({d},{d},{d});\n", .{ self.config.group_dim[0], self.config.group_dim[1], self.config.group_dim[2] }),
+                    try self.print(
+                        "const uvec3 " ++ templates.wg_size ++ "= uvec3({d},{d},{d});\n",
+                        .{ self.config.group_dim[0], self.config.group_dim[1], self.config.group_dim[2] },
+                    ),
                     self.after_version,
                 );
             } else {
@@ -623,7 +660,8 @@ pub fn declareThreadId(self: *@This()) !void {
 
 const StoragePreference = enum { Buffer, Interface, PreferBuffer, PreferInterface };
 
-/// Creates a storage slot in the shader (or program-wide for buffers), and also adds it to correct channel definitions and initializes its readback buffer (if the passed `size` > 0).
+/// Creates a storage slot in the shader (or program-wide for buffers), and also adds it to correct channel definitions and initializes
+/// its readback buffer (if the passed `size` > 0).
 ///
 /// `format`, `fit_into_component` and `component` are used only for interface storages.
 pub fn addStorage(
@@ -636,10 +674,14 @@ pub fn addStorage(
 ) !*OutputStorage {
     const value = try switch (preference) {
         .Buffer => if (self.config.program.out.get(id)) |existing| return existing else OutputStorage.nextBuffer(&self.config),
-        .PreferBuffer => if (self.config.program.out.get(id)) |existing| return existing else OutputStorage.nextPreferBuffer(&self.config, format, fit_into_component, component),
+        .PreferBuffer => if (self.config.program.out.get(id)) |existing|
+            return existing
+        else
+            OutputStorage.nextPreferBuffer(&self.config, format, fit_into_component, component),
 
         .Interface => OutputStorage.nextInterface(&self.config, format, fit_into_component, component),
-        .PreferInterface => OutputStorage.nextInterface(&self.config, format, fit_into_component, component) catch if (self.config.program.out.get(id)) |existing| return existing else OutputStorage.nextBuffer(&self.config),
+        .PreferInterface => OutputStorage.nextInterface(&self.config, format, fit_into_component, component) catch
+            if (self.config.program.out.get(id)) |existing| return existing else OutputStorage.nextBuffer(&self.config),
     };
 
     const result: *OutputStorage = switch (value.location) {
@@ -669,7 +711,14 @@ pub fn VarResult(comptime T: type) type {
     };
 }
 
-fn varImpl(self: *@This(), id: u64, comptime T: type, default: ?T, source: *std.AutoArrayHashMapUnmanaged(u64, *anyopaque), program_source: ?*std.AutoArrayHashMapUnmanaged(u64, *anyopaque)) !VarResult(T) {
+fn varImpl(
+    self: *@This(),
+    id: u64,
+    comptime T: type,
+    default: ?T,
+    source: *std.AutoArrayHashMapUnmanaged(u64, *anyopaque),
+    program_source: ?*std.AutoArrayHashMapUnmanaged(u64, *anyopaque),
+) !VarResult(T) {
     if (program_source) |ps| {
         const global = try ps.getOrPut(self.config.allocator, id);
         if (!global.found_existing) {
@@ -1078,7 +1127,12 @@ pub fn insertEnd(self: *@This(), string: String, offset: usize, consume_next: u3
 /// Gets processor's result and frees the working memory
 pub fn apply(self: *@This()) !Result {
     var parts = try self.inserts.applyTo(self.config.source, self.config.allocator) orelse {
-        try self.addDiagnostic(try self.print("Instrumentation was requested but no inserts were generated for stage {s}", .{@tagName(self.config.shader_stage)}), null, null, null);
+        try self.addDiagnostic(
+            try self.print("Instrumentation was requested but no inserts were generated for stage {s}", .{@tagName(self.config.shader_stage)}),
+            null,
+            null,
+            null,
+        );
         return Result{ .length = 0, .channels = self.toOwnedChannels(), .source = null, .spirv = null };
     };
     try parts.append(self.config.allocator, 0); // null-terminate the string
@@ -1092,8 +1146,15 @@ pub fn apply(self: *@This()) !Result {
     };
 }
 
-/// NOTE: When an error union is passed as `value`, the diagnostic is added only if the error has occured (so if you want to include it forcibly, try or catch it before calling this function)
-fn addDiagnostic(self: *@This(), value: anytype, source: ?std.builtin.SourceLocation, span: ?analyzer.parse.Span, trace: ?*std.builtin.StackTrace) std.mem.Allocator.Error!switch (@typeInfo(@TypeOf(value))) {
+/// NOTE: When an error union is passed as `value`, the diagnostic is added only if the error has occured (so if you want to include it forcibly,
+/// try or catch it before calling this function)
+fn addDiagnostic(
+    self: *@This(),
+    value: anytype,
+    source: ?std.builtin.SourceLocation,
+    span: ?analyzer.parse.Span,
+    trace: ?*std.builtin.StackTrace,
+) std.mem.Allocator.Error!switch (@typeInfo(@TypeOf(value))) {
     .error_union => |err_un| err_un.payload,
     else => void,
 } {
@@ -1145,7 +1206,9 @@ pub const Inserts = struct {
     pub const Treap = std.Treap(Insert, Insert.order);
     inserts: Treap = .{},
 
+    /// SAFETY: assigned in init()
     node_pool: std.heap.MemoryPool(Treap.Node) = undefined,
+    /// SAFETY: assigned in init()
     lnode_pool: std.heap.MemoryPool(std.DoublyLinkedList(TaggedString).Node) = undefined,
 
     pub fn init(self: *@This(), allocator: std.mem.Allocator) void {
@@ -1206,7 +1269,11 @@ pub const Inserts = struct {
     }
 
     fn insertEndImpl(self: *@This(), string: String, offset: usize, consume_next: u32, free: bool) std.mem.Allocator.Error!void {
-        var entry = self.inserts.getEntryFor(Insert{ .offset = offset, .consume_next = consume_next, .inserts = std.DoublyLinkedList(TaggedString){} });
+        var entry = self.inserts.getEntryFor(Insert{
+            .offset = offset,
+            .consume_next = consume_next,
+            .inserts = std.DoublyLinkedList(TaggedString){},
+        });
         const new_lnode = try self.lnode_pool.create();
         new_lnode.* = .{ .data = .{ .string = string, .free = free } };
         if (entry.node) |node| {
@@ -1254,7 +1321,10 @@ pub const Inserts = struct {
                     if (previous) |prev| blk: {
                         if (prev.key.offset > node.key.offset) {
                             if (it.next()) |nexter| {
-                                log.debug("Nexter at {d}, cons {d}: {s}", .{ nexter.key.offset, nexter.key.consume_next, nexter.key.inserts.first.?.data.string });
+                                log.debug(
+                                    "Nexter at {d}, cons {d}: {s}",
+                                    .{ nexter.key.offset, nexter.key.consume_next, nexter.key.inserts.first.?.data.string },
+                                );
                             }
                             // write the rest of code
                             try parts.appendSlice(allocator, source[prev.key.offset + prev.key.consume_next - offset ..]);
@@ -1299,7 +1369,8 @@ pub const OutputStorage = struct {
     //
     /// Size specification hint for the consuming client instrument
     size: usize = 0,
-    /// Output channels are meant to be read back for use by the instrument clients each time the shader is executed. Set this flag to true to disable the automatic readback.
+    /// Output channels are meant to be read back for use by the instrument clients each time the shader is executed. Set this flag to true to disable
+    /// the automatic readback.
     lazy: bool = false,
     /// This can be specified for the backend instrument clients to not read the whole buffer, but only a part of it.
     readback_offset: usize = 0,
@@ -1315,7 +1386,13 @@ pub const OutputStorage = struct {
             .gl_fragment, .vk_fragment, .gl_vertex, .vk_vertex => {
                 if (fit_into_component) |another_stor| {
                     if (another_stor == .interface and component != null) {
-                        return OutputStorage{ .location = .{ .interface = .{ .location = another_stor.interface.location, .component = component.?, .format = format } } };
+                        return OutputStorage{
+                            .location = .{ .interface = .{
+                                .location = another_stor.interface.location,
+                                .component = component.?,
+                                .format = format,
+                            } },
+                        };
                     }
                 }
                 // these can have output interfaces
@@ -1393,7 +1470,44 @@ pub const OutputStorage = struct {
             y: usize = 0,
         };
 
-        pub const Format = enum { @"4U8", @"4F8", @"4I8", @"4U16", @"4I16", @"4F16", @"4U32", @"4I32", @"4F32", @"3U8", @"3F8", @"3I8", @"3U16", @"3I16", @"3F16", @"3U32", @"3I32", @"3F32", @"2U8", @"2F8", @"2I8", @"2U16", @"2I16", @"2F16", @"2U32", @"2I32", @"2F32", @"1U8", @"1F8", @"1I8", @"1U16", @"1I16", @"1F16", @"1U32", @"1I32", @"1F32" };
+        pub const Format = enum {
+            @"4U8",
+            @"4F8",
+            @"4I8",
+            @"4U16",
+            @"4I16",
+            @"4F16",
+            @"4U32",
+            @"4I32",
+            @"4F32",
+            @"3U8",
+            @"3F8",
+            @"3I8",
+            @"3U16",
+            @"3I16",
+            @"3F16",
+            @"3U32",
+            @"3I32",
+            @"3F32",
+            @"2U8",
+            @"2F8",
+            @"2I8",
+            @"2U16",
+            @"2I16",
+            @"2F16",
+            @"2U32",
+            @"2I32",
+            @"2F32",
+            @"1U8",
+            @"1F8",
+            @"1I8",
+            @"1U16",
+            @"1I16",
+            @"1F16",
+            @"1U32",
+            @"1I32",
+            @"1F32",
+        };
     };
 };
 

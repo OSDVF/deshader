@@ -10,6 +10,7 @@ pub const CompressStep = struct {
         self.* = .{
             .source = source,
             .step = std.Build.Step.init(.{ .id = .custom, .makeFn = make, .name = "compress", .owner = b }),
+            // SAFETY: assigned right after
             .generatedFile = undefined,
         };
         self.generatedFile = .{ .step = &self.step };

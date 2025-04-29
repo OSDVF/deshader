@@ -19,7 +19,6 @@ const options = @import("options");
 const builtin = @import("builtin");
 const common = @import("common");
 const log = common.log;
-const transitive = @import("transitive.zig");
 const c = @cImport({
     if (builtin.os.tag == .windows) {
         @cInclude("windows.h");
@@ -51,11 +50,13 @@ pub const APIs = struct {
                 *const fn (hdc: *const anyopaque, hglrc: ?*const anyopaque) callconv(.c) c_int,
                 *const fn (hDrawDC: *const anyopaque, hReadDC: *const anyopaque, hglrc: ?*const anyopaque) callconv(.c) c_int,
                 *const fn (hDrawDC: *const anyopaque, hReadDC: *const anyopaque, hglrc: ?*const anyopaque) callconv(.c) c_int,
+                // SAFETY: assigned after the libary is loaded
             } = .{ undefined, undefined, undefined };
             const create_names: []const ZString = &.{ "wglCreateContext", "wglCreateContextAttribsARB" };
             pub var create: struct {
                 *const fn (hdc: *const anyopaque) callconv(.c) ?*const anyopaque,
                 *const fn (hdc: *const anyopaque, share: *const anyopaque, attribs: ?[*]c_int) callconv(.c) ?*const anyopaque,
+                // SAFETY: assigned after the libary is loaded
             } = .{ undefined, undefined };
             const destroy_name = "wglDeleteContext";
             pub var destroy: ?*const fn (hdc: *const anyopaque) callconv(.c) bool = null;
@@ -71,8 +72,10 @@ pub const APIs = struct {
             pub var loader: ?GetProcAddressSignature = null;
             var possible_loaders: []const String = &.{};
             var make_current_names: []const ZString = &.{""};
+            // SAFETY: assigned after the libary is loaded
             pub var make_current: struct { *const fn (hdc: *const anyopaque, hglrc: ?*const anyopaque) callconv(.c) c_int } = .{undefined};
             pub var create_names = [_]ZString{""};
+            // SAFETY: assigned after the libary is loaded
             pub var create: struct { *const fn (hdc: *const anyopaque) callconv(.c) ?*const anyopaque } = .{undefined};
             var destroy_name = "";
             pub var destroy: ?*const fn (hdc: *const anyopaque) callconv(.c) bool = null;
@@ -84,7 +87,8 @@ pub const APIs = struct {
     } else struct {
         pub const glX = struct {
             pub const name = "glX";
-            const names: []const String = &.{ "libGL" ++ builtin.target.dynamicLibSuffix(), "libGLX" ++ builtin.target.dynamicLibSuffix() }; //TODO also "libOpenGL.so" ?
+            //TODO also "libOpenGL.so" ?
+            const names: []const String = &.{ "libGL" ++ builtin.target.dynamicLibSuffix(), "libGLX" ++ builtin.target.dynamicLibSuffix() };
             pub var lib: ?std.DynLib = null;
             pub var loader: ?GetProcAddressSignature = null;
             const default_loaders = [_]String{ "glXGetProcAddress", "glXGetProcAddressARB" };
@@ -93,12 +97,20 @@ pub const APIs = struct {
             pub var make_current: struct {
                 *const fn (display: *const anyopaque, drawable: c_ulong, context: ?*const anyopaque) callconv(.c) c_int,
                 *const fn (display: *const anyopaque, draw: c_ulong, read: c_ulong, context: ?*const anyopaque) callconv(.c) c_int,
+                // SAFETY: assigned when loaded glX
             } = .{ undefined, undefined };
             const create_names: []const ZString = &.{ "glXCreateContext", "glXCreateNewContext", "glXCreateContextAttribsARB" };
             pub var create: struct {
                 *const fn (display: *const anyopaque, vis: *const anyopaque, share: *const anyopaque, direct: c_int) callconv(.c) ?*const anyopaque,
                 *const fn (display: *const anyopaque, render_type: c_int, share: *const anyopaque, direct: c_int) callconv(.c) ?*const anyopaque,
-                *const fn (display: *const anyopaque, vis: *const anyopaque, share: *const anyopaque, direct: c_int, attribs: ?[*]const c_int) callconv(.c) ?*const anyopaque,
+                *const fn (
+                    display: *const anyopaque,
+                    vis: *const anyopaque,
+                    share: *const anyopaque,
+                    direct: c_int,
+                    attribs: ?[*]const c_int,
+                ) callconv(.c) ?*const anyopaque,
+                // SAFETY: assigned when loaded glX
             } = .{ undefined, undefined, undefined };
             const destroy_name = "glXDestroyContext";
             pub var destroy: ?*const fn (display: *const anyopaque, context: *const anyopaque) callconv(.c) bool = null;
@@ -115,10 +127,24 @@ pub const APIs = struct {
             const default_loaders = [_]String{"eglGetProcAddress"};
             var possible_loaders: []const String = &@This().default_loaders;
             const make_current_names: []const ZString = &.{"eglMakeCurrent"};
-            pub var make_current: struct { *const fn (display: *const anyopaque, draw: ?*const anyopaque, read: ?*const anyopaque, context: ?*const anyopaque) callconv(.c) c_uint } = .{undefined};
+            pub var make_current: struct {
+                *const fn (
+                    display: *const anyopaque,
+                    draw: ?*const anyopaque,
+                    read: ?*const anyopaque,
+                    context: ?*const anyopaque,
+                ) callconv(.c) c_uint,
+                // SAFETY: assigned when loaded egl
+            } = .{undefined};
             const create_names: []const ZString = &.{"eglCreateContext"};
             pub var create: struct {
-                *const fn (display: *const anyopaque, config: *const anyopaque, share: *const anyopaque, attribs: ?[*]const c_int) callconv(.c) ?*const anyopaque,
+                *const fn (
+                    display: *const anyopaque,
+                    config: *const anyopaque,
+                    share: *const anyopaque,
+                    attribs: ?[*]const c_int,
+                ) callconv(.c) ?*const anyopaque,
+                // SAFETY: assigned when loaded egl
             } = .{undefined};
             const destroy_name = "eglDestroyContext";
             pub var destroy: ?*const fn (display: *const anyopaque, context: *const anyopaque) callconv(.c) bool = null;
@@ -129,15 +155,26 @@ pub const APIs = struct {
         };
         pub const cgl = struct {
             pub const name = "cgl";
-            const names = &[_]String{ "/System/Library/Frameworks/OpenGL.framework/OpenGL", "/System/Library/Frameworks/OpenGL.framework/Libraries/libGL.dylib" };
+            const names = &[_]String{
+                "/System/Library/Frameworks/OpenGL.framework/OpenGL",
+                "/System/Library/Frameworks/OpenGL.framework/Libraries/libGL.dylib",
+            };
             pub var lib: ?std.DynLib = null;
             pub var loader: ?GetProcAddressSignature = null;
             const default_loaders = [_]String{"CGLGetProcAddress"};
             var possible_loaders: []const String = &@This().default_loaders;
             const make_current_names: []const ZString = &.{"CGLSetCurrentContext"};
+            // SAFETY: assigned when loaded cgl
             pub var make_current: struct { *const fn (context: ?*const anyopaque) callconv(.c) c_int } = .{undefined};
             const create_names: []const ZString = &.{"CGLCreateContext"};
-            pub var create: struct { *const fn (pix: *const anyopaque, share: *const anyopaque, ctx: *const anyopaque) callconv(.c) c_int } = .{undefined};
+            pub var create: struct {
+                *const fn (
+                    pix: *const anyopaque,
+                    share: *const anyopaque,
+                    ctx: *const anyopaque,
+                ) callconv(.c) c_int,
+                // SAFETY: assigned when loaded cgl
+            } = .{undefined};
             const destroy_name = "CGLDestroyContext";
             pub var destroy: ?*const fn (context: *const anyopaque) callconv(.c) bool = null;
             const get_current_name = "CGLGetCurrentContext";
@@ -151,10 +188,25 @@ pub const APIs = struct {
             pub var lib: ?std.DynLib = null;
             pub var loader: ?GetProcAddressSignature = null;
             var make_current_names: []const ZString = &.{""};
-            pub var make_current: struct { *const fn (display: *const anyopaque, draw: c_ulong, context: ?*const anyopaque) callconv(.c) c_int } = .{undefined};
+            pub var make_current: struct {
+                *const fn (
+                    display: *const anyopaque,
+                    draw: c_ulong,
+                    context: ?*const anyopaque,
+                ) callconv(.c) c_int,
+                // SAFETY: assigned after the libary is loaded
+            } = .{undefined};
             var possible_loaders: []const String = &.{};
             var create_names: []const ZString = &.{""};
-            var create: struct { *const fn (display: *const anyopaque, vis: *const anyopaque, share: *const anyopaque, direct: c_int) callconv(.c) ?*const anyopaque } = .{undefined};
+            var create: struct {
+                *const fn (
+                    display: *const anyopaque,
+                    vis: *const anyopaque,
+                    share: *const anyopaque,
+                    direct: c_int,
+                ) callconv(.c) ?*const anyopaque,
+                // SAFETY: assigned after the libary is loaded
+            } = .{undefined};
             var destroy_name = "";
             pub var destroy: ?*const fn (display: *const anyopaque, context: *const anyopaque) callconv(.c) bool = null;
             var get_current_name: ZString = "";
@@ -200,7 +252,7 @@ pub const GlBackend = GlBackendUnion();
 
 var reported_process_name = false;
 /// used for renaming libraries on Windows
-var renamed_libs: std.ArrayList(String) = undefined;
+var renamed_libs = std.ArrayListUnmanaged(String).empty;
 pub var ignored = false;
 pub fn checkIgnoredProcess() void {
     var ignored_this = false;
@@ -317,7 +369,8 @@ const _known_gl_loaders =
     (if (builtin.os.tag == .windows)
         APIs.gl.wgl.default_loaders ++ APIs.gl.wgl.make_current_names ++ APIs.gl.wgl.create_names ++ .{APIs.gl.wgl.destroy_name}
     else
-        APIs.gl.glX.default_loaders ++ APIs.gl.glX.make_current_names ++ APIs.gl.glX.create_names ++ APIs.gl.egl.default_loaders ++ APIs.gl.egl.make_current_names ++ APIs.gl.egl.create_names ++ .{
+        APIs.gl.glX.default_loaders ++ APIs.gl.glX.make_current_names ++ APIs.gl.glX.create_names ++ APIs.gl.egl.default_loaders ++
+            APIs.gl.egl.make_current_names ++ APIs.gl.egl.create_names ++ .{
             APIs.gl.egl.destroy_name,
             APIs.gl.glX.destroy_name,
             APIs.gl.egl.get_current_name,
@@ -363,10 +416,6 @@ pub const intercepted = blk: {
 pub const all_exported_names = _known_gl_loaders ++ intercepted.names;
 
 pub fn loadGlLib() !void {
-    if (builtin.os.tag == .windows) { // Assuming loadGlLib is called before loadVkLib
-        renamed_libs = std.ArrayList(String).init(common.allocator);
-    }
-
     const customLib = common.env.get(common.env_prefix ++ "GL_LIBS");
     {
         var names = std.ArrayList(String).init(common.allocator);
@@ -409,10 +458,14 @@ pub fn loadGlLib() !void {
     inline for (_gl_libs) |gl_lib| {
         for (gl_lib.names) |lib_name| {
             // add '?' to mark this as not intercepted on POSIX systems
-            const full_lib_name = if (builtin.os.tag == .windows) lib_name else try std.mem.concat(common.allocator, u8, if (specified_library_root) |root|
-                &.{ common.noTrailingSlash(root), std.fs.path.sep_str, std.fs.path.basename(lib_name), "?" }
-            else
-                &.{ lib_name, "?" });
+            const full_lib_name = if (builtin.os.tag == .windows) lib_name else try std.mem.concat(
+                common.allocator,
+                u8,
+                if (specified_library_root) |root|
+                    &.{ common.noTrailingSlash(root), std.fs.path.sep_str, std.fs.path.basename(lib_name), "?" }
+                else
+                    &.{ lib_name, "?" },
+            );
             defer if (builtin.os.tag != .windows) common.allocator.free(full_lib_name);
             if (loadNotDeshaderLibrary(full_lib_name)) |lib| {
                 gl_lib.lib = lib;
@@ -477,7 +530,7 @@ fn loadNotDeshaderLibrary(original_name: []const u8) !std.DynLib {
     }) {
         // The original dll must be firstly renamed to prevent recursive hooking
         const renamed_name = try std.mem.concat(common.allocator, u8, &.{ "original.", std.fs.path.basename(original_name) });
-        try renamed_libs.append(renamed_name);
+        try renamed_libs.append(common.allocator, renamed_name);
         try common.symlinkOrCopy(std.fs.cwd(), original_name, renamed_name);
         return std.DynLib.open(renamed_name);
     } else {
@@ -488,7 +541,7 @@ fn loadNotDeshaderLibrary(original_name: []const u8) !std.DynLib {
 
 pub fn deinit() void {
     const cwd = std.fs.cwd().fd;
-    defer renamed_libs.deinit();
+    defer renamed_libs.deinit(common.allocator);
     defer common.allocator.free(APIs.gl.custom.names);
     defer common.allocator.free(APIs.gl.custom.possible_loaders);
     for (renamed_libs.items) |lib| {
@@ -538,6 +591,7 @@ pub fn deshaderGetProcAddress(procedure: CString) callconv(.c) *align(@alignOf(f
         log.debug("Intercepting custom GL proc address {s}", .{procedure});
     }
     if (APIs.gl.custom.loader == null) {
+        // SAFETY: meant to be checked by the UB sanitizer
         return undefined;
     }
     return APIs.gl.custom.loader.?(procedure);

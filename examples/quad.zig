@@ -22,6 +22,7 @@ pub fn onResize(window: glfw.Window, width: u32, height: u32) void {
 }
 
 // Procedure table that will hold OpenGL functions loaded at runtime.
+// SAFETY: assigned after the context is created
 var procs: gl.ProcTable = undefined;
 fn createWindow() ?glfw.Window {
     return glfw.Window.create(640, 480, "zig-glfw + zig-opengl", null, null, .{
@@ -89,12 +90,14 @@ pub fn main() !void {
     gl.DeleteShader(vertex);
     gl.DeleteShader(fragment);
 
+    // SAFETY: assigned right after by OpenGL
     var vertex_buffer: gl.uint = undefined;
     gl.GenBuffers(1, (&vertex_buffer)[0..1]);
     defer gl.DeleteBuffers(1, (&vertex_buffer)[0..1]);
     gl.BindBuffer(gl.ARRAY_BUFFER, vertex_buffer);
     gl.BufferData(gl.ARRAY_BUFFER, vertex_data.len * @sizeOf(f32), &vertex_data, gl.STATIC_DRAW);
 
+    // SAFETY: assigned right after by OpenGL
     var vao: gl.uint = undefined;
     gl.GenVertexArrays(1, (&vao)[0..1]);
     defer gl.DeleteVertexArrays(1, (&vao)[0..1]);

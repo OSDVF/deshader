@@ -28,7 +28,8 @@ const String = []const u8;
 //
 // Graphics API interception with trampoline generators
 //
-// TODO: can use ELF filters https://github.com/aritger/libgl-elf-tricks-demo on Linux or https://github.com/magnusstubman/dll-exports  #pragma comment(linker, "/export:func=target_module.func,@100") on Windows to avoid trampolines
+// TODO: can use ELF filters https://github.com/aritger/libgl-elf-tricks-demo on Linux
+// or https://github.com/magnusstubman/dll-exports  #pragma comment(linker, "/export:func=target_module.func,@100") on Windows to avoid trampolines
 pub const TransitiveSymbols = struct {
     const transitive_procs = @import("transitive_exports");
 
@@ -90,6 +91,7 @@ pub const TransitiveSymbols = struct {
     // Fill the mappings
     pub fn loadOriginal() !void {
         comptime var count: usize = 0;
+        // SAFETY: assigned in the loop
         comptime var names: []String = undefined;
 
         // Export all known GL and VK functions

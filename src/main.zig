@@ -15,7 +15,7 @@
 
 //! Contains:
 //! Code that will be executed upon library load
-//! Public symbols for interaction with Deshader library (shader tagging etc.)
+//! Public API for interaction with Deshader library (shader tagging etc.)
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -32,12 +32,14 @@ const transitive = @import("backends/transitive.zig");
 
 const String = []const u8;
 
+/// Defines logging options for the whole library
+pub const std_options = common.logging.std_options;
+
 //
 // Public API
 //
 
-/// Defines logging options for the whole library
-pub const std_options = common.logging.std_options;
+//#region Public API
 const err_format = "{s}: {any}";
 
 // Simplify declarations to allow generating stubs from this `main.zig` file without importing `declarations.zig`
@@ -57,27 +59,77 @@ pub export fn deshaderFreeList(list: [*]const [*:0]const u8, count: usize) callc
     common.allocator.free(list[0..count]);
 }
 
-pub export fn deshaderListPrograms(path: [*:0]const u8, recursive: bool, count: *usize, physical: bool, meta: bool, postfix: ?[*:0]const u8) callconv(.c) ?[*]const [*:0]const u8 {
-    var result = backends.gl.current.Programs.listDir(common.allocator, std.mem.span(path), recursive, physical, meta, if (postfix) |n| std.mem.span(n) else null) catch return null;
+pub export fn deshaderListPrograms(
+    path: [*:0]const u8,
+    recursive: bool,
+    count: *usize,
+    physical: bool,
+    meta: bool,
+    postfix: ?[*:0]const u8,
+) callconv(.c) ?[*]const [*:0]const u8 {
+    var result = backends.gl.current.Programs.listDir(
+        common.allocator,
+        std.mem.span(path),
+        recursive,
+        physical,
+        meta,
+        if (postfix) |n| std.mem.span(n) else null,
+    ) catch return null;
     count.* = result.items.len;
     return (result.toOwnedSlice(common.allocator) catch return null).ptr;
 }
 
-pub export fn deshaderListSources(path: [*:0]const u8, recursive: bool, count: *usize, physical: bool, meta: bool, postfix: ?[*:0]const u8) callconv(.c) ?[*]const [*:0]const u8 {
-    var result = backends.gl.current.Shaders.listDir(common.allocator, std.mem.span(path), recursive, physical, meta, if (postfix) |n| std.mem.span(n) else null) catch return null;
+pub export fn deshaderListSources(
+    path: [*:0]const u8,
+    recursive: bool,
+    count: *usize,
+    physical: bool,
+    meta: bool,
+    postfix: ?[*:0]const u8,
+) callconv(.c) ?[*]const [*:0]const u8 {
+    var result = backends.gl.current.Shaders.listDir(
+        common.allocator,
+        std.mem.span(path),
+        recursive,
+        physical,
+        meta,
+        if (postfix) |n| std.mem.span(n) else null,
+    ) catch return null;
     count.* = result.items.len;
     return (result.toOwnedSlice(common.allocator) catch return null).ptr;
 }
 
 /// If `program` == 0, then list all programs. Else list shader stages of a particular program
-pub export fn deshaderListProgramsUntagged(count: *usize, ref_or_root: usize, meta: bool, nested_postfix: ?[*:0]const u8) callconv(.c) ?[*]const [*:0]const u8 {
-    const result = backends.gl.current.Programs.listUntagged(common.allocator, @enumFromInt(ref_or_root), meta, if (nested_postfix) |n| std.mem.span(n) else null, null) catch return null;
+pub export fn deshaderListProgramsUntagged(
+    count: *usize,
+    ref_or_root: usize,
+    meta: bool,
+    nested_postfix: ?[*:0]const u8,
+) callconv(.c) ?[*]const [*:0]const u8 {
+    const result = backends.gl.current.Programs.listUntagged(
+        common.allocator,
+        @enumFromInt(ref_or_root),
+        meta,
+        if (nested_postfix) |n| std.mem.span(n) else null,
+        null,
+    ) catch return null;
     count.* = result.len;
     return @ptrCast(result);
 }
 
-pub export fn deshaderListSourcesUntagged(count: *usize, ref_or_root: usize, meta: bool, nested_postfix: ?[*:0]const u8) callconv(.c) ?[*]const [*:0]const u8 {
-    const result = backends.gl.current.Shaders.listUntagged(common.allocator, @enumFromInt(ref_or_root), meta, if (nested_postfix) |n| std.mem.span(n) else null, null) catch return null;
+pub export fn deshaderListSourcesUntagged(
+    count: *usize,
+    ref_or_root: usize,
+    meta: bool,
+    nested_postfix: ?[*:0]const u8,
+) callconv(.c) ?[*]const [*:0]const u8 {
+    const result = backends.gl.current.Shaders.listUntagged(
+        common.allocator,
+        @enumFromInt(ref_or_root),
+        meta,
+        if (nested_postfix) |n| std.mem.span(n) else null,
+        null,
+    ) catch return null;
     count.* = result.len;
     return @ptrCast(result);
 }
@@ -107,7 +159,8 @@ pub export fn deshaderReturnServiceGL() callconv(.c) void {
 }
 
 /// # Shader tagging
-/// Deshader creates a virtual file system for better management of your shaders. Use these functions to assign filesystem locations to your shaders and specify dependencies between them. Call them just before you call `glShaderSource` or similar functions.
+/// Deshader creates a virtual file system for better management of your shaders. Use these functions to assign filesystem locations to your shaders
+/// and specify dependencies between them. Call them just before you call `glShaderSource` or similar functions.
 /// `path` cannot contain '>'
 ///
 /// Alternatively, glNamedStringARB or glObjectLabel can be used to tag shaders.
@@ -124,7 +177,8 @@ pub export fn deshaderTag(ref: usize, part_index: usize, path: [*:0]const u8, if
 /// Set a physical folder as a workspace for shader sources
 pub export fn deshaderPhysicalWorkspace(virt: [*:0]const u8, physical: [*:0]const u8) callconv(.c) usize {
     _ = _try: {
-        backends.gl.current.mapPhysicalToVirtual(std.mem.span(physical), shaders.ResourceLocator.parse(std.mem.span(virt)) catch |err| break :_try err) catch |err| break :_try err;
+        backends.gl.current.mapPhysicalToVirtual(std.mem.span(physical), shaders.ResourceLocator.parse(std.mem.span(virt)) catch |err|
+            break :_try err) catch |err| break :_try err;
     } catch |err| {
         log.err(err_format, .{ @src().fn_name, err });
         if (@errorReturnTrace()) |trace|
@@ -181,10 +235,18 @@ pub export fn deshaderVersion(output: ?*[*:0]const u8) callconv(.c) void {
     }
 }
 
+//#endregion
+
 //
 // Startup logic
 //
-pub fn DllMain(instance: std.os.windows.HINSTANCE, reason: std.os.windows.DWORD, reserved: std.os.windows.LPVOID) callconv(std.os.windows.WINAPI) std.os.windows.BOOL {
+
+//#region Startup logic
+pub fn DllMain(
+    instance: std.os.windows.HINSTANCE,
+    reason: std.os.windows.DWORD,
+    reserved: std.os.windows.LPVOID,
+) callconv(std.os.windows.WINAPI) std.os.windows.BOOL {
     _ = instance;
     _ = reserved;
 
@@ -247,7 +309,8 @@ fn runOnLoad() !void {
 
     var configs = std.ArrayListUnmanaged(commands.MutliListener.Config){};
     defer configs.deinit(common.allocator);
-    const default = try parseConfigAlloc(common.env.get(common.env_prefix ++ "COMMANDS") orelse common.default_ws_url, common.default_ws_url, common.default_ws_port_n);
+    const default = try parseConfigAlloc(common.env.get(common.env_prefix ++ "COMMANDS") orelse
+        common.default_ws_url, common.default_ws_url, common.default_ws_port_n);
     try configs.append(common.allocator, default);
     if (common.env.get(common.env_prefix ++ "COMMANDS_WS")) |w| {
         const c = try parseConfigAlloc(w, common.default_ws_url, common.default_ws_port_n);
@@ -294,6 +357,8 @@ fn wrapErrorRunOnLoad() callconv(.c) void {
         }
     };
 }
+
+//#endregion
 
 fn parseConfigAlloc(uri: ?String, default: String, default_port: u16) !commands.MutliListener.Config {
     const parsed = if (uri) |u|

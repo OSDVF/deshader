@@ -119,6 +119,15 @@
     "[typescript]": {
         "editor.defaultFormatter": "vscode.typescript-language-features"
     },
+    "[zig]": {
+        "editor.formatOnSave": true,
+        "editor.defaultFormatter": "ziglang.vscode-zig",
+        "editor.stickyScroll.defaultModel": "foldingProviderModel",
+        "files.eol": "\n",
+        "editor.rulers": [
+            150
+        ],
+    },
     "typescript.surveys.enabled": false,
     "typescript.suggest.autoImports": false,
     "typescript.preferences.quoteStyle": "single",
@@ -143,5 +152,6 @@
     },
     "lldb.displayFormat": "auto",
     "lldb.dereferencePointers": true,
-    "lldb.consoleMode": "commands"
+    "lldb.consoleMode": "commands",
+    "zig.zlint.enabled": true,
 }

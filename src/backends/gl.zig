@@ -32,14 +32,11 @@ const options = @import("options");
 const decls = @import("../declarations/shaders.zig");
 const instr_decls = @import("../declarations/instruments.zig");
 const shaders = @import("../services/shaders.zig");
-const storage = @import("../services/storage.zig");
 const Processor = @import("../services/processor.zig");
-const instruments = @import("../services/instruments.zig");
 const gl_instruments = @import("gl_instruments.zig");
 const common = @import("common");
 const log = common.log;
 const commands = @import("../commands.zig");
-const args = @import("args");
 const main = @import("../main.zig");
 const loaders = @import("loaders.zig");
 const debug = @import("../services/debug.zig");
@@ -47,7 +44,6 @@ const ids = @cImport(@cInclude("commands.h"));
 
 const CString = [*:0]const u8;
 const String = []const u8;
-const uvec2 = struct { u32, u32 };
 const Support = Processor.Config.Capabilities;
 
 const BufferType = enum(gl.@"enum") {
@@ -59,6 +55,7 @@ const BufferType = enum(gl.@"enum") {
 
 /// Managed per-context state. Stores descriptive information which cannot be directly queried from OpenGL.
 const ContextState = struct {
+    // SAFETY: assigned after the context is created
     proc_table: gl.ProcTable = undefined,
     gl: loaders.GlBackend, // TODO: encapsulate the whole gl.zig into a backend-specific service
     primitives_written_queries: std.ArrayListUnmanaged(gl.uint) = .empty,
@@ -132,6 +129,7 @@ const Response = enum { ContextFree };
 var state: std.HashMapUnmanaged(*const shaders.BackendContext, ContextState, common.AddressContext(*const shaders.BackendContext), 80) = .empty;
 var waiter = common.Waiter(Request, Response){};
 /// The globalservice instance which belongs to currently selected context.
+// SAFETY: assigned after a context is selected
 pub threadlocal var current: *shaders = undefined;
 
 // Functions to be wrapped by error handling
@@ -174,17 +172,57 @@ const actions = struct {
 //#region Instrumentation
 //
 
+const Error = error{
+    InvalidOperation,
+    InvalidValue,
+    InvalidEnum,
+    InvalidFramebufferOperation,
+    InvalidIndex,
+    OutOfMemory,
+    Unknown,
+};
+
+fn check() Error!void {
+    const err = gl.GetError();
+    if (err != gl.NO_ERROR) {
+        return switch (err) {
+            gl.INVALID_OPERATION => Error.InvalidOperation,
+            gl.INVALID_INDEX => Error.InvalidIndex,
+            gl.INVALID_FRAMEBUFFER_OPERATION => Error.InvalidFramebufferOperation,
+            gl.INVALID_ENUM => Error.InvalidEnum,
+            gl.INVALID_VALUE => Error.InvalidValue,
+            else => Error.Unknown,
+        };
+    }
+}
+
+inline fn getInteger(parameter: gl.@"enum") Error!gl.int {
+    // SAFETY: assigned right after
+    var result: gl.int = undefined;
+    gl.GetIntegerv(parameter, (&result)[0..1]);
+    try check();
+    return result;
+}
+
+inline fn getUinteger(parameter: gl.@"enum") Error!gl.uint {
+    // SAFETY: assigned right after
+    var result: gl.int = undefined;
+    gl.GetIntegerv(parameter, (&result)[0..1]);
+    try check();
+    return @intCast(result);
+}
+
 /// Holds the state before the instrumentation process
 const Snapshot = struct {
     /// The previous drawBuffers configuration
     draw_buffers: [32]c_uint = [_]c_uint{0} ** 32,
     draw_buffers_len: c_uint = 0,
-    pixel_pack_buffer: c_uint = undefined,
-    pack: Pack = undefined,
-    unpack: Pack = undefined,
+    pixel_pack_buffer: c_uint,
+    pack: Pack,
+    unpack: Pack,
     /// The previous read framebuffer binding
     read_fbo: gl.uint = 0,
-    read_buffer: gl.uint = undefined,
+    read_buffer: gl.uint,
     /// The previous framebuffer binding
     fbo: gl.uint = 0,
     /// The previous renderbuffer binding
@@ -203,6 +241,7 @@ const Snapshot = struct {
     };
 
     fn getGlParams(comptime Schema: type, comptime prefix: String) Schema {
+        // SAFETY: assigned right after by OpenGL
         var result: Schema = undefined;
         inline for (@typeInfo(Schema).@"struct".fields) |field| {
             const f = &@field(result, field.name);
@@ -215,6 +254,16 @@ const Snapshot = struct {
             }
         }
         return result;
+    }
+
+    fn getGroupSizes() [3]gl.int {
+        // SAFETY: assigned right below
+        var program_ref: gl.uint = undefined;
+        gl.GetIntegerv(gl.CURRENT_PROGRAM, @ptrCast(&program_ref)); // GL API is stupid and uses GLint for GLuint
+        // SAFETY: assigned right below
+        var group_sizes: [3]gl.int = undefined;
+        gl.GetProgramiv(program_ref, gl.COMPUTE_WORK_GROUP_SIZE, &group_sizes[0]);
+        return group_sizes;
     }
 
     fn restoreGlParams(comptime Schema: type, source: Schema, comptime function: String, comptime prefix: String) void {
@@ -232,25 +281,18 @@ const Snapshot = struct {
     }
 
     fn capture(program: *const shaders.Shader.Program) @This() {
-        var snapshot = Snapshot{}; // TODO do not use undefined to be sure that every field is set
-        //
-        // Bindings
-        //
-
-        // Framebuffers
-        gl.GetIntegerv(gl.FRAMEBUFFER_BINDING, @ptrCast(&snapshot.fbo));
-        gl.GetIntegerv(gl.READ_FRAMEBUFFER_BINDING, @ptrCast(&snapshot.read_fbo));
-
-        // Pixel pack buffer
-        gl.GetIntegerv(gl.PIXEL_PACK_BUFFER_BINDING, @ptrCast(&snapshot.pixel_pack_buffer));
-        // Read buffer
-        gl.GetIntegerv(gl.READ_BUFFER, @ptrCast(&snapshot.read_buffer));
-        // Renderbuffer
-        gl.GetIntegerv(gl.RENDERBUFFER_BINDING, @ptrCast(&snapshot.rbo));
-
-        // (un)pack parameters
-        snapshot.pack = getGlParams(Pack, "PACK_");
-        snapshot.unpack = getGlParams(Pack, "UNPACK_");
+        var snapshot = Snapshot{
+            .pack = getGlParams(Pack, "PACK_"),
+            .unpack = getGlParams(Pack, "UNPACK_"),
+            //
+            // Bindings
+            //
+            .pixel_pack_buffer = getUinteger(gl.PIXEL_PACK_BUFFER_BINDING) catch 0,
+            .read_buffer = getUinteger(gl.READ_BUFFER) catch 0,
+            .fbo = getUinteger(gl.FRAMEBUFFER_BINDING) catch 0,
+            .read_fbo = getUinteger(gl.READ_FRAMEBUFFER_BINDING) catch 0,
+            .rbo = getUinteger(gl.RENDERBUFFER_BINDING) catch 0,
+        };
 
         //
         // Other configurations
@@ -263,11 +305,13 @@ const Snapshot = struct {
             switch (shader_stage) {
                 .gl_fragment, .vk_fragment => {
                     // get GL_DRAW_BUFFERi
+                    // SAFETY: assigned right after by OpenGL
                     var max_draw_buffers: gl.uint = undefined;
                     gl.GetIntegerv(gl.MAX_DRAW_BUFFERS, @ptrCast(&max_draw_buffers));
                     {
                         var i: gl.@"enum" = 0;
                         while (i < max_draw_buffers) : (i += 1) {
+                            // SAFETY: assigned right after by OpenGL
                             var previous: gl.@"enum" = undefined;
                             gl.GetIntegerv(gl.DRAW_BUFFER0 + i, @ptrCast(&previous));
                             switch (previous) {
@@ -339,6 +383,7 @@ fn dispatchDebugCompute(
     comptime dispatch_func: anytype,
     d_args: anytype,
 ) void {
+    // SAFETY: assigned right after by OpenGL
     var program_ref: gl.uint = undefined;
     gl.GetIntegerv(gl.CURRENT_PROGRAM, @ptrCast(&program_ref)); // GL API is stupid and uses GLint for GLuint
 
@@ -370,6 +415,7 @@ fn dispatchDebugDraw(
     comptime dispatch_func: anytype,
     d_args: anytype,
 ) void {
+    // SAFETY: assigned right after by OpenGL
     var program_ref: gl.uint = undefined;
     gl.GetIntegerv(gl.CURRENT_PROGRAM, @ptrCast(&program_ref)); // GL API is stupid and uses GLint for GLuint
 
@@ -444,24 +490,15 @@ fn instrumentDraw(vertices: gl.int, instances: gl.sizei, params: shaders.State.P
     });
 }
 
-fn instrumentCompute(num_groups: [3]usize, program: *shaders.Shader.Program, general_params: GeneralParams) !shaders.InstrumentationResult {
+fn instrumentCompute(sizes: [6]usize, program: *shaders.Shader.Program, general_params: GeneralParams) !shaders.InstrumentationResult {
     var empty = std.ArrayListUnmanaged(usize){};
     defer empty.deinit(common.allocator);
     const c_state = state.getPtr(current.context).?;
-    var group_sizes: [3]gl.int = undefined;
-    gl.GetProgramiv(program.ref.cast(gl.uint), gl.COMPUTE_WORK_GROUP_SIZE, &group_sizes[0]);
     return current.instrumentProgram(program, .{
         .allocator = common.allocator,
         .vertices = 0,
         .instances = 0,
-        .compute = [_]usize{
-            num_groups[0],
-            num_groups[1],
-            num_groups[2],
-            @intCast(group_sizes[0]),
-            @intCast(group_sizes[1]),
-            @intCast(group_sizes[2]),
-        },
+        .compute = sizes,
         .context = .{
             .used_buffers = general_params.used_buffers,
             .used_interface = empty,
@@ -670,7 +707,6 @@ fn formatToPlatform(format: Processor.OutputStorage.Location.Format) PlatformFor
 /// Prepare debug output buffers for instrumented shaders execution
 fn prepareStorage(instrumentation: *shaders.InstrumentationResult, snapshot: Snapshot) !instr_decls.PlatformParamsGL {
     // TODO do not perform this when no instrumentation occured
-    var result: instr_decls.PlatformParamsGL = undefined;
     if (instrumentation.invalidated) {
         if (commands.instance) |comm| {
             try comm.sendEvent(.invalidated, debug.InvalidatedEvent{ .areas = &.{debug.InvalidatedEvent.Areas.threads} });
@@ -681,6 +717,8 @@ fn prepareStorage(instrumentation: *shaders.InstrumentationResult, snapshot: Sna
     @memcpy(draw_buffers[0..snapshot.draw_buffers_len], snapshot.draw_buffers[0..snapshot.draw_buffers_len]);
     var draw_buffers_len = snapshot.draw_buffers_len;
 
+    // SAFETY: assigned in the loop (maybe)
+    var result: instr_decls.PlatformParamsGL = undefined;
     var it = instrumentation.stages.iterator();
     while (it.next()) |state_entry| { // for each shader stage (in the order they are executed)
         var instr_state = state_entry.value_ptr.*;
@@ -711,13 +749,24 @@ fn prepareStorage(instrumentation: *shaders.InstrumentationResult, snapshot: Sna
                             if (!readback.found_existing) {
                                 // Create a debug attachment for the framebuffer
                                 {
+                                    // SAFETY: assigned at the end of this block
                                     var new: gl.uint = undefined;
                                     gl.GenTextures(1, (&new)[0..1]);
                                     gl.BindTexture(gl.TEXTURE_2D, new);
                                     readback.value_ptr.ref = new; // cast to u64
                                 }
                                 const format = formatToPlatform(interface.format);
-                                gl.TexImage2D(gl.TEXTURE_2D, 0, format.internal_format, @intCast(instr_state.params.context.screen[0]), @intCast(instr_state.params.context.screen[1]), 0, format.format, format.type, null);
+                                gl.TexImage2D(
+                                    gl.TEXTURE_2D,
+                                    0,
+                                    format.internal_format,
+                                    @intCast(instr_state.params.context.screen[0]),
+                                    @intCast(instr_state.params.context.screen[1]),
+                                    0,
+                                    format.format,
+                                    format.type,
+                                    null,
+                                );
                             }
 
                             // Attach the debug-output-channel textures to the current framebuffer (or create a new if there is none)
@@ -729,10 +778,16 @@ fn prepareStorage(instrumentation: *shaders.InstrumentationResult, snapshot: Sna
                                 }
                                 gl.BindFramebuffer(gl.FRAMEBUFFER, result.fbo);
                                 //create depth and stencil attachment
+                                // SAFETY: assigned right after by OpenGL
                                 var depth_stencil: gl.uint = undefined;
                                 gl.GenRenderbuffers(1, (&depth_stencil)[0..1]);
                                 gl.BindRenderbuffer(gl.RENDERBUFFER, depth_stencil);
-                                gl.RenderbufferStorage(gl.RENDERBUFFER, gl.DEPTH24_STENCIL8, @intCast(instr_state.params.context.screen[0]), @intCast(instr_state.params.context.screen[1]));
+                                gl.RenderbufferStorage(
+                                    gl.RENDERBUFFER,
+                                    gl.DEPTH24_STENCIL8,
+                                    @intCast(instr_state.params.context.screen[0]),
+                                    @intCast(instr_state.params.context.screen[1]),
+                                );
                                 gl.FramebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.RENDERBUFFER, depth_stencil);
                                 for (0..interface.location) |i| {
                                     // create all previous color attachments
@@ -740,16 +795,32 @@ fn prepareStorage(instrumentation: *shaders.InstrumentationResult, snapshot: Sna
                                         gl.GenTextures(1, @ptrCast(&c_state.replacement_attachment_textures[i]));
                                     }
                                     gl.BindTexture(gl.TEXTURE_2D, c_state.replacement_attachment_textures[i]); //TODO mimic original texture formats
-                                    gl.TexImage2D(gl.TEXTURE_2D, 0, gl.RGBA, @intCast(instr_state.params.context.screen[0]), @intCast(instr_state.params.context.screen[1]), 0, gl.RGBA, gl.FLOAT, null);
+                                    gl.TexImage2D(
+                                        gl.TEXTURE_2D,
+                                        0,
+                                        gl.RGBA,
+                                        @intCast(instr_state.params.context.screen[0]),
+                                        @intCast(instr_state.params.context.screen[1]),
+                                        0,
+                                        gl.RGBA,
+                                        gl.FLOAT,
+                                        null,
+                                    );
                                 }
                             }
-                            gl.FramebufferTexture(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0 + @as(gl.@"enum", @intCast(interface.location)), @intCast(readback.value_ptr.ref), 0);
+                            gl.FramebufferTexture(
+                                gl.DRAW_FRAMEBUFFER,
+                                gl.COLOR_ATTACHMENT0 + @as(gl.@"enum", @intCast(interface.location)),
+                                @intCast(readback.value_ptr.ref),
+                                0,
+                            );
                         },
                         else => unreachable, //TODO transform feedback
                     }
                 },
                 .buffer => |buffer| {
                     if (!readback.found_existing) {
+                        // SAFETY: assigned at the end of this block
                         var new: gl.uint = undefined;
                         gl.GenBuffers(1, (&new)[0..1]);
                         gl.BindBufferBase(gl.SHADER_STORAGE_BUFFER, @intCast(buffer.binding), new);
@@ -775,7 +846,16 @@ fn prepareStorage(instrumentation: *shaders.InstrumentationResult, snapshot: Sna
 }
 
 /// Impement glReadnPixels for contexts older than Gl 4.5 and set pixel pack parameters to defaults
-fn readPixels(x: gl.int, y: gl.int, width: gl.sizei, height: gl.sizei, format: gl.@"enum", @"type": gl.@"enum", buf_size: usize, pixels: [*]u8) std.mem.Allocator.Error!void {
+fn readPixels(
+    x: gl.int,
+    y: gl.int,
+    width: gl.sizei,
+    height: gl.sizei,
+    format: gl.@"enum",
+    @"type": gl.@"enum",
+    buf_size: usize,
+    pixels: [*]u8,
+) std.mem.Allocator.Error!void {
     // Reset pixel pack parameters
     gl.BindBuffer(gl.PIXEL_PACK_BUFFER, 0); // we do not want any PIXEL_PACK_BUFFER to be bound
 
@@ -792,7 +872,10 @@ fn readPixels(x: gl.int, y: gl.int, width: gl.sizei, height: gl.sizei, format: g
     } else {
         const pixels_size: usize = @intCast((width - x) * (height - y));
         if (pixels_size > buf_size) {
-            log.warn("glReadnPixels is not supported, falling back to glReadPixels. Source size is {d}, buffer size is {d}", .{ pixels_size, buf_size });
+            log.warn(
+                "glReadnPixels is not supported, falling back to glReadPixels. Source size is {d}, buffer size is {d}",
+                .{ pixels_size, buf_size },
+            );
             const temp = try common.allocator.alloc(u8, pixels_size);
             defer common.allocator.free(temp);
             gl.ReadPixels(x, y, width, height, format, @"type", temp.ptr);
@@ -864,12 +947,14 @@ fn getGeneralParams(program_ref: gl.uint) !GeneralParams {
     // used bindings
     var used_buffers = std.ArrayListUnmanaged(usize){};
     // used indexes
+    // SAFETY: assigned right after by OpenGL
     var used_buffers_count: gl.uint = undefined;
     gl.GetProgramInterfaceiv(program_ref, gl.SHADER_STORAGE_BLOCK, gl.ACTIVE_RESOURCES, @ptrCast(&used_buffers_count));
     var i: gl.uint = 0;
     while (i < used_buffers_count) : (i += 1) { // for each buffer index
-        var binding: gl.uint = undefined; // get the binding number
         const param: gl.@"enum" = gl.BUFFER_BINDING;
+        // SAFETY: assigned right after by OpenGL
+        var binding: gl.uint = undefined; // get the binding number
         gl.GetProgramResourceiv(program_ref, gl.SHADER_STORAGE_BLOCK, i, 1, &param, 1, null, @ptrCast(&binding));
         try used_buffers.append(common.allocator, binding);
     }
@@ -884,7 +969,12 @@ fn getFrambufferSize(fbo: gl.uint) [2]gl.int {
         return .{ viewport[2], viewport[3] };
     }
     var attachment_object_name: gl.uint = 0;
-    gl.GetFramebufferAttachmentParameteriv(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, @ptrCast(&attachment_object_name));
+    gl.GetFramebufferAttachmentParameteriv(
+        gl.FRAMEBUFFER,
+        gl.COLOR_ATTACHMENT0,
+        gl.FRAMEBUFFER_ATTACHMENT_OBJECT_NAME,
+        @ptrCast(&attachment_object_name),
+    );
 
     var attachment_object_type: gl.int = 0;
     gl.GetFramebufferAttachmentParameteriv(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE, &attachment_object_type);
@@ -904,6 +994,7 @@ fn getFrambufferSize(fbo: gl.uint) [2]gl.int {
 /// query the output interface of the last shader in the pipeline. This is normally the fragment shader.
 fn getOutputInterface(program: gl.uint) !std.ArrayListUnmanaged(usize) {
     var out_interface = std.ArrayListUnmanaged(usize){};
+    // SAFETY: assigned right after by OpenGL
     var count: gl.uint = undefined;
     gl.GetProgramInterfaceiv(program, gl.PROGRAM_OUTPUT, gl.ACTIVE_RESOURCES, @ptrCast(&count));
     // filter out used outputs
@@ -929,6 +1020,7 @@ fn getContextParams(program: *shaders.Shader.Program) !shaders.State.Params.Cont
     const c_state = state.getPtr(current.context) orelse return error.NoState;
 
     // Check if transform feedback is active -> no fragment shader will be executed
+    // SAFETY: assigned right after by OpenGL
     var some_feedback_buffer: gl.int = undefined;
     gl.GetIntegerv(gl.TRANSFORM_FEEDBACK_BUFFER_BINDING, @ptrCast(&some_feedback_buffer));
     // TODO or check indexed_buffer_bindings[BufferType.TransformFeedback] != 0 ?
@@ -939,6 +1031,7 @@ fn getContextParams(program: *shaders.Shader.Program) !shaders.State.Params.Cont
     defer used_attachments.deinit();
 
     // NOTE we assume that all attachments that shader really uses are bound
+    // SAFETY: assigned right after by OpenGL
     var current_fbo: gl.uint = undefined;
     gl.GetIntegerv(gl.FRAMEBUFFER_BINDING, @ptrCast(&current_fbo));
 
@@ -981,7 +1074,10 @@ fn getContextParams(program: *shaders.Shader.Program) !shaders.State.Params.Cont
     return shaders.State.Params.Context{
         .max_attachments = c_state.max.attachments,
         .max_buffers = @intCast(c_state.max.buffers),
-        .max_xfb = if (buffer_mode == gl.SEPARATE_ATTRIBS) @max(0, c_state.max.xfb.streams * c_state.max.xfb.sep_components) else @max(0, c_state.max.xfb.interleaved_components),
+        .max_xfb = if (buffer_mode == gl.SEPARATE_ATTRIBS)
+            @max(0, c_state.max.xfb.streams * c_state.max.xfb.sep_components)
+        else
+            @max(0, c_state.max.xfb.interleaved_components),
         .program = program,
         .search_paths = c_state.search_paths,
         .screen = screen_u,
@@ -1083,17 +1179,44 @@ fn beginFrame() bool {
 
 inline fn endFrame() void {}
 
-// TODO
-// pub export fn glDispatchComputeGroupSizeARB(num_groups_x: gl.uint, num_groups_y: gl.uint, num_groups_z: gl.uint, group_size_x: gl.uint, group_size_y: gl.uint, group_size_z: gl.uint) callconv(.c) void {
-//     if (shaders.instance.checkDebuggingOrRevert()) {
-//         dispatchDebug(instrumentCompute, .{ .{[_]usize{ @intCast(num_groups_x), @intCast(num_groups_y), @intCast(num_groups_z) }},gl.DispatchComputeGroupSizeARB,.{num_groups_x, num_groups_y, num_groups_z, group_size_x, group_size_y, group_size_z});
-//     } else gl.DispatchComputeGroupSizeARB(num_groups_x, num_groups_y, num_groups_z, group_size_x, group_size_y, group_size_z);
-// }
+pub export fn glDispatchComputeGroupSizeARB(
+    num_groups_x: gl.uint,
+    num_groups_y: gl.uint,
+    num_groups_z: gl.uint,
+    group_size_x: gl.uint,
+    group_size_y: gl.uint,
+    group_size_z: gl.uint,
+) callconv(.c) void {
+    defer endFrame();
+    if (beginFrame()) {
+        dispatchDebugCompute(
+            instrumentCompute,
+            .{[_]usize{
+                @intCast(num_groups_x), @intCast(num_groups_y), @intCast(num_groups_z),
+                @intCast(group_size_x), @intCast(group_size_y), @intCast(group_size_z),
+            }},
+            gl.DispatchComputeGroupSizeARB,
+            .{
+                num_groups_x, num_groups_y, num_groups_z,
+                group_size_x, group_size_y, group_size_z,
+            },
+        );
+    } else gl.DispatchComputeGroupSizeARB(num_groups_x, num_groups_y, num_groups_z, group_size_x, group_size_y, group_size_z);
+}
 
 pub export fn glDispatchCompute(num_groups_x: gl.uint, num_groups_y: gl.uint, num_groups_z: gl.uint) callconv(.c) void {
     defer endFrame();
     if (beginFrame()) {
-        dispatchDebugCompute(instrumentCompute, .{[_]usize{ @intCast(num_groups_x), @intCast(num_groups_y), @intCast(num_groups_z) }}, gl.DispatchCompute, .{ num_groups_x, num_groups_y, num_groups_z });
+        const group_sizes = Snapshot.getGroupSizes();
+        dispatchDebugCompute(
+            instrumentCompute,
+            .{[_]usize{
+                @intCast(num_groups_x),   @intCast(num_groups_y),   @intCast(num_groups_z),
+                @intCast(group_sizes[0]), @intCast(group_sizes[1]), @intCast(group_sizes[2]),
+            }},
+            gl.DispatchCompute,
+            .{ num_groups_x, num_groups_y, num_groups_z },
+        );
     } else gl.DispatchCompute(num_groups_x, num_groups_y, num_groups_z);
 }
 
@@ -1112,8 +1235,16 @@ pub export fn glDispatchComputeIndirect(address: gl.intptr) callconv(.c) void {
         if (buffer != 0) {
             gl.GetBufferSubData(gl.DISPATCH_INDIRECT_BUFFER, address, @sizeOf(IndirectComputeCommand), &command);
         }
+        const group_sizes = Snapshot.getGroupSizes();
 
-        dispatchDebugCompute(instrumentCompute, .{[_]usize{ @intCast(command.num_groups_x), @intCast(command.num_groups_y), @intCast(command.num_groups_z) }}, gl.DispatchComputeIndirect, .{address});
+        dispatchDebugCompute(instrumentCompute, .{[_]usize{
+            @intCast(command.num_groups_x),
+            @intCast(command.num_groups_y),
+            @intCast(command.num_groups_z),
+            @intCast(group_sizes[0]),
+            @intCast(group_sizes[1]),
+            @intCast(group_sizes[2]),
+        }}, gl.DispatchComputeIndirect, .{address});
     } else gl.DispatchComputeIndirect(address);
 }
 
@@ -1138,52 +1269,116 @@ pub export fn glDrawElements(mode: gl.@"enum", count: gl.sizei, _type: gl.@"enum
     } else gl.DrawElements(mode, count, _type, indices);
 }
 
-pub export fn glDrawElementsInstanced(mode: gl.@"enum", count: gl.sizei, _type: gl.@"enum", indices: ?*const anyopaque, instanceCount: gl.sizei) callconv(.c) void {
+pub export fn glDrawElementsInstanced(
+    mode: gl.@"enum",
+    count: gl.sizei,
+    _type: gl.@"enum",
+    indices: ?*const anyopaque,
+    instanceCount: gl.sizei,
+) callconv(.c) void {
     defer endFrame();
     if (beginFrame()) {
         dispatchDebugDraw(instrumentDraw, .{ count, instanceCount }, gl.DrawElementsInstanced, .{ mode, count, _type, indices, instanceCount });
     } else gl.DrawElementsInstanced(mode, count, _type, indices, instanceCount);
 }
 
-pub export fn glDrawElementsBaseVertex(mode: gl.@"enum", count: gl.sizei, _type: gl.@"enum", indices: ?*const anyopaque, basevertex: gl.int) callconv(.c) void {
+pub export fn glDrawElementsBaseVertex(
+    mode: gl.@"enum",
+    count: gl.sizei,
+    _type: gl.@"enum",
+    indices: ?*const anyopaque,
+    basevertex: gl.int,
+) callconv(.c) void {
     defer endFrame();
     if (beginFrame()) {
         dispatchDebugDraw(instrumentDraw, .{ count, 1 }, gl.DrawElementsBaseVertex, .{ mode, count, _type, indices, basevertex });
     } else gl.DrawElementsBaseVertex(mode, count, _type, indices, basevertex);
 }
 
-pub export fn glDrawElementsInstancedBaseVertex(mode: gl.@"enum", count: gl.sizei, _type: gl.@"enum", indices: ?*const anyopaque, instanceCount: gl.sizei, basevertex: gl.int) callconv(.c) void {
+pub export fn glDrawElementsInstancedBaseVertex(
+    mode: gl.@"enum",
+    count: gl.sizei,
+    _type: gl.@"enum",
+    indices: ?*const anyopaque,
+    instanceCount: gl.sizei,
+    basevertex: gl.int,
+) callconv(.c) void {
     defer endFrame();
     if (beginFrame()) {
-        dispatchDebugDraw(instrumentDraw, .{ count, instanceCount }, gl.DrawElementsInstancedBaseVertex, .{ mode, count, _type, indices, instanceCount, basevertex });
+        dispatchDebugDraw(
+            instrumentDraw,
+            .{ count, instanceCount },
+            gl.DrawElementsInstancedBaseVertex,
+            .{ mode, count, _type, indices, instanceCount, basevertex },
+        );
     } else gl.DrawElementsInstancedBaseVertex(mode, count, _type, indices, instanceCount, basevertex);
 }
 
-pub export fn glDrawRangeElements(mode: gl.@"enum", start: gl.uint, end: gl.uint, count: gl.sizei, _type: gl.@"enum", indices: ?*const anyopaque) callconv(.c) void {
+pub export fn glDrawRangeElements(
+    mode: gl.@"enum",
+    start: gl.uint,
+    end: gl.uint,
+    count: gl.sizei,
+    _type: gl.@"enum",
+    indices: ?*const anyopaque,
+) callconv(.c) void {
     defer endFrame();
     if (beginFrame()) {
         dispatchDebugDraw(instrumentDraw, .{ count, 1 }, gl.DrawRangeElements, .{ mode, start, end, count, _type, indices });
     } else gl.DrawRangeElements(mode, start, end, count, _type, indices);
 }
 
-pub export fn glDrawRangeElementsBaseVertex(mode: gl.@"enum", start: gl.uint, end: gl.uint, count: gl.sizei, _type: gl.@"enum", indices: ?*const anyopaque, basevertex: gl.int) callconv(.c) void {
+pub export fn glDrawRangeElementsBaseVertex(
+    mode: gl.@"enum",
+    start: gl.uint,
+    end: gl.uint,
+    count: gl.sizei,
+    _type: gl.@"enum",
+    indices: ?*const anyopaque,
+    basevertex: gl.int,
+) callconv(.c) void {
     defer endFrame();
     if (beginFrame()) {
         dispatchDebugDraw(instrumentDraw, .{ count, 1 }, gl.DrawRangeElementsBaseVertex, .{ mode, start, end, count, _type, indices, basevertex });
     } else gl.DrawRangeElementsBaseVertex(mode, start, end, count, _type, indices, basevertex);
 }
 
-pub export fn glDrawElementsInstancedBaseVertexBaseInstance(mode: gl.@"enum", count: gl.sizei, _type: gl.@"enum", indices: ?*const anyopaque, instanceCount: gl.sizei, basevertex: gl.int, baseInstance: gl.uint) callconv(.c) void {
+pub export fn glDrawElementsInstancedBaseVertexBaseInstance(
+    mode: gl.@"enum",
+    count: gl.sizei,
+    _type: gl.@"enum",
+    indices: ?*const anyopaque,
+    instanceCount: gl.sizei,
+    basevertex: gl.int,
+    baseInstance: gl.uint,
+) callconv(.c) void {
     defer endFrame();
     if (beginFrame()) {
-        dispatchDebugDraw(instrumentDraw, .{ count, instanceCount }, gl.DrawElementsInstancedBaseVertexBaseInstance, .{ mode, count, _type, indices, instanceCount, basevertex, baseInstance });
+        dispatchDebugDraw(
+            instrumentDraw,
+            .{ count, instanceCount },
+            gl.DrawElementsInstancedBaseVertexBaseInstance,
+            .{ mode, count, _type, indices, instanceCount, basevertex, baseInstance },
+        );
     } else gl.DrawElementsInstancedBaseVertexBaseInstance(mode, count, _type, indices, instanceCount, basevertex, baseInstance);
 }
 
-pub export fn glDrawElementsInstancedBaseInstance(mode: gl.@"enum", count: gl.sizei, _type: gl.@"enum", indices: ?*const anyopaque, instanceCount: gl.sizei, baseInstance: gl.uint) callconv(.c) void {
+pub export fn glDrawElementsInstancedBaseInstance(
+    mode: gl.@"enum",
+    count: gl.sizei,
+    _type: gl.@"enum",
+    indices: ?*const anyopaque,
+    instanceCount: gl.sizei,
+    baseInstance: gl.uint,
+) callconv(.c) void {
     defer endFrame();
     if (beginFrame()) {
-        dispatchDebugDraw(instrumentDraw, .{ count, instanceCount }, gl.DrawElementsInstancedBaseInstance, .{ mode, count, _type, indices, instanceCount, baseInstance });
+        dispatchDebugDraw(
+            instrumentDraw,
+            .{ count, instanceCount },
+            gl.DrawElementsInstancedBaseInstance,
+            .{ mode, count, _type, indices, instanceCount, baseInstance },
+        );
     } else gl.DrawElementsInstancedBaseInstance(mode, count, _type, indices, instanceCount, baseInstance);
 }
 
@@ -1199,6 +1394,7 @@ pub fn parseIndirect(indirect: ?*const IndirectCommand) IndirectCommand {
     gl.GetIntegerv(gl.DRAW_INDIRECT_BUFFER_BINDING, @ptrCast(&buffer));
     if (buffer != 0) {
         // get the data from the buffer
+        // SAFETY: assigned right after by OpenGL
         var data: IndirectCommand = undefined;
         gl.GetBufferSubData(gl.DRAW_INDIRECT_BUFFER, @intCast(@intFromPtr(indirect)), @intCast(@sizeOf(IndirectCommand)), &data);
 
@@ -1212,7 +1408,12 @@ pub export fn glDrawArraysIndirect(mode: gl.@"enum", indirect: ?*const IndirectC
     defer endFrame();
     if (beginFrame()) {
         const i = parseIndirect(indirect);
-        dispatchDebugDraw(instrumentDraw, .{ @as(gl.sizei, @intCast(i.count)), @as(gl.sizei, @intCast(i.instanceCount)) }, gl.DrawArraysIndirect, .{ mode, indirect });
+        dispatchDebugDraw(
+            instrumentDraw,
+            .{ @as(gl.sizei, @intCast(i.count)), @as(gl.sizei, @intCast(i.instanceCount)) },
+            gl.DrawArraysIndirect,
+            .{ mode, indirect },
+        );
     } else gl.DrawArraysIndirect(mode, indirect);
 }
 
@@ -1220,14 +1421,30 @@ pub export fn glDrawElementsIndirect(mode: gl.@"enum", _type: gl.@"enum", indire
     defer endFrame();
     if (beginFrame()) {
         const i = parseIndirect(indirect);
-        dispatchDebugDraw(instrumentDraw, .{ @as(gl.sizei, @intCast(i.count)), @as(gl.sizei, @intCast(i.instanceCount)) }, gl.DrawElementsIndirect, .{ mode, _type, indirect });
+        dispatchDebugDraw(
+            instrumentDraw,
+            .{ @as(gl.sizei, @intCast(i.count)), @as(gl.sizei, @intCast(i.instanceCount)) },
+            gl.DrawElementsIndirect,
+            .{ mode, _type, indirect },
+        );
     } else gl.DrawElementsIndirect(mode, _type, indirect);
 }
 
-pub export fn glDrawArraysInstancedBaseInstance(mode: gl.@"enum", first: gl.int, count: gl.sizei, instanceCount: gl.sizei, baseInstance: gl.uint) callconv(.c) void {
+pub export fn glDrawArraysInstancedBaseInstance(
+    mode: gl.@"enum",
+    first: gl.int,
+    count: gl.sizei,
+    instanceCount: gl.sizei,
+    baseInstance: gl.uint,
+) callconv(.c) void {
     defer endFrame();
     if (beginFrame()) {
-        dispatchDebugDraw(instrumentDraw, .{ count, instanceCount }, gl.DrawArraysInstancedBaseInstance, .{ mode, first, count, instanceCount, baseInstance });
+        dispatchDebugDraw(
+            instrumentDraw,
+            .{ count, instanceCount },
+            gl.DrawArraysInstancedBaseInstance,
+            .{ mode, first, count, instanceCount, baseInstance },
+        );
     } else gl.DrawArraysInstancedBaseInstance(mode, first, count, instanceCount, baseInstance);
 }
 
@@ -1236,6 +1453,7 @@ pub export fn glDrawTransformFeedback(mode: gl.@"enum", id: gl.uint) callconv(.c
     if (beginFrame()) {
         const query = state.getPtr(current.context).?.primitives_written_queries.items[0];
         // get GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN
+        // SAFETY: assigned right after by OpenGL
         var primitiveCount: gl.int = undefined;
         gl.GetQueryObjectiv(query, gl.QUERY_RESULT, &primitiveCount);
         dispatchDebugDraw(instrumentDraw, .{ primitiveCount, 1 }, gl.DrawTransformFeedback, .{ mode, id });
@@ -1247,6 +1465,7 @@ pub export fn glDrawTransformFeedbackInstanced(mode: gl.@"enum", id: gl.uint, in
     if (beginFrame()) {
         const query = state.getPtr(current.context).?.primitives_written_queries.items[0];
         // get GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN
+        // SAFETY: assigned right after by OpenGL
         var primitiveCount: gl.int = undefined;
         gl.GetQueryObjectiv(query, gl.QUERY_RESULT, &primitiveCount);
         dispatchDebugDraw(instrumentDraw, .{ primitiveCount, instanceCount }, gl.DrawTransformFeedbackInstanced, .{ mode, id, instanceCount });
@@ -1258,6 +1477,7 @@ pub export fn glDrawTransformFeedbackStream(mode: gl.@"enum", id: gl.uint, strea
     if (beginFrame()) {
         const query = state.getPtr(current.context).?.primitives_written_queries.items[stream];
         // get GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN
+        // SAFETY: assigned right after by OpenGL
         var primitiveCount: gl.int = undefined;
         gl.GetQueryObjectiv(query, gl.QUERY_RESULT, &primitiveCount);
         dispatchDebugDraw(instrumentDraw, .{ primitiveCount, 1 }, gl.DrawTransformFeedbackStream, .{ mode, id, stream });
@@ -1269,9 +1489,15 @@ pub export fn glDrawTransformFeedbackStreamInstanced(mode: gl.@"enum", id: gl.ui
     if (beginFrame()) {
         const query = state.getPtr(current.context).?.primitives_written_queries.items[stream];
         // get GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN
+        // SAFETY: assigned right after by OpenGL
         var primitiveCount: gl.int = undefined;
         gl.GetQueryObjectiv(query, gl.QUERY_RESULT, &primitiveCount);
-        dispatchDebugDraw(instrumentDraw, .{ primitiveCount, instanceCount }, gl.DrawTransformFeedbackStreamInstanced, .{ mode, id, stream, instanceCount });
+        dispatchDebugDraw(
+            instrumentDraw,
+            .{ primitiveCount, instanceCount },
+            gl.DrawTransformFeedbackStreamInstanced,
+            .{ mode, id, stream, instanceCount },
+        );
     } else gl.DrawTransformFeedbackStreamInstanced(mode, id, stream, instanceCount);
 }
 //#endregion
@@ -1280,7 +1506,6 @@ pub export fn glDrawTransformFeedbackStreamInstanced(mode: gl.@"enum", id: gl.ui
 //#region Interface
 //
 /// Maximum number of lines from the shader source to scan for deshader pragmas
-const MAX_SHADER_PRAGMA_SCAN = 128;
 /// Supports pragmas:
 /// ```glsl
 /// #pragma deshader [property] "[value1]" "[value2]"
@@ -1290,10 +1515,11 @@ const MAX_SHADER_PRAGMA_SCAN = 128;
 /// #pragma deshader print "format string" [value1] [value2] ...
 /// #pragma deshader print-if [expression] "format string" [value1] [value2] ...
 /// #pragma deshader source "path/to/virtual/or/workspace/relative/file.glsl"
-/// #pragma deshader source-link "path/to/etc/file.glsl" - link to previous source
-/// #pragma deshader source-purge-previous "path/to/etc/file.glsl" - purge previous source (if exists)
-/// #pragma deshader workspace "/another/real/path" "/virtual/path" - include real path in vitual workspace (for the current context)
-/// #pragma deshader workspace-overwrite "/absolute/real/path" "/virtual/path" - purge all previous virtual paths and include real path in vitual workspace
+/// #pragma deshader source-link "path/to/etc/file.glsl" // - link to previous source
+/// #pragma deshader source-purge-previous "path/to/etc/file.glsl" // - purge previous source (if exists)
+/// #pragma deshader workspace "/another/real/path" "/virtual/path" // - include real path in vitual workspace (for the current context)
+/// #pragma deshader workspace-overwrite "/absolute/real/path" "/virtual/path" // - purge all previous virtual paths and include real path
+/// // in vitual workspace
 /// ```
 /// Does not support multiline pragmas with \ at the end of line
 // TODO mutliple shaders for the same stage (OpenGL treats them as if concatenated)
@@ -1307,8 +1533,10 @@ pub export fn glShaderSource(shader: gl.uint, count: gl.sizei, sources: [*][*:0]
         log.err("Failed to allocate memory for shader sources lengths: {any}", .{err});
         return;
     }).ptr else null;
+    // SAFETY: used only if `single_chunk` is true
     var total_length: usize = if (single_chunk) 0 else undefined;
 
+    // SAFETY: used only if `single_chunk` is true
     var merged: [:0]u8 = undefined;
     defer if (single_chunk) common.allocator.free(merged);
 
@@ -1386,6 +1614,7 @@ fn defaultCompileShader(source: decls.SourcesPayload, instrumented: CString, len
     }
     gl.CompileShader(shader);
 
+    // SAFETY: assigned right after by OpenGL
     var info_length: gl.sizei = undefined;
     gl.GetShaderiv(shader, gl.INFO_LOG_LENGTH, &info_length);
     if (info_length > 0) {
@@ -1411,6 +1640,8 @@ fn defaultCompileShader(source: decls.SourcesPayload, instrumented: CString, len
             const s = source.sources.?[i];
             log.debug("Shader {d} original source {d}: {s}", .{ shader, i, s[0..if (source.lengths) |l| l[i] else std.mem.len(s)] });
         }
+
+        // SAFETY: assigned right after by OpenGL
         var success: gl.int = undefined;
         gl.GetShaderiv(shader, gl.COMPILE_STATUS, &success);
         if (success == 0) {
@@ -1432,6 +1663,8 @@ fn defaultGetCurrentSource(ctx: ?*anyopaque, ref: usize, _: ?CString, _: usize) 
     const prev_context = switchContext(c_state.gl, service.context);
 
     const shader: gl.uint = @intCast(ref);
+
+    // SAFETY: assigned right after by OpenGL
     var length: gl.sizei = undefined;
     // TODO bind the correct context
     gl.GetShaderiv(shader, gl.SHADER_SOURCE_LENGTH, &length);
@@ -1463,6 +1696,7 @@ fn defaultLink(self: decls.ProgramPayload) callconv(.c) u8 {
     }
     gl.LinkProgram(program);
 
+    // SAFETY: assigned right after by OpenGL
     var info_length: gl.sizei = undefined;
     gl.GetProgramiv(program, gl.INFO_LOG_LENGTH, &info_length);
     if (info_length > 0) {
@@ -1475,6 +1709,7 @@ fn defaultLink(self: decls.ProgramPayload) callconv(.c) u8 {
         gl.GetProgramInfoLog(program, info_length, &info_length, info_log);
         log.info("Program {d}:{?s} info:\n{s}", .{ program, self.path, info_log });
 
+        // SAFETY: assigned right after by OpenGL
         var success: gl.int = undefined;
         gl.GetProgramiv(program, gl.LINK_STATUS, &success);
         if (success == 0) {
@@ -1542,6 +1777,7 @@ pub export fn glCreateShaderProgramv(stage: gl.@"enum", count: gl.sizei, sources
     };
     defer common.allocator.free(new_platform_sources);
 
+    // SAFETY: assigned right after by OpenGL
     var source_count: c_int = undefined;
     gl.GetAttachedShaders(new_platform_program, count, &source_count, new_platform_sources.ptr);
     std.debug.assert(source_count == 1);
@@ -1647,7 +1883,8 @@ fn realLength(length: gl.sizei, label: ?CString) usize {
 /// l0:path/to/file.glsl
 /// To purge all previous source parts linked with this path use
 /// p0:path/to/file.glsl
-/// To link with a physical file, use virtual path relative to some workspace root. Use `glDebugMessageInsert`, `glGetObjectLabel` , `deshaderPhysicalWorkspace` or `#pragma deshader workspace` to set workspace roots.
+/// To link with a physical file, use virtual path relative to some workspace root. Use `glDebugMessageInsert`, `glGetObjectLabel` ,
+/// `deshaderPhysicalWorkspace` or `#pragma deshader workspace` to set workspace roots.
 pub export fn glObjectLabel(identifier: gl.@"enum", name: gl.uint, length: gl.sizei, label: ?CString) callconv(.c) void {
     if (label == null) {
         // Then the tag is meant to be removed.
@@ -1687,13 +1924,16 @@ pub export fn glObjectLabel(identifier: gl.@"enum", name: gl.uint, length: gl.si
                             log.err("Failed to parse tag {s} for shader {x}", .{ current_p, name });
                             continue;
                         }
-                        _ = current.Shaders.assignTag(@enumFromInt(name), index, tag.?, behavior) catch |err| errors.tag(label.?[0..real_length], name, index, err);
+                        _ = current.Shaders.assignTag(@enumFromInt(name), index, tag.?, behavior) catch |err|
+                            errors.tag(label.?[0..real_length], name, index, err);
                     }
                 } else {
-                    _ = current.Shaders.assignTag(@enumFromInt(name), 0, label.?[0..real_length], .Error) catch |err| errors.tag(label.?[0..real_length], name, 0, err);
+                    _ = current.Shaders.assignTag(@enumFromInt(name), 0, label.?[0..real_length], .Error) catch |err|
+                        errors.tag(label.?[0..real_length], name, 0, err);
                 }
             },
-            gl.PROGRAM => _ = current.Programs.assignTag(@enumFromInt(name), 0, label.?[0..real_length], .Error) catch |err| errors.tag(label.?[0..real_length], name, 0, err),
+            gl.PROGRAM => _ = current.Programs.assignTag(@enumFromInt(name), 0, label.?[0..real_length], .Error) catch |err|
+                errors.tag(label.?[0..real_length], name, 0, err),
             else => {}, // TODO support other objects?
         }
     }
@@ -1708,7 +1948,8 @@ pub export fn glGetObjectLabel(_identifier: gl.@"enum", _name: gl.uint, _size: g
     if (_identifier == 0 and _name == 0 and _size == 0) {
         if (@intFromPtr(virtual) != 0) {
             if (@intFromPtr(virtual) != 0) {
-                current.mapPhysicalToVirtual(std.mem.span(virtual), .{ .sources = .{ .name = .{ .tagged = std.mem.span(physical) } } }) catch |err| errors.workspacePath(virtual, err);
+                current.mapPhysicalToVirtual(std.mem.span(virtual), .{ .sources = .{ .name = .{ .tagged = std.mem.span(physical) } } }) catch |err|
+                    errors.workspacePath(virtual, err);
             } else {
                 current.clearWorkspacePaths();
             }
@@ -1724,6 +1965,8 @@ fn hardCast(comptime T: type, val: anytype) T {
 
 fn namedStringSourceAlloc(_: ?*anyopaque, _: usize, path: ?CString, length: usize) callconv(.c) ?CString {
     if (path) |p| {
+
+        // SAFETY: assigned right after by OpenGL
         var result_len: gl.int = undefined;
         gl.GetNamedStringivARB(@intCast(length), p, gl.NAMED_STRING_LENGTH_ARB, &result_len);
         const result = common.allocator.allocSentinel(u8, @intCast(result_len), 0) catch |err| {
@@ -1761,7 +2004,14 @@ pub export fn glNamedStringARB(_type: gl.@"enum", _namelen: gl.int, _name: ?CStr
 ///
 /// id = 0xde5ade4 == 233156068 => add workspace
 /// id = 0xde5ade5 == 233156069 => remove workspace with the name specified in `buf` or remove all (when buf == null)
-pub export fn glDebugMessageInsert(source: gl.@"enum", _type: gl.@"enum", id: gl.uint, severity: gl.@"enum", length: gl.sizei, buf: ?[*:0]const gl.char) callconv(.c) void {
+pub export fn glDebugMessageInsert(
+    source: gl.@"enum",
+    _type: gl.@"enum",
+    id: gl.uint,
+    severity: gl.@"enum",
+    length: gl.sizei,
+    buf: ?[*:0]const gl.char,
+) callconv(.c) void {
     if (source == gl.DEBUG_SOURCE_APPLICATION and _type == gl.DEBUG_TYPE_OTHER and severity == gl.DEBUG_SEVERITY_HIGH) {
         switch (id) {
             ids.COMMAND_WORKSPACE_ADD => {
@@ -1770,7 +2020,8 @@ pub export fn glDebugMessageInsert(source: gl.@"enum", _type: gl.@"enum", id: gl
                     var it = std.mem.splitSequence(u8, buf.?[0..real_length], "<-");
                     if (it.next()) |real_path| {
                         if (it.next()) |virtual_path| {
-                            current.mapPhysicalToVirtual(real_path, .{ .sources = .{ .name = .{ .tagged = virtual_path } } }) catch |err| errors.workspacePath(buf.?[0..real_length], err);
+                            current.mapPhysicalToVirtual(real_path, .{ .sources = .{ .name = .{ .tagged = virtual_path } } }) catch |err|
+                                errors.workspacePath(buf.?[0..real_length], err);
                         } else errors.workspacePath(buf.?[0..real_length], error.@"No virtual path specified");
                     } else errors.workspacePath(buf.?[0..real_length], error.@"No real path specified");
                 }
@@ -1781,7 +2032,9 @@ pub export fn glDebugMessageInsert(source: gl.@"enum", _type: gl.@"enum", id: gl
                 const real_length = realLength(length, buf);
                 var it = std.mem.splitSequence(u8, buf.?[0..real_length], "<-");
                 if (it.next()) |real_path| {
-                    if (!(current.removeWorkspacePath(real_path, if (it.next()) |v| shaders.ResourceLocator.parse(v) catch |err| return errors.removeWorkspacePath(buf.?[0..real_length], err) else null) catch false)) {
+                    if (!(current.removeWorkspacePath(real_path, if (it.next()) |v| shaders.ResourceLocator.parse(v) catch |err|
+                        return errors.removeWorkspacePath(buf.?[0..real_length], err) else null) catch false))
+                    {
                         errors.removeWorkspacePath(buf.?[0..real_length], error.@"No such real path in workspace");
                     }
                 }
@@ -1802,7 +2055,8 @@ fn callIfLoaded(comptime proc: String, a: anytype) VoidOrOptional(ReturnType(@fi
     const target_args = @typeInfo(@TypeOf(proc_proc)).@"fn".params.len;
     const source_args = @typeInfo(@TypeOf(a)).@"struct".fields.len;
     if (target_args != source_args) {
-        @compileError("Parameter count mismatch in callIfLoaded(\"" ++ proc ++ "\",...). Expected " ++ (@as(u8, @truncate(target_args)) + '0') ++ ", got " ++ (@as(u8, @truncate(source_args)) + '0'));
+        @compileError("Parameter count mismatch in callIfLoaded(\"" ++ proc ++ "\",...). Expected " ++
+            (@as(u8, @truncate(target_args)) + '0') ++ ", got " ++ (@as(u8, @truncate(source_args)) + '0'));
     }
     // would need @coercesTo
     // inline for (@typeInfo(@TypeOf(proc_proc)).@"fn".params, a, 0..) |dest, source, i| {
@@ -1879,6 +2133,7 @@ pub export fn glBufferData(_target: gl.@"enum", _size: gl.sizeiptr, _data: ?*con
 
 fn callConcatArgs(function: anytype, params: anytype, additional: anytype) ReturnType(@TypeOf(function)) {
     const ArgsT = std.meta.ArgsTuple(@typeInfo(@TypeOf(function)).pointer.child);
+    // SAFETY: assigned in the loop
     var args_tuple: ArgsT = undefined;
     const params_len = std.meta.fields(@TypeOf(params)).len;
     const additional_len = std.meta.fields(@TypeOf(additional)).len;
@@ -1897,6 +2152,8 @@ fn callConcatArgs(function: anytype, params: anytype, additional: anytype) Retur
 
 fn callRestNull(function: anytype, params: anytype) ReturnType(@TypeOf(function)) {
     const ArgsT = std.meta.ArgsTuple(@typeInfo(@TypeOf(function)).pointer.child);
+
+    // SAFETY: assigned in the loop
     var args_tuple: ArgsT = undefined;
     const params_len = std.meta.fields(@TypeOf(params)).len;
     inline for (0..std.meta.fields(ArgsT).len) |i| {
@@ -1988,7 +2245,13 @@ else
             return result;
         }
 
-        pub export fn glXCreateContextAttribsARB(display: *const anyopaque, vis: *const anyopaque, share: *const anyopaque, direct: c_int, attribs: ?[*]const c_int) ?*const anyopaque {
+        pub export fn glXCreateContextAttribsARB(
+            display: *const anyopaque,
+            vis: *const anyopaque,
+            share: *const anyopaque,
+            direct: c_int,
+            attribs: ?[*]const c_int,
+        ) ?*const anyopaque {
             const result = loaders.APIs.gl.glX.create[2](display, vis, share, direct, attribs);
             return result;
         }
@@ -1999,7 +2262,12 @@ else
             return result;
         }
 
-        pub export fn eglCreateContext(display: *const anyopaque, config: *const anyopaque, share: *const anyopaque, attribs: ?[*]c_int) ?*const anyopaque {
+        pub export fn eglCreateContext(
+            display: *const anyopaque,
+            config: *const anyopaque,
+            share: *const anyopaque,
+            attribs: ?[*]c_int,
+        ) ?*const anyopaque {
             const result = loaders.APIs.gl.egl.create[0](display, config, share, attribs);
             return result;
         }
@@ -2057,9 +2325,19 @@ fn tagEvent(_: ?*const anyopaque, event: shaders.ResourceLocator.TagEvent, _: st
         if (event.action == .Assign) name.ptr else null,
     });
     if (event.action == .Assign) {
-        deshaderDebugMessage("Tagged {s} {x} with {s}", .{ if (event.locator == .programs) "program" else "shader", event.ref, name }, gl.DEBUG_TYPE_OTHER, .info);
+        deshaderDebugMessage(
+            "Tagged {s} {x} with {s}",
+            .{ if (event.locator == .programs) "program" else "shader", event.ref, name },
+            gl.DEBUG_TYPE_OTHER,
+            .info,
+        );
     } else {
-        deshaderDebugMessage("Removed tag from {s}: {s} {x}", .{ if (event.locator == .programs) "program" else "shader", name, event.ref }, gl.DEBUG_TYPE_OTHER, .info);
+        deshaderDebugMessage(
+            "Removed tag from {s}: {s} {x}",
+            .{ if (event.locator == .programs) "program" else "shader", name, event.ref },
+            gl.DEBUG_TYPE_OTHER,
+            .info,
+        );
     }
 }
 
@@ -2111,6 +2389,8 @@ fn switchContext(gl_backend_union: loaders.GlBackend, ctx: *const anyopaque) ?*c
         inline else => |params, backend| {
             const gl_backend = @field(loaders.APIs.gl, @tagName(backend));
             const make_current = gl_backend.make_current[0];
+
+            // SAFETY: assigned right after by OpenGL or let the function actually return undefined
             var prev_context: ?*const anyopaque = undefined;
 
             if (gl_backend.get_current) |get_current| {
@@ -2157,8 +2437,11 @@ pub fn makeCurrent(comptime api: anytype, params: anytype, c: ?*const anyopaque)
                 }
             }.loader else api.loader.?)) {
                 log.err("Failed to load some GL functions.", .{});
-                if (options.logInterception) @call(.never_inline, dumpProcTableErrors, .{c_state}) // Only do this if logging is enabled, because it adds a few megabytes to the binary size
-                else log.debug("Build with -DlogInterception to show which ones.", .{});
+                // Only do this if logging is enabled, because it adds a few megabytes to the binary size
+                if (options.logInterception)
+                    @call(.never_inline, dumpProcTableErrors, .{c_state})
+                else
+                    log.debug("Build with -DlogInterception to show which ones.", .{});
             }
 
             gl.makeProcTableCurrent(&c_state.proc_table);
@@ -2184,6 +2467,7 @@ pub fn makeCurrent(comptime api: anytype, params: anytype, c: ?*const anyopaque)
                             return if (ex) |e| std.mem.span(e) else null;
                         }
                     };
+                    // SAFETY: assigned right after by OpenGL
                     var it = ExtensionInterator{ .num = undefined, .i = 0 };
                     gl.GetIntegerv(gl.NUM_EXTENSIONS, (&it.num)[0..1]);
                     break :check supportCheck(&it);

@@ -94,7 +94,10 @@ fn productJsonHandler(_: *positron.Provider, r: *positron.Provider.Route, c: *se
     const commands_url: [*:0]u8 = @alignCast(@ptrCast(r.context));
     // Generate product.json according to current settings
     const srv_authority = c.request.headers.get("Host") orelse "127.0.0.1:" ++ common.default_editor_port;
-    const product_config = getProductJson(common.allocator, c.ssl != null, srv_authority, if (commands_url[0] != 0) std.mem.span(commands_url) else null) catch |e| {
+    const product_config = getProductJson(common.allocator, c.ssl != null, srv_authority, if (commands_url[0] != 0)
+        std.mem.span(commands_url)
+    else
+        null) catch |e| {
         log.err("Failed to generate product.json: {}", .{e});
         return positron.Provider.Route.Error.Unknown;
     };
@@ -124,7 +127,10 @@ fn resolveMime(path: String) String {
 fn decompress(provider: *positron.Provider, comptime file: String, dll_path: String, compressed_or_content: anytype) ![]u8 {
     const f_address = file[options.editor_dir.len..];
     if (builtin.mode == .Debug) {
-        var dll_dir: ?std.fs.Dir = if (builtin.mode == .Debug) if (std.fs.path.dirname(dll_path)) |d| try std.fs.cwd().openDir(d, .{}) else null else null;
+        var dll_dir: ?std.fs.Dir = if (builtin.mode == .Debug) if (std.fs.path.dirname(dll_path)) |d|
+            try std.fs.cwd().openDir(d, .{})
+        else
+            null else null;
         defer if (dll_dir) |*d| d.close();
         const handle = try if (dll_dir) |d| d.openFile(options.editor_dir_relative ++ f_address, .{}) else std.fs.cwd().openFile(file, .{});
         defer handle.close();
@@ -156,7 +162,11 @@ pub fn createEditorProvider(port: u16, commands_uri: ?String, lsp_host: ?String)
     provider.additional_handler = &addCacheHeaders;
 
     inline for (.{ "localhost", "127.0.0.1" }) |origin| {
-        const concatOrigin = try std.fmt.allocPrint(provider.allocator, "{s}://{s}:{d}", .{ if (provider.server.bindings.getLast().tls == null) "http" else "https", origin, port });
+        const concatOrigin = try std.fmt.allocPrint(
+            provider.allocator,
+            "{s}://{s}:{d}",
+            .{ if (provider.server.bindings.getLast().tls == null) "http" else "https", origin, port },
+        );
         defer provider.allocator.free(concatOrigin);
         try provider.allowed_origins.?.insert(concatOrigin);
     }
@@ -165,7 +175,10 @@ pub fn createEditorProvider(port: u16, commands_uri: ?String, lsp_host: ?String)
     defer if (builtin.mode == .Debug) provider.allocator.free(dll_path);
     if (builtin.mode == .Debug) {
         // Let the provider read the files at runtime in debug mode
-        const editor_dir_path = try std.fs.path.join(provider.allocator, if (std.fs.path.dirname(dll_path)) |d| &.{ d, options.editor_dir_relative } else &.{options.editor_dir});
+        const editor_dir_path = try std.fs.path.join(provider.allocator, if (std.fs.path.dirname(dll_path)) |d|
+            &.{ d, options.editor_dir_relative }
+        else
+            &.{options.editor_dir});
         try provider.embedded.append(positron.Provider.EmbedDir{ .address = "/", .path = editor_dir_path, .resolveMime = &resolveMime });
     }
     inline for (options.files) |file| {
@@ -224,6 +237,7 @@ pub fn createEditorProvider(port: u16, commands_uri: ?String, lsp_host: ?String)
 pub const EditorProviderError = error{ AlreadyRunning, NotRunning };
 
 pub var global_provider: ?*positron.Provider = null;
+// SAFETY: assigned by the serverStart function
 var base_url: ZString = undefined;
 pub fn serverStart(port: u16, commands_url: ?String, lsp_host: ?String) !void {
     if (global_provider != null) {
@@ -275,7 +289,6 @@ var gui_mutex = std.Thread.Mutex{};
 var gui_shutdown = std.Thread.Condition{};
 var state: extended_wv.State = .{};
 
-const GuiErrors = error{GuiNotEmbedded};
 pub const DESHADER_GUI_URL = common.env_prefix ++ "GUI_URL";
 
 /// Spawns a new thread that runs the editor
@@ -306,7 +319,8 @@ pub fn editorShow(port: u16, commands_host: ?String, lsp_host: ?String) !void {
         // On Unix, the GUI runs in a separate process
         const exe_or_dll_path = try common.selfExePath();
         // Duplicate the current process and set env vars to indicate that the child should act as the Editor Window
-        gui_process = std.process.Child.init(&.{ exe_or_dll_path, "editor" }, common.allocator); // the "editor" parameter is really ignored but it is here for reference to be found easily
+        // the "editor" parameter is really ignored but it is here for reference to be found easily in process list
+        gui_process = std.process.Child.init(&.{ exe_or_dll_path, "editor" }, common.allocator);
 
         common.env.set(DESHADER_GUI_URL, base_url);
 
@@ -379,12 +393,12 @@ pub fn guiProcess(url: String, title: ZString) !void {
         try common.env.appendList(common.env_prefix ++ "IGNORE_PROCESS", "zenity:WebKitWebProcess");
     }
 
-    state = .{};
     const deshader = "deshader";
     const window = if (builtin.os.tag == .linux) create: {
         _ = C.gtk_init_check(null, null);
         C.g_set_prgname(deshader);
-        C.g_set_application_name(title); // Application name must be set before the window is created to be accepted by the window manager (and to assign the icon)
+        // Application name must be set before the window is created to be accepted by the window manager (and to assign the icon)
+        C.g_set_application_name(title);
         C.gtk_window_set_default_icon_name(deshader);
         const w = C.gtk_window_new(C.GTK_WINDOW_TOPLEVEL);
         C.gtk_window_set_icon_name(@ptrCast(w), deshader);
@@ -392,7 +406,9 @@ pub fn guiProcess(url: String, title: ZString) !void {
         break :create w;
     } else null;
 
-    state.view = try positron.View.create((@import("builtin").mode == .Debug), window);
+    state = .{
+        .view = try positron.View.create((@import("builtin").mode == .Debug), window),
+    };
     defer state.view.destroy();
 
     const titleZ = try common.allocator.dupeZ(u8, title);
@@ -465,7 +481,10 @@ fn rpcHandler(p: *positron.Provider, r: *positron.Provider.Route, c: *serve.http
         if (args) |a| {
             const argv = std.json.parseFromSlice([]String, p.allocator, a.get("argv").?, .{}) catch |e| return reject.reject(e);
             defer argv.deinit();
-            const env = if (a.get("env")) |e| std.json.parseFromSlice(std.json.ArrayHashMap(String), p.allocator, e, .{}) catch |er| return reject.reject(er) else null;
+            const env = if (a.get("env")) |e|
+                std.json.parseFromSlice(std.json.ArrayHashMap(String), p.allocator, e, .{}) catch |er| return reject.reject(er)
+            else
+                null;
             defer if (env) |e| e.deinit();
             var sanitized_env = if (env) |e| e.value else std.json.ArrayHashMap(String){};
             try sanitized_env.map.put(p.allocator, common.env_prefix ++ "GUI", "false"); // To not run multiple GUIs

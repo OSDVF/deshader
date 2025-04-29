@@ -17,7 +17,6 @@ const std = @import("std");
 const StringArrayHashMap = std.StringArrayHashMap;
 const mem = std.mem;
 const Allocator = mem.Allocator;
-const testing = std.testing;
 
 /// Copies keys before they go into the map
 pub fn ArrayBufMap(comptime Payload: type) type {

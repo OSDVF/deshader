@@ -1,8 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const memory = @import("../src/common/memory.zig");
 const String = []const u8;
-const arch = @import("../src/common/arch.zig");
 
 /// `make`s opengl definitions, installs node.js dependencies for the editor and editor extension, and builds VCPKG dependencies for Windows
 pub const DependenciesStep = struct {
@@ -18,6 +16,7 @@ pub const DependenciesStep = struct {
         args: ?[]const String = null,
         cwd: ?String = null,
         process: ?std.process.Child = null,
+        // SAFETY: assigned after process is started
         progress_node: std.Progress.Node = undefined,
         create: ?*const fn (step: *std.Build.Step, progressNode: std.Progress.Node, arg: ?String) anyerror!void = null,
         arg: ?String = null,
@@ -59,11 +58,13 @@ pub const DependenciesStep = struct {
 
     pub fn initSubprocess(self: *DependenciesStep, argv: []const String, cwd: ?String) !std.process.Child {
         return .{
+            // SAFETY: available after spawn
             .id = undefined,
             .allocator = self.step.owner.allocator,
             .argv = argv,
             .cwd = cwd,
             .env_map = self.env_map,
+            // SAFETY: available after spawn
             .thread_handle = undefined,
             .err_pipe = if (builtin.os.tag == .windows) {} else null,
             .term = null,
@@ -109,6 +110,8 @@ pub const DependenciesStep = struct {
 
     pub fn editor(self: *DependenciesStep) !void {
         // Check for Bun
+
+        // SAFETY: assigned after spawn
         var bun_out: u8 = undefined;
         if (self.step.owner.runAllowFail(&.{ "bun", "--version" }, &bun_out, .Inherit)) |output| check: {
             const version = std.SemanticVersion.parse(std.mem.trim(u8, output, " \t\n")) catch |err| {
@@ -116,7 +119,10 @@ pub const DependenciesStep = struct {
                 break :check;
             };
             if (version.order(.{ .major = 1, .minor = 1, .patch = 34 }) == .lt) {
-                std.log.err("Bun {d}.{d}.{d} is older than 1.1.34, please update it by running 'bun upgrade'", .{ version.major, version.minor, version.patch });
+                std.log.err(
+                    "Bun {d}.{d}.{d} is older than 1.1.34, please update it by running 'bun upgrade'",
+                    .{ version.major, version.minor, version.patch },
+                );
             }
         } else |err| {
             std.log.info("Error when checking Bun version {})", .{err});
@@ -130,10 +136,18 @@ pub const DependenciesStep = struct {
             .args = try self.step.owner.allocator.dupe(String, &.{ "bun", "install", "--frozen-lockfile" }),
             .cwd = deshaderVsCodeExt,
             .after = try self.step.owner.allocator.dupe(SubStep, &[_]SubStep{
-                .{ .name = "Compiling deshader-vscode extension", .args = try self.step.owner.allocator.dupe(String, &.{ "bun", compile_verb }), .cwd = deshaderVsCodeExt },
+                .{
+                    .name = "Compiling deshader-vscode extension",
+                    .args = try self.step.owner.allocator.dupe(String, &.{ "bun", compile_verb }),
+                    .cwd = deshaderVsCodeExt,
+                },
             }),
         });
-        try self.sub_steps.append(.{ .name = "Installing node.js dependencies by Bun for editor", .args = try self.step.owner.allocator.dupe(String, &.{ "bun", "install", "--frozen-lockfile", "--production" }), .cwd = "editor" });
+        try self.sub_steps.append(.{
+            .name = "Installing node.js dependencies by Bun for editor",
+            .args = try self.step.owner.allocator.dupe(String, &.{ "bun", "install", "--frozen-lockfile", "--production" }),
+            .cwd = "editor",
+        });
     }
 
     /// TODO: how to get install dir when specifying custom triplet?
@@ -209,7 +223,11 @@ pub const DependenciesStep = struct {
         }
     }
 
-    fn doOnEachFileIf(step: *std.Build.Step, path: String, predicate: *const fn (name: String) bool, func: *const fn (alloc: std.mem.Allocator, dir: std.fs.Dir, file: std.fs.Dir.Entry) void) !void {
+    fn doOnEachFileIf(step: *std.Build.Step, path: String, predicate: *const fn (name: String) bool, func: *const fn (
+        alloc: std.mem.Allocator,
+        dir: std.fs.Dir,
+        file: std.fs.Dir.Entry,
+    ) void) !void {
         var dir = try step.owner.build_root.handle.openDir(path, .{ .iterate = true });
         defer dir.close();
         var it = dir.iterateAssumeFirstIteration();
@@ -237,7 +255,11 @@ pub const DependenciesStep = struct {
     }
 
     fn renameSuffix(alloc: std.mem.Allocator, dir: std.fs.Dir, file: std.fs.Dir.Entry) void {
-        const new_name = std.mem.concat(alloc, u8, &.{ file.name[0 .. file.name.len - 5], if (file.name[file.name.len - 6] == '.') "" else ".", "lib" }) catch @panic("OOM");
+        const new_name = std.mem.concat(
+            alloc,
+            u8,
+            &.{ file.name[0 .. file.name.len - 5], if (file.name[file.name.len - 6] == '.') "" else ".", "lib" },
+        ) catch @panic("OOM");
         defer alloc.free(new_name);
         dir.rename(file.name, new_name) catch |err| {
             std.log.err("Could not rename suffix {s}: {}", .{ file.name, err });
@@ -247,5 +269,14 @@ pub const DependenciesStep = struct {
 
 fn compileInstallNameTool(b: *std.Build) void { // is used within VCPKG and CMake build process when building for macOS
     _ = b.build_root.handle.access("build/install_name_tool", .{}) catch
-        b.run(&.{ b.graph.zig_exe, "c++", "bootstrap/install_name_tool/src/install_name_tool.cpp", "bootstrap/install_name_tool/src/patchelf.cpp", "-I", "bootstrap/install_name_tool/include", "-o", "build/install_name_tool" });
+        b.run(&.{
+            b.graph.zig_exe,
+            "c++",
+            "bootstrap/install_name_tool/src/install_name_tool.cpp",
+            "bootstrap/install_name_tool/src/patchelf.cpp",
+            "-I",
+            "bootstrap/install_name_tool/include",
+            "-o",
+            "build/install_name_tool",
+        });
 }

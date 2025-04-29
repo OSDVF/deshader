@@ -18,6 +18,7 @@ pub fn waitNoFail(self: *std.process.Child) !std.process.Child.Term {
     else
         try waitPosix(self);
 
+    // SAFETY: meant as indicator
     self.id = undefined;
 
     return term;
@@ -49,6 +50,7 @@ pub fn wailNoFailReport(process: *std.process.Child) ?std.process.Child.Term {
 }
 
 fn waitpid(pid: std.posix.pid_t, flags: u32) !std.posix.WaitPidResult {
+    // SAFETY: assigned by `waitpid`
     var status: if (builtin.link_libc) c_int else u32 = undefined;
     while (true) {
         const rc = std.posix.system.waitpid(pid, &status, @intCast(flags));
@@ -105,6 +107,7 @@ fn waitUnwrappedWindows(self: *std.process.Child) !void {
     const result = std.os.windows.WaitForSingleObjectEx(self.id, std.os.windows.INFINITE, false);
 
     self.term = @as(std.process.Child.SpawnError!std.process.Child.Term, x: {
+        // SAFETY: assigned by `GetExitCodeProcess`
         var exit_code: std.os.windows.DWORD = undefined;
         if (std.os.windows.kernel32.GetExitCodeProcess(self.id, &exit_code) == 0) {
             break :x std.process.Child.Term{ .Unknown = 0 };
@@ -128,6 +131,7 @@ fn waitUnwrapped(self: *std.process.Child) !void {
         if (self.request_resource_usage_statistics) {
             switch (builtin.os.tag) {
                 .linux, .macos, .ios => {
+                    // SAFETY: assigned by `wait4`
                     var ru: std.posix.rusage = undefined;
                     const res = std.posix.wait4(self.id, 0, &ru);
                     self.resource_usage_statistics.rusage = ru;
@@ -172,6 +176,7 @@ fn cleanupAfterWait(self: *std.process.Child, status: u32) !std.process.Child.Te
             var fd = [1]std.posix.pollfd{std.posix.pollfd{
                 .fd = err_pipe,
                 .events = std.posix.POLL.IN,
+                // SAFETY: assigned by `poll`
                 .revents = undefined,
             }};
 
@@ -227,6 +232,7 @@ pub fn getSelfThreadName(allocator: std.mem.Allocator) !String {
     var result_buffer: [std.Thread.max_name_len:0]u8 = undefined; // On POSIX, thread names are restricted to 16 bytes
     const thread_id = getSelfThreadId();
     if (builtin.os.tag == .windows) {
+        // SAFETY: assigned by `GetThreadDescription`
         var buffer: [*c]std.os.windows.WCHAR = undefined;
         const result = c.GetThreadDescription(thread_id, &buffer);
         if (result == 0) {

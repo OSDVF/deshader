@@ -1,3 +1,18 @@
+// Copyright (C) 2025  Ondřej Sabela
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
 //! GLSL semantic analysis of the AST.
 //! Aside from the glsl_analyzer, this can also bse used to resolve the type of expressions.
 //! Also does not depend on the `Workspace` struct.
@@ -14,7 +29,13 @@ pub const Scope = struct {
     parent: ?*Scope = null,
     function_counter: *usize,
 
-    pub fn fill(self: *@This(), allocator: std.mem.Allocator, tree: analyzer.parse.Tree, node: Node, source: String) !?analyzer.syntax.ExternalDeclaration {
+    pub fn fill(
+        self: *@This(),
+        allocator: std.mem.Allocator,
+        tree: analyzer.parse.Tree,
+        node: Node,
+        source: String,
+    ) !?analyzer.syntax.ExternalDeclaration {
         if (analyzer.syntax.ExternalDeclaration.tryExtract(tree, node)) |ext| {
             switch (ext) {
                 .variable => |decl| {
@@ -75,7 +96,12 @@ pub const Scope = struct {
         return null;
     }
 
-    pub fn resolveExpression(self: *const @This(), expr: analyzer.syntax.Expression, tree: analyzer.parse.Tree, source: String) ?analyzer.syntax.TypeSpecifier {
+    pub fn resolveExpression(
+        self: *const @This(),
+        expr: analyzer.syntax.Expression,
+        tree: analyzer.parse.Tree,
+        source: String,
+    ) ?analyzer.syntax.TypeSpecifier {
         switch (expr) {
             .identifier => |i| {
                 const name = i.get(.name).?.text(source, tree);

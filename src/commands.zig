@@ -58,13 +58,14 @@ pub const MutliListener = struct {
 
     // various command providers
     http: ?*positron.Provider = null,
+    // SAFETY: private variable assigned in the `start()` function
     ws: std.ArrayList(*websocket.Conn) = undefined,
 
     ws_configs: std.ArrayListUnmanaged(websocket.Config) = .{},
 
     provide_thread: ?std.Thread = null,
     websocket_thread: ?std.Thread = null,
-    websocket_arena: std.heap.ArenaAllocator = undefined,
+    // SAFETY: private variable assigned in the `start()` function
     provider_arena: std.heap.ArenaAllocator = undefined,
     secure: bool = false, //TODO use SSL
     break_mutex: std.Thread.Mutex = .{},
@@ -100,7 +101,10 @@ pub const MutliListener = struct {
 
         // WS Command Listener
         for (self.ws_configs.items) |ws_config| {
-            DeshaderLog.info("Starting websocket listener on {s}:{d} from {s}", .{ ws_config.address, ws_config.port, common.selfExePath() catch "?" });
+            DeshaderLog.info(
+                "Starting websocket listener on {s}:{d} from {s}",
+                .{ ws_config.address, ws_config.port, common.selfExePath() catch "?" },
+            );
             if (!try common.isPortFree(ws_config.address, ws_config.port)) {
                 addr_in_use = true;
                 DeshaderLog.err("Port {d} is already in use", .{ws_config.port});
@@ -141,7 +145,10 @@ pub const MutliListener = struct {
 
             inline for (@typeInfo(commands).@"struct".decls) |function| {
                 const command = @field(commands, function.name);
-                _ = try self.addHTTPCommand("/" ++ function.name, command, if (@hasDecl(free_funcs, function.name)) @field(free_funcs, function.name) else null);
+                _ = try self.addHTTPCommand("/" ++ function.name, command, if (@hasDecl(free_funcs, function.name))
+                    @field(free_funcs, function.name)
+                else
+                    null);
             }
             self.provide_thread = try std.Thread.spawn(.{ .allocator = common.allocator }, struct {
                 fn wrapper(provider: *positron.Provider) void {
@@ -202,8 +209,10 @@ pub const MutliListener = struct {
     pub fn addHTTPCommand(self: *@This(), comptime name: String, command: anytype, freee: ?*const anyopaque) !*@This() {
         const route = try self.http.?.addRoute(name);
         const command_route = struct {
+            // SAFETY: must be initialized in the outer `addHTTPCommand()` function
             var comm: *const @TypeOf(command) = undefined;
             var free: ?*const fn (@typeInfo(@TypeOf(command)).@"fn".return_type.?) void = null;
+            // SAFETY: assigned in `wrapper()`
             var writer: serve.http.Response.Writer = undefined;
             fn log(level: std.log.Level, scope: String, message: String) void {
                 const result = std.fmt.allocPrint(common.allocator, "{s} ({s}): {s}", .{ scope, @tagName(level), message }) catch return;
@@ -259,7 +268,8 @@ pub const MutliListener = struct {
                         defer provider.allocator.free(body);
                         break :blk comm(args, body);
                     },
-                    else => @compileError("Command " ++ @typeName(comm) ++ " has invalid number of arguments. First is state. Further only none, parameters and body are available."),
+                    else => @compileError("Command " ++ @typeName(comm) ++
+                        " has invalid number of arguments. First is state. Further only none, parameters and body are available."),
                 };
 
                 defer if (free) |f| f(result_or_err);
@@ -340,7 +350,8 @@ pub const MutliListener = struct {
                     []const String => CommandReturnType.StringArray,
                     []const CString => CommandReturnType.CStringArray,
                     serve.http.StatusCode => CommandReturnType.StatusCode,
-                    else => @compileError("Command " ++ function.name ++ " has invalid return type. Only void, string, string array, string set, and http status code are available."),
+                    else => @compileError("Command " ++ function.name ++
+                        " has invalid return type. Only void, string, string array, string set, and http status code are available."),
                 },
                 .a = @typeInfo(@TypeOf(command)).@"fn".params.len,
                 .c = &command,
@@ -390,17 +401,26 @@ pub const MutliListener = struct {
                         try self.writeAll(.text, &.{ accepted, command_echo, "\n" });
                     },
                     String => {
-                        try self.writeAll(if (std.unicode.utf8ValidateSlice(result)) .text else .binary, &.{ accepted, command_echo, "\n", result, "\n" });
+                        try self.writeAll(
+                            if (std.unicode.utf8ValidateSlice(result)) .text else .binary,
+                            &.{ accepted, command_echo, "\n", result, "\n" },
+                        );
                     },
                     []const CString => {
                         const flattened = try common.joinInnerZ(common.allocator, "\n", result);
                         defer common.allocator.free(flattened);
-                        try self.writeAll(if (std.unicode.utf8ValidateSlice(flattened)) .text else .binary, &.{ accepted, command_echo, "\n", flattened, "\n" });
+                        try self.writeAll(
+                            if (std.unicode.utf8ValidateSlice(flattened)) .text else .binary,
+                            &.{ accepted, command_echo, "\n", flattened, "\n" },
+                        );
                     },
                     []const String => {
                         const flattened = try std.mem.join(common.allocator, "\n", result);
                         defer common.allocator.free(flattened);
-                        try self.writeAll(if (std.unicode.utf8ValidateSlice(flattened)) .text else .binary, &.{ accepted, command_echo, "\n", flattened, "\n" });
+                        try self.writeAll(
+                            if (std.unicode.utf8ValidateSlice(flattened)) .text else .binary,
+                            &.{ accepted, command_echo, "\n", flattened, "\n" },
+                        );
                     },
                     serve.http.StatusCode => {
                         try self.writeAll(.text, &.{
@@ -415,7 +435,11 @@ pub const MutliListener = struct {
                     else => unreachable,
                 }
             } else |err| { // TODO there are no stack traces and must be captured a in the function above
-                const text = try std.fmt.allocPrint(common.allocator, "500: Internal Server Error\n{s}\n{} at\n{?}", .{ command_echo, err, if (setting_vars.stackTraces) @errorReturnTrace() else &common.null_trace });
+                const text = try std.fmt.allocPrint(common.allocator, "500: Internal Server Error\n{s}\n{} at\n{?}", .{
+                    command_echo,
+                    err,
+                    if (setting_vars.stackTraces) @errorReturnTrace() else &common.null_trace,
+                });
                 defer common.allocator.free(text);
                 try self.conn.writeText(text);
             }
@@ -464,33 +488,108 @@ pub const MutliListener = struct {
 
                 try switch (tc.r) {
                     .Void => switch (tc.a) {
-                        0 => handleInner(self, @as(*const fn () anyerror!void, @alignCast(@ptrCast(tc.c)))(), request, @alignCast(@ptrCast(tc.free))),
-                        1 => handleInner(self, @as(*const fn (?ArgumentsMap) anyerror!void, @alignCast(@ptrCast(tc.c)))(parsed_args), request, @alignCast(@ptrCast(tc.free))),
-                        2 => handleInner(self, @as(*const fn (?ArgumentsMap, String) anyerror!void, @alignCast(@ptrCast(tc.c)))(parsed_args, body), request, @alignCast(@ptrCast(tc.free))),
+                        0 => handleInner(
+                            self,
+                            @as(*const fn () anyerror!void, @alignCast(@ptrCast(tc.c)))(),
+                            request,
+                            @alignCast(@ptrCast(tc.free)),
+                        ),
+                        1 => handleInner(
+                            self,
+                            @as(*const fn (?ArgumentsMap) anyerror!void, @alignCast(@ptrCast(tc.c)))(parsed_args),
+                            request,
+                            @alignCast(@ptrCast(tc.free)),
+                        ),
+                        2 => handleInner(
+                            self,
+                            @as(*const fn (?ArgumentsMap, String) anyerror!void, @alignCast(@ptrCast(tc.c)))(parsed_args, body),
+                            request,
+                            @alignCast(@ptrCast(tc.free)),
+                        ),
                         else => unreachable,
                     },
                     .String => switch (tc.a) {
-                        0 => handleInner(self, @as(*const fn () anyerror!String, @alignCast(@ptrCast(tc.c)))(), request, @alignCast(@ptrCast(tc.free))),
-                        1 => handleInner(self, @as(*const fn (?ArgumentsMap) anyerror!String, @alignCast(@ptrCast(tc.c)))(parsed_args), request, @alignCast(@ptrCast(tc.free))),
-                        2 => handleInner(self, @as(*const fn (?ArgumentsMap, String) anyerror!String, @alignCast(@ptrCast(tc.c)))(parsed_args, body), request, @alignCast(@ptrCast(tc.free))),
+                        0 => handleInner(
+                            self,
+                            @as(*const fn () anyerror!String, @alignCast(@ptrCast(tc.c)))(),
+                            request,
+                            @alignCast(@ptrCast(tc.free)),
+                        ),
+                        1 => handleInner(
+                            self,
+                            @as(*const fn (?ArgumentsMap) anyerror!String, @alignCast(@ptrCast(tc.c)))(parsed_args),
+                            request,
+                            @alignCast(@ptrCast(tc.free)),
+                        ),
+                        2 => handleInner(
+                            self,
+                            @as(*const fn (?ArgumentsMap, String) anyerror!String, @alignCast(@ptrCast(tc.c)))(parsed_args, body),
+                            request,
+                            @alignCast(@ptrCast(tc.free)),
+                        ),
                         else => unreachable,
                     },
                     .CStringArray => switch (tc.a) {
-                        0 => handleInner(self, @as(*const fn () anyerror![]const CString, @alignCast(@ptrCast(tc.c)))(), request, @alignCast(@ptrCast(tc.free))),
-                        1 => handleInner(self, @as(*const fn (?ArgumentsMap) anyerror![]const CString, @alignCast(@ptrCast(tc.c)))(parsed_args), request, @alignCast(@ptrCast(tc.free))),
-                        2 => handleInner(self, @as(*const fn (?ArgumentsMap, String) anyerror![]const CString, @alignCast(@ptrCast(tc.c)))(parsed_args, body), request, @alignCast(@ptrCast(tc.free))),
+                        0 => handleInner(
+                            self,
+                            @as(*const fn () anyerror![]const CString, @alignCast(@ptrCast(tc.c)))(),
+                            request,
+                            @alignCast(@ptrCast(tc.free)),
+                        ),
+                        1 => handleInner(
+                            self,
+                            @as(*const fn (?ArgumentsMap) anyerror![]const CString, @alignCast(@ptrCast(tc.c)))(parsed_args),
+                            request,
+                            @alignCast(@ptrCast(tc.free)),
+                        ),
+                        2 => handleInner(
+                            self,
+                            @as(*const fn (?ArgumentsMap, String) anyerror![]const CString, @alignCast(@ptrCast(tc.c)))(parsed_args, body),
+                            request,
+                            @alignCast(@ptrCast(tc.free)),
+                        ),
                         else => unreachable,
                     },
                     .StringArray => switch (tc.a) {
-                        0 => handleInner(self, @as(*const fn () anyerror![]const String, @alignCast(@ptrCast(tc.c)))(), request, @alignCast(@ptrCast(tc.free))),
-                        1 => handleInner(self, @as(*const fn (?ArgumentsMap) anyerror![]const String, @alignCast(@ptrCast(tc.c)))(parsed_args), request, @alignCast(@ptrCast(tc.free))),
-                        2 => handleInner(self, @as(*const fn (?ArgumentsMap, String) anyerror![]const String, @alignCast(@ptrCast(tc.c)))(parsed_args, body), request, @alignCast(@ptrCast(tc.free))),
+                        0 => handleInner(
+                            self,
+                            @as(*const fn () anyerror![]const String, @alignCast(@ptrCast(tc.c)))(),
+                            request,
+                            @alignCast(@ptrCast(tc.free)),
+                        ),
+                        1 => handleInner(
+                            self,
+                            @as(*const fn (?ArgumentsMap) anyerror![]const String, @alignCast(@ptrCast(tc.c)))(parsed_args),
+                            request,
+                            @alignCast(@ptrCast(tc.free)),
+                        ),
+                        2 => handleInner(
+                            self,
+                            @as(*const fn (?ArgumentsMap, String) anyerror![]const String, @alignCast(@ptrCast(tc.c)))(parsed_args, body),
+                            request,
+                            @alignCast(@ptrCast(tc.free)),
+                        ),
                         else => unreachable,
                     },
                     .StatusCode => switch (tc.a) {
-                        0 => handleInner(self, @as(*const fn () anyerror!serve.http.StatusCode, @alignCast(@ptrCast(tc.c)))(), request, @alignCast(@ptrCast(tc.free))),
-                        1 => handleInner(self, @as(*const fn (?ArgumentsMap) anyerror!serve.http.StatusCode, @alignCast(@ptrCast(tc.c)))(parsed_args), request, @alignCast(@ptrCast(tc.free))),
-                        2 => handleInner(self, @as(*const fn (?ArgumentsMap, String) anyerror!serve.http.StatusCode, @alignCast(@ptrCast(tc.c)))(parsed_args, body), request, @alignCast(@ptrCast(tc.free))),
+                        0 => handleInner(
+                            self,
+                            @as(*const fn () anyerror!serve.http.StatusCode, @alignCast(@ptrCast(tc.c)))(),
+                            request,
+                            @alignCast(@ptrCast(tc.free)),
+                        ),
+                        1 => handleInner(
+                            self,
+                            @as(*const fn (?ArgumentsMap) anyerror!serve.http.StatusCode, @alignCast(@ptrCast(tc.c)))(parsed_args),
+                            request,
+                            @alignCast(@ptrCast(tc.free)),
+                        ),
+                        2 => handleInner(
+                            self,
+                            @as(*const fn (?ArgumentsMap, String) anyerror!serve.http.StatusCode, @alignCast(@ptrCast(tc.c)))(parsed_args, body),
+                            request,
+                            @alignCast(@ptrCast(tc.free)),
+                        ),
                         else => unreachable,
                     },
                 };
@@ -637,6 +736,7 @@ pub const MutliListener = struct {
         var arena = std.heap.ArenaAllocator.init(common.allocator);
         const result_type = getInnerType(R);
         if (args) |sure_args| {
+            // SAFETY: will be filled in the inline for loop
             var result_payload: result_type.type = undefined;
             if (sure_args.count() == 0) {
                 if (result_type.isOptional) {
@@ -846,22 +946,23 @@ pub const MutliListener = struct {
             //var result = std.ArrayList(debug.BreakpointLocation).init(common.allocator);
             const in_params = try parseArgs(dap.BreakpointLocationArguments, args);
             // bounded by source, lines and cols in params
-            var positions: []const analyzer.lsp.Position = undefined;
-            if (try shaders.ServiceLocator.parse(in_params.value.path)) |context| {
-                if (context.resource) |r| {
-                    switch (r) {
-                        .programs => |locator| {
-                            const shader = try context.service.Programs.getNestedByLocator(locator.name, locator.nested.name);
-                            positions = (try shader.possibleSteps()).items(.pos);
-                        },
-                        .sources => |locator| {
-                            const shader = try context.service.Shaders.getStoredByLocator(locator.name);
-                            positions = (try shader.*.possibleSteps()).items(.pos);
-                        },
-                        else => return shaders.ResourceLocator.Error.Protected,
-                    }
+            const positions: []const analyzer.lsp.Position = blk: {
+                if (try shaders.ServiceLocator.parse(in_params.value.path)) |context| {
+                    if (context.resource) |r| {
+                        switch (r) {
+                            .programs => |locator| {
+                                const shader = try context.service.Programs.getNestedByLocator(locator.name, locator.nested.name);
+                                break :blk (try shader.possibleSteps()).items(.pos);
+                            },
+                            .sources => |locator| {
+                                const shader = try context.service.Shaders.getStoredByLocator(locator.name);
+                                break :blk (try shader.*.possibleSteps()).items(.pos);
+                            },
+                            else => return shaders.ResourceLocator.Error.Protected,
+                        }
+                    } else return storage.Error.InvalidPath;
                 } else return storage.Error.InvalidPath;
-            } else return storage.Error.InvalidPath;
+            };
 
             const result = try getPossibleBreakpointsAlloc(positions, in_params.value);
             defer common.allocator.free(result);
@@ -1040,7 +1141,8 @@ pub const MutliListener = struct {
             }
             var result = std.ArrayListUnmanaged(u8).empty;
             const w = result.writer(common.allocator);
-            try std.json.stringify(.{ // Must be called instead of stringifyAlloc which would corrupt the stack (because of the array-lists being on stack)
+            // Must be called instead of stringifyAlloc which would corrupt the stack (because of the array-lists being on stack)
+            try std.json.stringify(.{
                 .breakpoints = breakpoints_to_send.items,
                 .debugging = shaders.debugging,
                 .paused = instance.?.paused,
@@ -1183,14 +1285,24 @@ pub const MutliListener = struct {
             const in_params = try parseArgs(WriteArgs, args);
 
             const locator = try shaders.ServiceLocator.parse(in_params.value.path) orelse return error.InvalidPath;
-            try locator.service.setSourceByLocator2(locator.resource orelse return error.InvalidPath, in_params.value.content, in_params.value.compile orelse true, in_params.value.link orelse true);
+            try locator.service.setSourceByLocator2(
+                locator.resource orelse return error.InvalidPath,
+                in_params.value.content,
+                in_params.value.compile orelse true,
+                in_params.value.link orelse true,
+            );
         }
 
         pub fn savePhysical(args: ?ArgumentsMap) !void {
             const in_params = try parseArgs(WriteArgs, args);
 
             const locator = try shaders.ServiceLocator.parse(in_params.value.path) orelse return error.InvalidPath;
-            try locator.service.saveSource(locator.resource orelse return error.InvalidPath, in_params.value.content, in_params.value.compile orelse true, in_params.value.link orelse true);
+            try locator.service.saveSource(
+                locator.resource orelse return error.InvalidPath,
+                in_params.value.content,
+                in_params.value.compile orelse true,
+                in_params.value.link orelse true,
+            );
         }
 
         pub fn save(args: ?ArgumentsMap) !void {
@@ -1206,7 +1318,11 @@ pub const MutliListener = struct {
         pub fn rename(args: ?ArgumentsMap) !String {
             const in_params = try parseArgs(struct { from: String, to: String }, args);
             const to_unslash = common.noTrailingSlash(in_params.value.to);
-            const basename_only = common.nullishEq(String, std.fs.path.dirname(common.noTrailingSlash(in_params.value.from)), std.fs.path.dirname(to_unslash));
+            const basename_only = common.nullishEq(
+                String,
+                std.fs.path.dirname(common.noTrailingSlash(in_params.value.from)),
+                std.fs.path.dirname(to_unslash),
+            );
 
             const from = try shaders.ServiceLocator.parse(in_params.value.from) orelse return error.InvalidPath;
             const from_res = from.resource orelse return error.InvalidPath;
@@ -1307,7 +1423,9 @@ pub const MutliListener = struct {
                     const steps_pos = steps.items(.pos);
                     var it = shader.*.breakpoints.keyIterator();
                     while (it.next()) |bp| {
-                        try result.append(try std.fmt.allocPrint(common.allocator, "{?d},{?d}", .{ steps_pos[bp.*].line, steps_pos[bp.*].character }));
+                        try result.append(
+                            try std.fmt.allocPrint(common.allocator, "{?d},{?d}", .{ steps_pos[bp.*].line, steps_pos[bp.*].character }),
+                        );
                     }
                     return result.toOwnedSlice();
                 }

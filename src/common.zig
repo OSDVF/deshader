@@ -43,6 +43,7 @@ pub const GPA = std.heap.GeneralPurposeAllocator(.{
 });
 
 pub var gpa = GPA.init;
+/// SAFETY: assigned in `init()`
 pub var allocator: std.mem.Allocator = undefined;
 pub var initialized = false;
 var self_exe: ?String = null;
@@ -196,6 +197,7 @@ pub fn isPortFree(address: ?String, port: u16) !bool {
     return true;
 }
 
+// SAFETY: assigned by the `callback` function
 var so_path: [:0]const u8 = undefined;
 fn callback(info: ?*const c.struct_dl_phdr_info, _: usize, _: ?*anyopaque) callconv(.c) c_int {
     if (info) |i| if (i.dlpi_name[0] != 0) {
@@ -211,6 +213,7 @@ fn callback(info: ?*const c.struct_dl_phdr_info, _: usize, _: ?*anyopaque) callc
 /// Gets the path of the Deshader DLL
 pub fn selfDllPathAlloc(a: std.mem.Allocator, concat_with: String) !String {
     if (builtin.os.tag == .windows) {
+        // SAFETY: assigned right after
         var hm: [*c]c.struct_HINSTANCE__ = undefined;
         if (c.GetModuleHandleExW(c.GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
             c.GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, @ptrCast(&options.version), &hm) != 0)
@@ -231,6 +234,7 @@ pub fn selfDllPathAlloc(a: std.mem.Allocator, concat_with: String) !String {
     } else if (builtin.os.tag == .linux) {
         _ = c.dl_iterate_phdr(callback, null);
     } else {
+        // SAFETY: assigned right after
         var info: c.Dl_info = undefined;
         if (c.dladdr(@ptrCast(&options.version), &info) == 0) {
             return error.DlAddr;

@@ -27,10 +27,15 @@ pub fn isNative(t: std.Target) bool {
 
 pub fn targetToVcpkgTriplet(a: std.mem.Allocator, t: std.Target) !String {
     const native = isNative(t);
-    return try std.mem.concat(a, u8, &.{ archToVcpkg(t.cpu.arch), "-", switch (t.os.tag) {
-        .windows => "windows",
-        .macos => "osx",
-        .linux => "linux",
-        else => @tagName(t.os.tag),
-    }, if (native and t.os.tag != .windows) "" else "-zig" }); // Always subtitue MSVC with zig cc on windows, because the libraries would be incompatible
+    return try std.mem.concat(a, u8, &.{
+        archToVcpkg(t.cpu.arch), "-",
+        switch (t.os.tag) {
+            .windows => "windows",
+            .macos => "osx",
+            .linux => "linux",
+            else => @tagName(t.os.tag),
+        },
+        // Always subtitue MSVC with zig cc on windows, because the libraries would be incompatible
+        if (native and t.os.tag != .windows) "" else "-zig",
+    });
 }

@@ -21,7 +21,8 @@ pub const ExistsBehavior = enum(c_int) {
     Link = 0,
     /// Do not permit collisions
     Error = 1,
-    /// Overwrite contents of the target tag. Removes any targeted previous links to other tags. Tags which pointed to previous content will be linked to the new content.
+    /// Overwrite contents of the target tag. Removes any targeted previous links to other tags.
+    /// Tags which pointed to previous content will be linked to the new content.
     Overwrite = 2,
 };
 
@@ -125,7 +126,8 @@ pub const SourcesPayload = extern struct {
     stage: Stage = @enumFromInt(0), // Default to unknown (_) value
     /// Represents the language of the shader source (GLSL ...)
     language: LanguageType = @enumFromInt(0), // Default to unknown (_) value
-    /// (Non-null => user-specified) or default source assignment and compile function to be executed when Deshader inejcts something and wants to apply it,
+    /// (Non-null => user-specified) or default source assignment and compile function to be executed when
+    /// Deshader inejcts something and wants to apply it,
     /// or when Deshader wants to revert instrumented source.
     ///
     /// length is the length of the `instrumented` source. If it is 0, then there is no instrumented source.
@@ -153,7 +155,8 @@ pub const ProgramPayload = extern struct {
     shaders: ?[*]usize = null,
     count: usize = 0,
     context: ?*anyopaque = null,
-    /// If `ProgramPayload.count` is 0, the function will only link the program. Otherwise it will attach the shaders in the order they are stored in the payload.
+    /// If `ProgramPayload.count` is 0, the function will only link the program.
+    /// Otherwise it will attach the shaders in the order they are stored in the payload.
     /// The function must return 0 if there is no error.
     ///
     /// If the program was already linked in the past, the function must also re-set all the uniforms and attributes to their original values.

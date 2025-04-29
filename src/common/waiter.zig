@@ -8,17 +8,16 @@ const DEBUG = builtin.mode == .Debug;
 // O-----<----<---v
 //
 
-/// An agent that waits for a value to be requested, orders it from the producer (which waits when there are no requests), and returns it to the requester.
+/// An agent that waits for a value to be requested, orders it from the producer (which waits when there are no requests),
+///  and returns it to the requester.
 ///
 /// `T` should be an union of all possible message outputs
 pub fn Waiter(comptime Request: type, comptime Response: type) type {
     return struct {
         eaten: std.Thread.Condition = .{},
         eaten_mutex: std.Thread.Mutex = .{},
-        payload: union(enum) {
-            Request: Request,
-            Response: Response,
-        } = .{ .Response = undefined },
+        /// SAFETY: the default value should not be read
+        payload: Payload = .{ .Response = undefined },
 
         /// To be used by the producer when it wants to wait for a request
         requested: std.Thread.Condition = .{},
@@ -30,6 +29,11 @@ pub fn Waiter(comptime Request: type, comptime Response: type) type {
         responding: if (DEBUG) bool else void = if (DEBUG) false else {},
 
         const Self = @This();
+
+        const Payload = union(enum) {
+            Request: Request,
+            Response: Response,
+        };
 
         /// To be called by the requester.
         /// After the requester ended working with the requested resource, it should call `eatingDone()`

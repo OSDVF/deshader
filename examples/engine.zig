@@ -22,9 +22,11 @@ pub fn createShader(source: []const u8, typ: gl.@"enum") c_uint {
     gl.ShaderSource(shader, 1, @ptrCast(&source.ptr), @ptrCast(&source.len));
     gl.CompileShader(shader);
 
+    // SAFETY: assigned right after by GL
     var status: gl.int = undefined;
     gl.GetShaderiv(shader, gl.COMPILE_STATUS, &status);
 
+    // SAFETY: assigned right after by GL
     var info_length: gl.sizei = undefined;
     gl.GetShaderiv(shader, gl.INFO_LOG_LENGTH, &info_length);
     if (std.heap.page_allocator.allocSentinel(u8, @intCast(info_length), 0)) |info_log| {
@@ -51,9 +53,11 @@ pub fn createShader(source: []const u8, typ: gl.@"enum") c_uint {
 pub fn linkProgram(program: gl.uint) void {
     gl.LinkProgram(program);
 
+    // SAFETY: assigned right after by GL
     var status: gl.int = undefined;
     gl.GetProgramiv(program, gl.LINK_STATUS, &status);
 
+    // SAFETY: assigned right after by GL
     var info_length: gl.sizei = undefined;
     gl.GetProgramiv(program, gl.INFO_LOG_LENGTH, &info_length);
     if (std.heap.page_allocator.allocSentinel(u8, @intCast(info_length), 0)) |info_log| {
@@ -76,7 +80,15 @@ pub fn linkProgram(program: gl.uint) void {
     }
 }
 
-pub fn glDebugMessageCallback(source: gl.@"enum", typ: gl.@"enum", id: gl.uint, severity: gl.@"enum", length: gl.sizei, message: [*:0]const gl.char, userParam: ?*const anyopaque) callconv(gl.APIENTRY) void {
+pub fn glDebugMessageCallback(
+    source: gl.@"enum",
+    typ: gl.@"enum",
+    id: gl.uint,
+    severity: gl.@"enum",
+    length: gl.sizei,
+    message: [*:0]const gl.char,
+    userParam: ?*const anyopaque,
+) callconv(gl.APIENTRY) void {
     _ = userParam;
     _ = length;
     const source_string = switch (source) {

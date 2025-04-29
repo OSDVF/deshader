@@ -20,7 +20,6 @@
 //!
 //! `InvalidatedEvent` is enriched with `context` and `numContexts` fields.
 const std = @import("std");
-const common = @import("common");
 
 const String = []const u8;
 
@@ -76,7 +75,8 @@ pub const InitializedEvent = struct {
 };
 
 pub const StoppedEvent = struct {
-    reason: String, //'step' | 'breakpoint' | 'exception' | 'pause' | 'entry' | 'goto' | 'function breakpoint' | 'data breakpoint' | 'instruction breakpoint' |
+    //'step' | 'breakpoint' | 'exception' | 'pause' | 'entry' | 'goto' | 'function breakpoint' | 'data breakpoint' | 'instruction breakpoint' |
+    reason: String,
     description: ?String,
     threadId: ?usize,
     preserveFocusHint: ?bool,
@@ -440,7 +440,8 @@ pub const SourceBreakpoint = struct {
     /// The expression that controls how many hits of the breakpoint are ignored.
     /// The debug adapter is expected to interpret the expression as needed.
     /// The attribute is only honored by a debug adapter if the corresponding capability `supportsHitConditionalBreakpoints` is true.
-    /// If both this property and `condition` are specified, `hitCondition` should be evaluated only if the `condition` is met, and the debug adapter should stop only if both conditions are met.
+    /// If both this property and `condition` are specified, `hitCondition` should be evaluated only if the `condition` is met, and the debug adapter
+    /// should stop only if both conditions are met.
     hitCondition: ?String = null,
     logMessage: ?String = null,
 };
@@ -936,7 +937,8 @@ pub const EvaluateResponse = struct {
     type: ?String = null,
     /// Properties of an evaluate result that can be used to determine how to render the result in the UI.
     presentationHint: ?VariablePresentationHint = null,
-    ///  If `variablesReference` is > 0, the evaluate result is structured and its children can be retrieved by passing `variablesReference` to the `variables` request as long as execution remains suspended. See 'Lifetime of Object References' in the Overview section for details.
+    ///  If `variablesReference` is > 0, the evaluate result is structured and its children can be retrieved by passing `variablesReference` to the
+    /// `variables` request as long as execution remains suspended. See 'Lifetime of Object References' in the Overview section for details.
     variablesReference: usize = 0,
     /// The number of named child variables.
     /// The client can use this information to present the variables in a paged UI and fetch them in chunks.
@@ -1017,7 +1019,8 @@ pub const GotoTargetsArguments = struct {
     path: String,
     ///  The line location for which the goto targets are determined.
     line: usize,
-    ///  The position within `line` for which the goto targets are determined. It is measured in UTF-16 code units and the client capability `columnsStartAt1` determines whether it is 0- or 1-based.
+    ///  The position within `line` for which the goto targets are determined. It is measured in UTF-16 code units and the client capability
+    /// `columnsStartAt1` determines whether it is 0- or 1-based.
     column: ?usize,
 };
 
@@ -1040,7 +1043,8 @@ pub const CompletionsArguments = struct {
     frameId: ?usize,
     ///  One or more source lines. Typically this is the text users have typed into the debug console before they asked for completion.
     text: String,
-    ///  The position within `text` for which to determine the completion proposals. It is measured in UTF-16 code units and the client capability `columnsStartAt1` determines whether it is 0- or 1-based.
+    ///  The position within `text` for which to determine the completion proposals. It is measured in UTF-16 code units and the client capability
+    /// `columnsStartAt1` determines whether it is 0- or 1-based.
     column: usize,
     ///  A line for which to determine the completion proposals. If missing the first line of the text is assumed.
     line: ?usize,
@@ -1099,7 +1103,8 @@ pub const ReadMemoryResponse = struct {
     address: String,
 
     unreadableBytes: ?usize,
-    ///  The bytes read from memory, encoded using base64. If the decoded length of `data` is less than the requested `count` in the original `readMemory` request, and `unreadableBytes` is zero or omitted, then the client should assume it's reached the end of readable memory.
+    ///  The bytes read from memory, encoded using base64. If the decoded length of `data` is less than the requested `count` in the original
+    /// `readMemory` request, and `unreadableBytes` is zero or omitted, then the client should assume it's reached the end of readable memory.
     data: ?String,
 };
 
@@ -1124,9 +1129,11 @@ pub const WriteMemoryArguments = struct {
 
 ///  Response to `writeMemory` request.
 pub const WriteMemoryResponse = struct {
-    ///  Property that should be returned when `allowPartial` is true to indicate the offset of the first byte of data successfully written. Can be negative.
+    ///  Property that should be returned when `allowPartial` is true to indicate the offset of the first byte of data successfully written.
+    /// Can be negative.
     offset: ?usize,
-    ///  Property that should be returned when `allowPartial` is true to indicate the usize of bytes starting from address that were successfully written.
+    ///  Property that should be returned when `allowPartial` is true to indicate the usize of bytes starting from address that were successfully
+    /// written.
     bytesWritten: ?usize,
 };
 
@@ -1156,15 +1163,22 @@ pub const StackFrame = struct {
     name: String,
     ///  The source of the frame.
     path: String,
-    ///  The line within the source of the frame. If the source attribute is missing or doesn't exist, `line` is 0 and should be ignored by the client.
+    ///  The line within the source of the frame.
+    /// If the source attribute is missing or doesn't exist, `line` is 0 and should be ignored by the client.
     line: usize,
-    ///  Start position of the range covered by the stack frame. It is measured in UTF-16 code units and the client capability `columnsStartAt1` determines whether it is 0- or 1-based. If attribute `source` is missing or doesn't exist, `column` is 0 and should be ignored by the client.
+    ///  Start position of the range covered by the stack frame.
+    /// It is measured in UTF-16 code units and the client capability `columnsStartAt1` determines whether it is 0- or 1-based.
+    /// If attribute `source` is missing or doesn't exist, `column` is 0 and should be ignored by the client.
     column: usize,
     ///  The end line of the range covered by the stack frame.
     endLine: ?usize = null,
-    ///  End position of the range covered by the stack frame. It is measured in UTF-16 code units and the client capability `columnsStartAt1` determines whether it is 0- or 1-based.
+    ///  End position of the range covered by the stack frame.
+    /// It is measured in UTF-16 code units and the client capability `columnsStartAt1` determines whether it is 0- or 1-based.
     endColumn: ?usize = null,
-    ///  Indicates whether this frame can be restarted with the `restart` request. Clients should only use this if the debug adapter supports the `restart` request and the corresponding capability `supportsRestartRequest` is true. If a debug adapter has this capability, then `canRestart` defaults to `true` if the property is absent.
+    ///  Indicates whether this frame can be restarted with the `restart` request.
+    /// Clients should only use this if the debug adapter supports the `restart` request
+    /// and the corresponding capability `supportsRestartRequest` is true.
+    /// If a debug adapter has this capability, then `canRestart` defaults to `true` if the property is absent.
     canRestart: ?bool = null,
     ///  A memory reference for the current instruction pointer in this frame.
     instructionPointerReference: ?String = null,
@@ -1181,7 +1195,8 @@ pub const Scope = struct {
     name: String,
     /// 'arguments' | 'locals' | 'registers' |...
     presentationHint: ?String,
-    ///  The variables of this scope can be retrieved by passing the value of `variablesReference` to the `variables` request as long as execution remains suspended. See 'Lifetime of Object References' in the Overview section for details.
+    ///  The variables of this scope can be retrieved by passing the value of `variablesReference` to the `variables` request
+    /// as long as execution remains suspended. See 'Lifetime of Object References' in the Overview section for details.
     variablesReference: usize,
 
     namedVariables: ?usize,
@@ -1193,11 +1208,13 @@ pub const Scope = struct {
     path: String,
     ///  The start line of the range covered by this scope.
     line: ?usize,
-    ///  Start position of the range covered by the scope. It is measured in UTF-16 code units and the client capability `columnsStartAt1` determines whether it is 0- or 1-based.
+    ///  Start position of the range covered by the scope. It is measured in UTF-16 code units and the client capability
+    /// `columnsStartAt1` determines whether it is 0- or 1-based.
     column: ?usize,
     ///  The end line of the range covered by this scope.
     endLine: ?usize,
-    ///  End position of the range covered by the scope. It is measured in UTF-16 code units and the client capability `columnsStartAt1` determines whether it is 0- or 1-based.
+    ///  End position of the range covered by the scope. It is measured in UTF-16 code units and the client capability
+    /// `columnsStartAt1` determines whether it is 0- or 1-based.
     endColumn: ?usize,
 };
 
@@ -1212,7 +1229,8 @@ pub const Variable = struct {
     presentationHint: ?VariablePresentationHint,
     ///  The evaluatable name of this variable which can be passed to the `evaluate` request to fetch the variable's value.
     evaluateName: ?String,
-    ///  If `variablesReference` is > 0, the variable is structured and its children can be retrieved by passing `variablesReference` to the `variables` request as long as execution remains suspended. See 'Lifetime of Object References' in the Overview section for details.
+    ///  If `variablesReference` is > 0, the variable is structured and its children can be retrieved by passing `variablesReference` to the
+    /// `variables` request as long as execution remains suspended. See 'Lifetime of Object References' in the Overview section for details.
     variablesReference: usize,
 
     namedVariables: ?usize,
@@ -1223,8 +1241,10 @@ pub const Variable = struct {
 };
 ///  Properties of a variable that can be used to determine how to render the variable in the UI.
 pub const VariablePresentationHint = struct {
-    /// ?'property' | 'method' | 'class' | 'data' | 'event' | 'baseClass' | 'innerClass' | 'pub const' | 'mostDerivedClass' | 'virtual' | 'dataBreakpoint' | String,
-    kind: String,
+    /// 'property' | 'method' | 'class' | 'data' | 'event' | 'baseClass'
+    ///   | 'innerClass' | 'interface' | 'mostDerivedClass' | 'virtual'
+    ///   | 'dataBreakpoint' | string;
+    kind: ?String,
     /// 'static' | 'constant' | 'readOnly' | 'rawString' | 'hasObjectId' | 'canHaveObjectId' | 'hasSideEffects' | 'hasDataBreakpoint' | String
     attributes: ?String,
     /// ?'public' | 'private' | 'protected' | 'internal' | 'final' | String,
@@ -1248,11 +1268,13 @@ pub const StepInTarget = struct {
     label: String,
     ///  The line of the step-in target.
     line: ?usize,
-    ///  Start position of the range covered by the step in target. It is measured in UTF-16 code units and the client capability `columnsStartAt1` determines whether it is 0- or 1-based.
+    ///  Start position of the range covered by the step in target. It is measured in UTF-16 code units and the client capability
+    /// `columnsStartAt1` determines whether it is 0- or 1-based.
     column: ?usize,
     ///  The end line of the range covered by the step-in target.
     endLine: ?usize,
-    ///  End position of the range covered by the step in target. It is measured in UTF-16 code units and the client capability `columnsStartAt1` determines whether it is 0- or 1-based.
+    ///  End position of the range covered by the step in target. It is measured in UTF-16 code units and the client capability
+    /// `columnsStartAt1` determines whether it is 0- or 1-based.
     endColumn: ?usize,
 };
 
@@ -1285,18 +1307,23 @@ pub const CompletionItem = struct {
     detail: ?String,
     ///  The item's type. Typically the client uses this information to render the item in the UI with an icon.
     type: ?CompletionItemType,
-    ///  Start position (within the `text` attribute of the `completions` request) where the completion text is added. The position is measured in UTF-16 code units and the client capability `columnsStartAt1` determines whether it is 0- or 1-based. If the start position is omitted the text is added at the location specified by the `column` attribute of the `completions` request.
+    ///  Start position (within the `text` attribute of the `completions` request) where the completion text is added. The position is measured in
+    /// UTF-16 code units and the client capability `columnsStartAt1` determines whether it is 0- or 1-based.
+    /// If the start position is omitted the text is added at the location specified by the `column` attribute of the `completions` request.
     start: ?usize,
-    ///  Length determines how many characters are overwritten by the completion text and it is measured in UTF-16 code units. If missing the value 0 is assumed which results in the completion text being inserted.
+    ///  Length determines how many characters are overwritten by the completion text and it is measured in UTF-16 code units.
+    /// If missing the value 0 is assumed which results in the completion text being inserted.
     length: ?usize,
-    ///  Determines the start of the new selection after the text has been inserted (or replaced). `selectionStart` is measured in UTF-16 code units and must be in the range 0 and length of the completion text. If omitted the selection starts at the end of the completion text.
+    ///  Determines the start of the new selection after the text has been inserted (or replaced).
+    /// `selectionStart` is measured in UTF-16 code units and must be in the range 0 and length of the completion text.
+    /// If omitted the selection starts at the end of the completion text.
     selectionStart: ?usize,
-    ///  Determines the length of the new selection after the text has been inserted (or replaced) and it is measured in UTF-16 code units. The selection can not extend beyond the bounds of the completion text. If omitted the length is assumed to be 0.
+    ///  Determines the length of the new selection after the text has been inserted (or replaced) and it is measured in UTF-16 code units.
+    /// The selection can not extend beyond the bounds of the completion text. If omitted the length is assumed to be 0.
     selectionLength: ?usize,
 };
 
 ///  Some predefined types for the CompletionItem. Please note that not all clients have specific icons for all of them.
-//type CompletionItemType = 'method' | 'function' | 'constructor' | 'field' | 'variable' | 'class' | 'interface' | 'module' | 'property' | 'unit' | 'value' | 'enum' | 'keyword' | 'snippet' | 'text' | 'color' | 'file' | 'reference' | 'customcolor'
 pub const CompletionItemType = enum {
     method,
     function,

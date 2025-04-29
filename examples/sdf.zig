@@ -24,6 +24,7 @@ pub fn onResize(window: glfw.Window, width: u32, height: u32) void {
 }
 
 // Procedure table that will hold OpenGL functions loaded at runtime.
+// SAFETY: assigned after the context is created
 var procs: gl.ProcTable = undefined;
 // count of seconds from the start of the program
 var iTime: f32 = 0;
@@ -42,7 +43,14 @@ pub fn main() !void {
     defer glfw.terminate();
 
     // Create our window
-    const window = glfw.Window.create(@intCast(w), @intCast(h), "SDF", null, null, .{ .opengl_profile = .opengl_core_profile, .context_version_major = 4, .context_version_minor = 0, .context_debug = true }) orelse {
+    const window = glfw.Window.create(
+        @intCast(w),
+        @intCast(h),
+        "SDF",
+        null,
+        null,
+        .{ .opengl_profile = .opengl_core_profile, .context_version_major = 4, .context_version_minor = 0, .context_debug = true },
+    ) orelse {
         engine.log.err("failed to create GLFW window: {?s}", .{glfw.getErrorString()});
         std.process.exit(1);
     };
@@ -74,11 +82,13 @@ pub fn main() !void {
     gl.DeleteShader(vertex);
     gl.DeleteShader(fragment);
 
+    // SAFETY: assigned right after by OpenGL
     var vertex_buffer: gl.uint = undefined;
     gl.CreateBuffers(1, &vertex_buffer);
     defer gl.DeleteBuffers(1, (&vertex_buffer)[0..1]);
     gl.NamedBufferData(vertex_buffer, vertex_data.len * @sizeOf(f32), &vertex_data, gl.STATIC_DRAW);
 
+    // SAFETY: assigned right after by OpenGL
     var vao: gl.uint = undefined;
     gl.CreateVertexArrays(1, &vao);
     defer gl.DeleteVertexArrays(1, (&vao)[0..1]);

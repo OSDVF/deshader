@@ -30,13 +30,18 @@ pub const InstrumentClient = struct {
     deinit: ?*const fn (state: *State) void,
     onBeforeDraw: ?*const fn (service: *Service, instrumentation: *Instrumentation) anyerror!void,
     /// `platform` can be `PlatformParamsGL` or `PlatformParamsVK`
-    onResult: ?*const fn (service: *Service, instrumentation: *const Instrumentation, readbacks: *const Readbacks, platform: *const Platform) anyerror!void,
+    onResult: ?*const fn (
+        service: *Service,
+        instrumentation: *const Instrumentation,
+        readbacks: *const Readbacks,
+        platform: *const Platform,
+    ) anyerror!void,
     onRestore: ?*const fn (service: *Service) anyerror!void,
 };
 
 pub const PlatformParamsGL = struct {
     /// Framebuffer which has all the debugging outputs attached
-    fbo: c_uint = undefined,
+    fbo: c_uint,
 
     pub fn toOpaque(self: *const @This()) *const Platform {
         return @ptrCast(self);
