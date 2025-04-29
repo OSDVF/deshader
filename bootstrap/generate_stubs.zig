@@ -1,3 +1,18 @@
+// Copyright (C) 2025  Ondřej Sabela
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
 const std = @import("std");
 
 pub fn main() !void {
@@ -56,6 +71,7 @@ pub const GenerateStubsStep = struct {
 pub fn generateStubs(allocator: std.mem.Allocator, output: std.fs.File, short_names: bool) !void {
     // Struct decalrations
     try output.writeAll(@embedFile("../src/declarations/shaders.zig"));
+    try output.writeAll(@embedFile("../src/declarations/instruments.zig"));
 
     // Function declarations
     var tree = try std.zig.Ast.parse(allocator, @embedFile("../src/main.zig"), .zig);

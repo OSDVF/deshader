@@ -1,4 +1,4 @@
-// Copyright (C) 2024  Ondřej Sabela
+// Copyright (C) 2025  Ondřej Sabela
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -475,36 +475,44 @@ pub fn build(b: *std.Build) !void {
         deshader_lib_cmd.dependOn(&stub_gen.step);
 
         //
-        // Emit H File
+        // Emit H File and short zig stubs
         //
-        var header_gen = b.addExecutable(.{
-            .name = "generate_headers",
-            .root_source_file = b.path("bootstrap/generate_headers.zig"),
-            .target = b.resolveTargetQuery(std.Target.Query{}),
-            .optimize = optimize,
-        });
-        const heade_gen_opts = b.addOptions();
-        heade_gen_opts.addOption(String, "h_dir", b.pathJoin(&.{ b.h_dir, "deshader" }));
-        header_gen.root_module.addOptions("options", heade_gen_opts);
-        header_gen.root_module.addAnonymousImport("header_gen", .{
-            .root_source_file = b.path("libs/zig-header-gen/src/header_gen.zig"),
-        });
-        // no-short stubs for the C header
         {
+            // no-short stubs for the C header
             const long_name = b.getInstallPath(.header, "deshader/deshader_prefixed.zig");
             var stub_gen_long = try b.allocator.create(stubGenSrc.GenerateStubsStep);
             stub_gen_long.* = stubGenSrc.GenerateStubsStep.init(b, long_name, false);
+
+            var header_gen = b.addExecutable(.{
+                .name = "generate_headers",
+                .root_module = b.createModule(.{
+                    .optimize = optimize,
+                    .root_source_file = b.path("bootstrap/generate_headers.zig"),
+                    .target = b.resolveTargetQuery(std.Target.Query{}),
+                }),
+            });
+            const heade_gen_opts = b.addOptions();
+            heade_gen_opts.addOption(String, "h_dir", b.pathJoin(&.{ b.h_dir, "deshader" }));
+            heade_gen_opts.addOption([]const String, "filePaths", &.{
+                long_name,
+                b.pathJoin(&.{ b.build_root.path.?, "src/declarations/shaders.zig" }),
+                b.pathJoin(&.{ b.build_root.path.?, "src/declarations/instruments.zig" }),
+            });
+            header_gen.root_module.addOptions("options", heade_gen_opts);
+            header_gen.root_module.addAnonymousImport("header_gen", .{
+                .root_source_file = b.path("libs/zig-header-gen/src/header_gen.zig"),
+            });
+
             header_gen.step.dependOn(&stub_gen_long.step);
             header_gen.root_module.addAnonymousImport("deshader", .{ .root_source_file = .{ .cwd_relative = long_name } });
-        }
 
-        {
             header_gen_cmd.dependOn(&header_gen.step);
             const header_run = b.addRunArtifact(header_gen);
             header_run.step.dependOn(&b.addInstallHeaderFile(b.path("src/declarations/macros.h"), "deshader/macros.h").step);
             header_run.step.dependOn(&b.addInstallHeaderFile(b.path("src/declarations/commands.h"), "deshader/commands.h").step);
             // automatically create header when building the library
             deshader_lib_cmd.dependOn(&header_run.step);
+            header_gen_cmd.dependOn(&header_run.step);
         }
     }
 

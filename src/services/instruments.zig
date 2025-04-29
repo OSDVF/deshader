@@ -15,12 +15,14 @@ pub const Error = error{ InvalidStep, FunctionNotInScope };
 /// This instrument is used for stepping and breakpoint logic
 pub const Step = struct {
     pub var step_identifier: String = "_step_";
+    var warned_about_selection: bool = false;
     pub const tag = analyzer.parse.Tag.call;
     pub const id: u64 = 0x57e9;
     pub const sync_id: u64 = 0x51c;
 
     pub const Controls = struct {
         breakpoints: std.AutoHashMapUnmanaged(usize, void) = .empty,
+        /// Index for the step counter to check for. Referes to source's step number.
         desired_step: ?u32 = null,
         /// Index for the step counter to check for.
         /// Set to non-null value to enable stepping.
@@ -33,10 +35,11 @@ pub const Step = struct {
         /// If source stepping is ongoing, this is the global index of the currently reached step.
         /// Can be used for the purpose of advancing target step index with `desired_step = reached_step.id + 1`.
         reached_step: ?struct {
-            /// The step's index in the `SourcePart.possibleSteps'. The shader can be found in `offsets[offset]`.
-            step: u32,
-            /// Index into `Responses.offsets`
-            offset: u32,
+            /// ID of reached step in the space of global step indexes.
+            global: u32,
+
+            /// Number of the reached step in corresponding source part (can be found using `Responses.localStep(Responses.reached_step.global)`).
+            source: u32,
         } = null,
         /// Uses service's allocator
         offsets: std.ArrayListUnmanaged(StepOffset) = .empty,
@@ -53,6 +56,7 @@ pub const Step = struct {
 
         pub const LocalStep = struct {
             part: *shaders.Shader.SourcePart,
+            /// Source file step locator
             step: shaders.Shader.SourcePart.Step,
         };
         pub fn localStep(self: *const @This(), global_step: usize) !LocalStep {
@@ -116,7 +120,7 @@ pub const Step = struct {
         const c = controls(&shader.items[0].program.?.channels).?;
         const r = responses(&shader.items[0].program.?.channels).?;
 
-        c.desired_bp = (if (r.reached_step) |s| s.offset else 0) +% 1;
+        c.desired_bp = (if (r.reached_step) |s| s.source else 0) +% 1;
         if (c.desired_step) |_| {
             c.desired_step = std.math.maxInt(u32);
         }
@@ -134,7 +138,7 @@ pub const Step = struct {
         const state = service.state.getPtr(shader_ref) orelse return error.NotInstrumented;
         const r = responses(&shader.items[0].program.?.channels).?;
         const c = controls(&shader.items[0].program.?.channels).?;
-        const next = (if (r.reached_step) |s| s.offset else 0) +% 1;
+        const next = (if (r.reached_step) |s| s.source else 0) +% 1;
         if (c.desired_step == null) {
             // invalidate instrumentated code because stepping was previously disabled
             state.dirty = true;
@@ -381,13 +385,16 @@ pub const Step = struct {
             sync.size = 1;
             // Declare just the hit synchronisation variable and rely on atomic operations https://stackoverflow.com/questions/56340333/glsl-about-coherent-qualifier
             try processor.insertStart(try processor.print(
-                \\layout(std{d}, binding={d}) buffer DeshaderSync {{
+                \\layout(std{d}, binding={d}) restrict coherent buffer DeshaderSync {{
             ++ "uint " ++ sync_storage ++ ";\n" ++ //
                 \\}};
             , .{
                 @as(u16, if (processor.parsed.version >= 430) 430 else 140), //stdXXX
                 sync.location.buffer.binding,
             }), processor.after_version);
+        } else if (processor.config.shader_stage.isFragment() and !warned_about_selection) {
+            warned_about_selection = true;
+            log.warn("Fragment shaders threads cannot be efficiently selected without storage buffer support", .{});
         }
 
         const storage_name = StepStorageName{ .processor = processor };
@@ -397,7 +404,7 @@ pub const Step = struct {
             .buffer => |buffer| {
                 // Declare the global hit storage
                 try processor.insertStart(try processor.print(
-                    \\layout(std{d}, binding={d}) buffer DeshaderStepping {{
+                    \\layout(std{d}, binding={d}) restrict writeonly buffer DeshaderStepping {{
                 ++ "uvec4 " ++ hit_storage ++ "[];\n" ++
                     \\}};
                     \\
@@ -591,7 +598,7 @@ pub const StackTrace = struct {
     /// Type of one stack trace entry (function handle)
     pub const StackTraceT = u32;
 
-    pub fn maxEntries(channels: *Processor.Result.Channels, allocator: std.mem.Allocator) !*usize {
+    pub fn maxEntries(channels: *Processor.Result.StageChannels, allocator: std.mem.Allocator) !*usize {
         // Stored as a raw numeric value instead of a pointer
         return @ptrCast((try channels.controls.getOrPutValue(allocator, id, @ptrFromInt(default_max_entries))).value_ptr);
     }
@@ -668,9 +675,9 @@ pub const StackTrace = struct {
 
         const shader = service.Shaders.all.get(locator.shader()) orelse return error.TargetNotFound;
         const r = Step.responses(&shader.items[0].program.?.channels).?;
-        if (r.reached_step) |global_step| {
+        if (r.reached_step) |step| {
             // Find the currently executing step position
-            const local = try r.localStep(global_step.step);
+            const local = try r.localStep(step.global);
 
             try result.append(allocator, debug.StackFrame{
                 .id = 0,
@@ -704,7 +711,7 @@ pub const Log = struct {
     pub const default_max_length = 32;
 
     /// Log storage length (shared for all shader stages when using buffers). The values is not in this instrument frontend, but should be instead used in the backend.
-    pub fn maxLength(channels: *Processor.Result.Channels, allocator: std.mem.Allocator) !*usize {
+    pub fn maxLength(channels: *Processor.Result.StageChannels, allocator: std.mem.Allocator) !*usize {
         // Stored as a raw numeric value instead of a pointer
         return @ptrCast((try channels.controls.getOrPutValue(allocator, id, @ptrFromInt(default_max_length))).value_ptr);
     }
@@ -741,12 +748,12 @@ pub const Variables = struct {
     pub const default_max_size = 32;
 
     /// Variable storage size (shared for all shader stages when using buffers)
-    pub fn maxSize(channels: *Processor.Result.Channels, allocator: std.mem.Allocator) !*usize {
+    pub fn maxSize(channels: *Processor.Result.StageChannels, allocator: std.mem.Allocator) !*usize {
         // Stored as a raw numeric value instead of a pointer
         return @ptrCast((try channels.controls.getOrPutValue(allocator, id, @ptrFromInt(default_max_size))).value_ptr);
     }
 
-    pub fn actualSize(channels: *Processor.Result.Channels) !*usize {
+    pub fn actualSize(channels: *Processor.Result.StageChannels) !*usize {
         return @ptrCast((try channels.controls.getOrPut(actual)).value_ptr);
     }
 

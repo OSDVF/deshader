@@ -1,4 +1,4 @@
-// Copyright (C) 2024  Ondřej Sabela
+// Copyright (C) 2025  Ondřej Sabela
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -23,9 +23,9 @@ const options = @import("options");
 const common = @import("common");
 const log = common.log;
 const commands = @import("commands.zig");
-const gl_backend = @import("backends/gl.zig");
+const backends = @import("backends.zig");
 const shaders = @import("services/shaders.zig");
-const shader_decls = @import("declarations/shaders.zig");
+const declarations = @import("declarations.zig");
 
 const loaders = @import("backends/loaders.zig");
 const transitive = @import("backends/transitive.zig");
@@ -40,9 +40,15 @@ const String = []const u8;
 pub const std_options = common.logging.std_options;
 const err_format = "{s}: {any}";
 
-const SourcesPayload = shader_decls.SourcesPayload;
-const ProgramPayload = shader_decls.ProgramPayload;
-const ExistsBehavior = shader_decls.ExistsBehavior;
+// Simplify declarations to allow generating stubs from this `main.zig` file without importing `declarations.zig`
+const SourcesPayload = declarations.shaders.SourcesPayload;
+const ProgramPayload = declarations.shaders.ProgramPayload;
+const ExistsBehavior = declarations.shaders.ExistsBehavior;
+const Service = declarations.instruments.Service;
+
+pub export fn deshaderAcquireServiceGL() callconv(.c) ?*Service {
+    return backends.gl.current.toOpaque(); // TODO locking
+}
 
 pub export fn deshaderFreeList(list: [*]const [*:0]const u8, count: usize) callconv(.c) void {
     for (list[0..count]) |item| {
@@ -51,33 +57,33 @@ pub export fn deshaderFreeList(list: [*]const [*:0]const u8, count: usize) callc
     common.allocator.free(list[0..count]);
 }
 
-pub export fn deshaderListPrograms(path: [*:0]const u8, recursive: bool, count: *usize, physical: bool, postfix: ?[*:0]const u8) callconv(.c) ?[*]const [*:0]const u8 {
-    var result = gl_backend.current.Programs.listDir(common.allocator, std.mem.span(path), recursive, physical, if (postfix) |n| std.mem.span(n) else null) catch return null;
+pub export fn deshaderListPrograms(path: [*:0]const u8, recursive: bool, count: *usize, physical: bool, meta: bool, postfix: ?[*:0]const u8) callconv(.c) ?[*]const [*:0]const u8 {
+    var result = backends.gl.current.Programs.listDir(common.allocator, std.mem.span(path), recursive, physical, meta, if (postfix) |n| std.mem.span(n) else null) catch return null;
     count.* = result.items.len;
     return (result.toOwnedSlice(common.allocator) catch return null).ptr;
 }
 
-pub export fn deshaderListSources(path: [*:0]const u8, recursive: bool, count: *usize, physical: bool, postfix: ?[*:0]const u8) callconv(.c) ?[*]const [*:0]const u8 {
-    var result = gl_backend.current.Shaders.listDir(common.allocator, std.mem.span(path), recursive, physical, if (postfix) |n| std.mem.span(n) else null) catch return null;
+pub export fn deshaderListSources(path: [*:0]const u8, recursive: bool, count: *usize, physical: bool, meta: bool, postfix: ?[*:0]const u8) callconv(.c) ?[*]const [*:0]const u8 {
+    var result = backends.gl.current.Shaders.listDir(common.allocator, std.mem.span(path), recursive, physical, meta, if (postfix) |n| std.mem.span(n) else null) catch return null;
     count.* = result.items.len;
     return (result.toOwnedSlice(common.allocator) catch return null).ptr;
 }
 
 /// If `program` == 0, then list all programs. Else list shader stages of a particular program
-pub export fn deshaderListProgramsUntagged(count: *usize, ref_or_root: usize, nested_postfix: ?[*:0]const u8) callconv(.c) ?[*]const [*:0]const u8 {
-    const result = gl_backend.current.Programs.listUntagged(common.allocator, @enumFromInt(ref_or_root), if (nested_postfix) |n| std.mem.span(n) else null, null) catch return null;
+pub export fn deshaderListProgramsUntagged(count: *usize, ref_or_root: usize, meta: bool, nested_postfix: ?[*:0]const u8) callconv(.c) ?[*]const [*:0]const u8 {
+    const result = backends.gl.current.Programs.listUntagged(common.allocator, @enumFromInt(ref_or_root), meta, if (nested_postfix) |n| std.mem.span(n) else null, null) catch return null;
     count.* = result.len;
     return @ptrCast(result);
 }
 
-pub export fn deshaderListSourcesUntagged(count: *usize, ref_or_root: usize, nested_postfix: ?[*:0]const u8) callconv(.c) ?[*]const [*:0]const u8 {
-    const result = gl_backend.current.Shaders.listUntagged(common.allocator, @enumFromInt(ref_or_root), if (nested_postfix) |n| std.mem.span(n) else null, null) catch return null;
+pub export fn deshaderListSourcesUntagged(count: *usize, ref_or_root: usize, meta: bool, nested_postfix: ?[*:0]const u8) callconv(.c) ?[*]const [*:0]const u8 {
+    const result = backends.gl.current.Shaders.listUntagged(common.allocator, @enumFromInt(ref_or_root), meta, if (nested_postfix) |n| std.mem.span(n) else null, null) catch return null;
     count.* = result.len;
     return @ptrCast(result);
 }
 
 pub export fn deshaderRemovePath(path: [*:0]const u8, dir: bool) callconv(.c) usize {
-    gl_backend.current.Shaders.untag(std.mem.span(path), dir) catch |err| {
+    backends.gl.current.Shaders.untag(std.mem.span(path), dir) catch |err| {
         log.err(err_format, .{ @src().fn_name, err });
         if (@errorReturnTrace()) |trace|
             std.debug.dumpStackTrace(trace.*);
@@ -87,7 +93,7 @@ pub export fn deshaderRemovePath(path: [*:0]const u8, dir: bool) callconv(.c) us
 }
 
 pub export fn deshaderRemoveSource(ref: usize) callconv(.c) usize {
-    gl_backend.current.Shaders.remove(@enumFromInt(ref)) catch |err| {
+    backends.gl.current.Shaders.remove(@enumFromInt(ref)) catch |err| {
         log.err(err_format, .{ @src().fn_name, err });
         if (@errorReturnTrace()) |trace|
             std.debug.dumpStackTrace(trace.*);
@@ -96,13 +102,17 @@ pub export fn deshaderRemoveSource(ref: usize) callconv(.c) usize {
     return 0;
 }
 
+pub export fn deshaderReturnServiceGL() callconv(.c) void {
+    // TODO locking
+}
+
 /// # Shader tagging
 /// Deshader creates a virtual file system for better management of your shaders. Use these functions to assign filesystem locations to your shaders and specify dependencies between them. Call them just before you call `glShaderSource` or similar functions.
 /// `path` cannot contain '>'
 ///
 /// Alternatively, glNamedStringARB or glObjectLabel can be used to tag shaders.
 pub export fn deshaderTag(ref: usize, part_index: usize, path: [*:0]const u8, if_exists: ExistsBehavior) callconv(.c) usize {
-    _ = gl_backend.current.Shaders.assignTag(@enumFromInt(ref), part_index, std.mem.span(path), if_exists) catch |err| {
+    _ = backends.gl.current.Shaders.assignTag(@enumFromInt(ref), part_index, std.mem.span(path), if_exists) catch |err| {
         log.err(err_format, .{ @src().fn_name, err });
         if (@errorReturnTrace()) |trace|
             std.debug.dumpStackTrace(trace.*);
@@ -112,9 +122,9 @@ pub export fn deshaderTag(ref: usize, part_index: usize, path: [*:0]const u8, if
 }
 
 /// Set a physical folder as a workspace for shader sources
-pub export fn deshaderPhysicalWorkspace(virtual: [*:0]const u8, physical: [*:0]const u8) callconv(.c) usize {
+pub export fn deshaderPhysicalWorkspace(virt: [*:0]const u8, physical: [*:0]const u8) callconv(.c) usize {
     _ = _try: {
-        gl_backend.current.mapPhysicalToVirtual(std.mem.span(physical), shaders.ResourceLocator.parse(std.mem.span(virtual)) catch |err| break :_try err) catch |err| break :_try err;
+        backends.gl.current.mapPhysicalToVirtual(std.mem.span(physical), shaders.ResourceLocator.parse(std.mem.span(virt)) catch |err| break :_try err) catch |err| break :_try err;
     } catch |err| {
         log.err(err_format, .{ @src().fn_name, err });
         if (@errorReturnTrace()) |trace|
@@ -125,13 +135,13 @@ pub export fn deshaderPhysicalWorkspace(virtual: [*:0]const u8, physical: [*:0]c
 }
 
 pub export fn deshaderTaggedProgram(payload: ProgramPayload, behavior: ExistsBehavior) callconv(.c) usize {
-    gl_backend.current.programCreateUntagged(payload) catch |err| {
+    backends.gl.current.programCreateUntagged(payload) catch |err| {
         log.err(err_format, .{ @src().fn_name, err });
         if (@errorReturnTrace()) |trace|
             std.debug.dumpStackTrace(trace.*);
         return @intFromError(err);
     };
-    _ = gl_backend.current.Programs.assignTag(@enumFromInt(payload.ref), 0, std.mem.span(payload.path.?), behavior) catch |err| {
+    _ = backends.gl.current.Programs.assignTag(@enumFromInt(payload.ref), 0, std.mem.span(payload.path.?), behavior) catch |err| {
         log.err(err_format, .{ @src().fn_name, err });
         if (@errorReturnTrace()) |trace|
             std.debug.dumpStackTrace(trace.*);
@@ -143,7 +153,7 @@ pub export fn deshaderTaggedProgram(payload: ProgramPayload, behavior: ExistsBeh
 pub export fn deshaderTaggedSource(payload: SourcesPayload, if_exists: ExistsBehavior) callconv(.c) usize {
     std.debug.assert(payload.count == 1);
     std.debug.assert(payload.paths != null);
-    gl_backend.current.sourcesCreateUntagged(payload) catch |err| {
+    backends.gl.current.sourcesCreateUntagged(payload) catch |err| {
         log.err(err_format, .{ @src().fn_name, err });
         if (@errorReturnTrace()) |trace|
             std.debug.dumpStackTrace(trace.*);
@@ -151,7 +161,7 @@ pub export fn deshaderTaggedSource(payload: SourcesPayload, if_exists: ExistsBeh
     };
     for (0..payload.count) |i| {
         if (payload.paths.?[i]) |path| {
-            _ = gl_backend.current.Programs.assignTag(@enumFromInt(payload.ref), i, std.mem.span(path), if_exists) catch |err| {
+            _ = backends.gl.current.Programs.assignTag(@enumFromInt(payload.ref), i, std.mem.span(path), if_exists) catch |err| {
                 log.err(err_format, .{ @src().fn_name, err });
                 if (@errorReturnTrace()) |trace|
                     std.debug.dumpStackTrace(trace.*);

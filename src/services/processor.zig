@@ -1,4 +1,4 @@
-// Copyright (C) 2024  Ondřej Sabela
+// Copyright (C) 2025  Ondřej Sabela
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -127,11 +127,11 @@ pub const Result = struct {
     /// The new source code with the inserted instrumentation or null if no changes were made by the instrumentation
     source: ?CString,
     length: usize,
-    channels: Result.Channels,
+    channels: Result.StageChannels,
     spirv: ?String,
 
     /// Actually it can be modified by the platform specific code (e.g. to set the selected thread location)
-    pub const Channels = struct {
+    pub const StageChannels = struct {
         /// Filled with storages created by the individual instruments
         /// Do not access this from instruments directly. Use `Processor.outChannel` instead.
         out: std.AutoArrayHashMapUnmanaged(u64, *OutputStorage) = .empty,
@@ -200,7 +200,7 @@ pub const Result = struct {
     }
 
     /// Frees the source buffer and returns the Output object
-    pub fn toOwnedChannels(self: *@This(), allocator: std.mem.Allocator) Result.Channels {
+    pub fn toOwnedChannels(self: *@This(), allocator: std.mem.Allocator) Result.StageChannels {
         if (self.source) |s| {
             allocator.free(s[0 .. self.length - 1 :0]); // Include the null-terminator (asserting :0 adds one to the length)
         }
@@ -247,18 +247,49 @@ pub const Channels = struct {
 
 pub const Processor = @This();
 pub const Config = struct {
-    pub const Support = struct {
+    pub const Capabilities = struct {
         buffers: bool,
         /// Supports #include directives (ARB_shading_language_include, GOOGL_include_directive)
         include: bool,
         /// Not really a support flag, but an option for the preprocessor to not include any source file multiple times.
         all_once: bool,
+
+        pub const Format = enum { md, json };
+
+        pub fn format(
+            self: @This(),
+            comptime fmt: []const u8,
+            options: std.fmt.FormatOptions,
+            writer: anytype,
+        ) !void {
+            switch (comptime std.meta.stringToEnum(Format, fmt) orelse @compileError("unknown format: '" ++ fmt ++ "'")) {
+                .md => {
+                    // Markdown table
+                    try writer.writeAll(
+                        \\ ## Support table for this context
+                        \\| Feature | Supported |
+                        \\| ------- | --------- |
+                    );
+                    inline for (@typeInfo(@This()).@"struct".fields) |field| {
+                        const supported = @field(self, field.name);
+                        try writer.print(
+                            \\|{s: ^9}| {s: ^11} |
+                            \\
+                        , .{
+                            field.name,
+                            if (supported) "Yes" else "No",
+                        });
+                    }
+                },
+                .json => try std.json.fmt(self, .{ .whitespace = .indent_tab }).format(fmt, options, writer),
+            }
+        }
     };
 
     allocator: std.mem.Allocator,
     spec: analyzer.Spec,
     source: String,
-    support: Support,
+    support: Capabilities,
     /// Turn of deducing supported features from the declared GLSL source code version and extensions
     force_support: bool,
     group_dim: []const usize,
@@ -293,7 +324,7 @@ threads: []usize = undefined,
 /// Offset of #version directive (if any was found)
 after_version: usize = 0,
 arena: std.heap.ArenaAllocator = undefined,
-channels: Result.Channels = .{ // undefined fields will be assigned in setup()
+channels: Result.StageChannels = .{ // undefined fields will be assigned in setup()
     .group_dim = undefined,
     .functions = undefined,
 },
@@ -319,7 +350,7 @@ pub const templates = struct {
     pub const prefix = "deshader_";
     pub const cursor = "cursor";
     const temp = prefix ++ "temp";
-    pub const temp_thread_id = prefix ++ "threads";
+    pub const temp_thread_counts = prefix ++ "threads";
     /// Provided as a identifier of the current thread in global space
     pub const global_thread_id = prefix ++ "global_id";
     pub const wg_size = Processor.templates.prefix ++ "workgroup_size";
@@ -332,7 +363,7 @@ pub fn deinit(self: *@This()) void {
     self.channels.deinit(self.config.allocator);
 }
 
-pub fn toOwnedChannels(self: *@This()) Result.Channels {
+pub fn toOwnedChannels(self: *@This()) Result.StageChannels {
     self.config.allocator.free(self.threads);
     self.inserts.deinit(self.config.allocator);
     self.scratch.deinit(self.config.allocator);
@@ -549,22 +580,22 @@ pub fn declareThreadId(self: *@This()) !void {
     switch (self.config.shader_stage) {
         .gl_fragment, .vk_fragment => {
             try self.insertStart(try self.print(
-                "const uvec2 " ++ templates.temp_thread_id ++ "= uvec2({d}, {d});\n" ++
-                    "uint " ++ templates.global_thread_id ++ " = uint(gl_FragCoord.y) * " ++ templates.temp_thread_id ++ ".x + uint(gl_FragCoord.x);\n",
+                "const uvec2 " ++ templates.temp_thread_counts ++ "= uvec2({d}, {d});\n" ++
+                    "uint " ++ templates.global_thread_id ++ " = uint(gl_FragCoord.y) * " ++ templates.temp_thread_counts ++ ".x + uint(gl_FragCoord.x);\n",
                 .{ self.threads[0], self.threads[1] },
             ), self.after_version);
         },
         .gl_geometry => {
             try self.insertStart(try self.print(
-                "const uint " ++ templates.temp_thread_id ++ "= {d};\n" ++
-                    "uint " ++ templates.global_thread_id ++ "= gl_PrimitiveIDIn * " ++ templates.temp_thread_id ++ " + gl_InvocationID;\n",
+                "const uint " ++ templates.temp_thread_counts ++ "= {d};\n" ++
+                    "uint " ++ templates.global_thread_id ++ "= gl_PrimitiveIDIn * " ++ templates.temp_thread_counts ++ " + gl_InvocationID;\n",
                 .{self.threads[0]},
             ), self.after_version);
         },
         .gl_tess_evaluation => {
             try self.insertStart(try self.print(
-                "ivec2 " ++ templates.temp_thread_id ++ "= ivec2(gl_TessCoord.xy * float({d}-1) + 0.5);\n" ++
-                    "uint " ++ templates.global_thread_id ++ " =" ++ templates.temp_thread_id ++ ".y * {d} + " ++ templates.temp_thread_id ++ ".x;\n",
+                "ivec2 " ++ templates.temp_thread_counts ++ "= ivec2(gl_TessCoord.xy * float({d}-1) + 0.5);\n" ++
+                    "uint " ++ templates.global_thread_id ++ " =" ++ templates.temp_thread_counts ++ ".y * {d} + " ++ templates.temp_thread_counts ++ ".x;\n",
                 .{ self.threads[0], self.threads[0] },
             ), self.after_version);
         },

@@ -1,4 +1,4 @@
-// Copyright (C) 2024  Ondřej Sabela
+// Copyright (C) 2025  Ondřej Sabela
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -48,7 +48,7 @@ const ids = @cImport(@cInclude("commands.h"));
 const CString = [*:0]const u8;
 const String = []const u8;
 const uvec2 = struct { u32, u32 };
-const Support = Processor.Config.Support;
+const Support = Processor.Config.Capabilities;
 
 const BufferType = enum(gl.@"enum") {
     AtomicCounter = gl.ATOMIC_COUNTER_BUFFER,
@@ -60,7 +60,7 @@ const BufferType = enum(gl.@"enum") {
 /// Managed per-context state. Stores descriptive information which cannot be directly queried from OpenGL.
 const ContextState = struct {
     proc_table: gl.ProcTable = undefined,
-    gl: loaders.GlBackend, // TODO: encapsulate the whole gl_shaders into a backend-specific service
+    gl: loaders.GlBackend, // TODO: encapsulate the whole gl.zig into a backend-specific service
     primitives_written_queries: std.ArrayListUnmanaged(gl.uint) = .empty,
 
     // memory for used indexed buffer binding indexed. OpenGL does not provide a standard way to query them.
@@ -69,14 +69,20 @@ const ContextState = struct {
 
     replacement_attachment_textures: [32]gl.uint = [_]gl.uint{0} ** 32,
     /// Readback buffers for the
-    readbacks: std.AutoHashMapUnmanaged(instr_decls.InstrumentId, Readback) = .empty,
-    max_buffers: gl.int = 0,
-    max_xfb_streams: gl.int = 0,
-    max_xfb_buffers: gl.int = 0,
-    max_xfb_sep_components: gl.int = 0,
-    max_xfb_sep_attribs: gl.int = 0,
-    max_xfb_interleaved_components: gl.int = 0,
-    max_attachments: gl.uint = 0,
+    readbacks: std.AutoHashMapUnmanaged(instr_decls.InstrumentId, instr_decls.Readback) = .empty,
+    /// Platform limits
+    max: struct {
+        attachments: gl.uint = 0,
+        buffers: gl.int = 0,
+        /// Transform feedback platform limits
+        xfb: struct {
+            streams: gl.int = 0,
+            buffers: gl.int = 0,
+            sep_components: gl.int = 0,
+            sep_attribs: gl.int = 0,
+            interleaved_components: gl.int = 0,
+        } = .{},
+    } = .{},
 
     fn deinit(s: *@This()) void {
         var sit = s.search_paths.valueIterator();
@@ -101,26 +107,20 @@ const ContextState = struct {
         {
             var it = s.readbacks.valueIterator();
             while (it.next()) |v| {
-                v.deinit();
+                deinitReadback(v);
             }
         }
         s.readbacks.deinit(common.allocator);
         gl.makeProcTableCurrent(prev_proc_table);
     }
-};
 
-pub const Readback = struct {
-    data: []u8,
-    /// Handle to the storage created in the GL API.
-    /// GL_BUFFER or GL_TEXTURE
-    ref: gl.uint,
-
-    fn deinit(self: *@This()) void {
+    fn deinitReadback(self: *instr_decls.Readback) void {
         common.allocator.free(self.data);
-        if (gl.IsBuffer(self.ref) == gl.TRUE) {
-            gl.DeleteBuffers(1, (&self.ref)[0..1]);
+        var r: gl.uint = @intCast(self.ref);
+        if (gl.IsBuffer(r) == gl.TRUE) {
+            gl.DeleteBuffers(1, (&r)[0..1]);
         } else {
-            gl.DeleteTextures(1, (&self.ref)[0..1]);
+            gl.DeleteTextures(1, (&r)[0..1]);
         }
     }
 };
@@ -187,6 +187,8 @@ const Snapshot = struct {
     read_buffer: gl.uint = undefined,
     /// The previous framebuffer binding
     fbo: gl.uint = 0,
+    /// The previous renderbuffer binding
+    rbo: gl.uint = 0,
 
     /// (un)pack parameters
     const Pack = struct {
@@ -243,6 +245,8 @@ const Snapshot = struct {
         gl.GetIntegerv(gl.PIXEL_PACK_BUFFER_BINDING, @ptrCast(&snapshot.pixel_pack_buffer));
         // Read buffer
         gl.GetIntegerv(gl.READ_BUFFER, @ptrCast(&snapshot.read_buffer));
+        // Renderbuffer
+        gl.GetIntegerv(gl.RENDERBUFFER_BINDING, @ptrCast(&snapshot.rbo));
 
         // (un)pack parameters
         snapshot.pack = getGlParams(Pack, "PACK_");
@@ -303,12 +307,12 @@ const Snapshot = struct {
     }
 
     fn restore(snapshot: Snapshot) !void {
-        log.info("Restoring pipeline state", .{});
+        log.debug("Restoring pipeline shapshot", .{});
         var it = current.state.valueIterator();
         while (it.next()) |value| {
             for (value.instruments.values()) |instrument| {
                 if (instrument.onRestore) |onRestore| {
-                    onRestore(current) catch |err| {
+                    onRestore(current.toOpaque()) catch |err| {
                         log.err("Instrumentation backend onRestore failed: {} at {?}", .{ err, @errorReturnTrace() });
                     };
                 }
@@ -318,6 +322,9 @@ const Snapshot = struct {
         gl.ReadBuffer(snapshot.read_fbo);
 
         // restore the previous framebuffer binding
+        gl.BindFramebuffer(gl.DRAW_FRAMEBUFFER, snapshot.fbo);
+        gl.BindFramebuffer(gl.READ_FRAMEBUFFER, snapshot.read_fbo);
+        gl.BindRenderbuffer(gl.RENDERBUFFER, snapshot.rbo);
         gl.BindBuffer(gl.PIXEL_PACK_BUFFER, snapshot.pixel_pack_buffer);
 
         // (un)pack parameters
@@ -459,7 +466,7 @@ fn instrumentCompute(num_groups: [3]usize, program: *shaders.Shader.Program, gen
             .used_buffers = general_params.used_buffers,
             .used_interface = empty,
             .max_attachments = 0,
-            .max_buffers = @intCast(c_state.max_buffers),
+            .max_buffers = @intCast(c_state.max.buffers),
             .max_xfb = 0,
             .screen = [_]usize{ 0, 0 },
             .search_paths = if (state.getPtr(current.context)) |s| s.search_paths else null,
@@ -703,8 +710,12 @@ fn prepareStorage(instrumentation: *shaders.InstrumentationResult, snapshot: Sna
 
                             if (!readback.found_existing) {
                                 // Create a debug attachment for the framebuffer
-                                gl.GenTextures(1, (&readback.value_ptr.ref)[0..1]);
-                                gl.BindTexture(gl.TEXTURE_2D, readback.value_ptr.ref);
+                                {
+                                    var new: gl.uint = undefined;
+                                    gl.GenTextures(1, (&new)[0..1]);
+                                    gl.BindTexture(gl.TEXTURE_2D, new);
+                                    readback.value_ptr.ref = new; // cast to u64
+                                }
                                 const format = formatToPlatform(interface.format);
                                 gl.TexImage2D(gl.TEXTURE_2D, 0, format.internal_format, @intCast(instr_state.params.context.screen[0]), @intCast(instr_state.params.context.screen[1]), 0, format.format, format.type, null);
                             }
@@ -732,23 +743,25 @@ fn prepareStorage(instrumentation: *shaders.InstrumentationResult, snapshot: Sna
                                     gl.TexImage2D(gl.TEXTURE_2D, 0, gl.RGBA, @intCast(instr_state.params.context.screen[0]), @intCast(instr_state.params.context.screen[1]), 0, gl.RGBA, gl.FLOAT, null);
                                 }
                             }
-                            gl.NamedFramebufferTexture(result.fbo, gl.COLOR_ATTACHMENT0 + @as(gl.@"enum", @intCast(interface.location)), readback.value_ptr.ref, 0);
+                            gl.FramebufferTexture(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0 + @as(gl.@"enum", @intCast(interface.location)), @intCast(readback.value_ptr.ref), 0);
                         },
                         else => unreachable, //TODO transform feedback
                     }
                 },
                 .buffer => |buffer| {
                     if (!readback.found_existing) {
-                        gl.GenBuffers(1, (&readback.value_ptr.ref)[0..1]);
-                        gl.BindBufferBase(gl.SHADER_STORAGE_BUFFER, @intCast(buffer.binding), readback.value_ptr.ref);
-                        gl.NamedBufferStorage(readback.value_ptr.ref, @intCast(readback.value_ptr.data.len), null, gl.CLIENT_STORAGE_BIT);
+                        var new: gl.uint = undefined;
+                        gl.GenBuffers(1, (&new)[0..1]);
+                        gl.BindBufferBase(gl.SHADER_STORAGE_BUFFER, @intCast(buffer.binding), new);
+                        gl.BufferStorage(gl.SHADER_STORAGE_BUFFER, @intCast(readback.value_ptr.data.len), null, gl.CLIENT_STORAGE_BIT);
+                        readback.value_ptr.ref = new; // cast to u64
                     }
                 },
             }
         }
         for (instr_state.instruments.values()) |*instr| {
             if (instr.onBeforeDraw) |onBeforeDraw| {
-                onBeforeDraw(current, instrumentation) catch |err| {
+                onBeforeDraw(current.toOpaque(), instrumentation.toOpaque()) catch |err| {
                     log.err("Instrumentation backend onBeforeDraw failed: {} at {?}", .{ err, @errorReturnTrace() });
                 };
             }
@@ -793,11 +806,12 @@ fn readPixels(x: gl.int, y: gl.int, width: gl.sizei, height: gl.sizei, format: g
 
 fn processOutput(instrumentation: shaders.InstrumentationResult, platform: instr_decls.PlatformParamsGL) !void {
     const c_state = state.getPtr(current.context).?;
+    gl.MemoryBarrier(gl.BUFFER_UPDATE_BARRIER_BIT | gl.FRAMEBUFFER_BARRIER_BIT);
     for (instrumentation.stages.keys(), instrumentation.stages.values()) |shader_ref, st| {
         const stage = current.Shaders.all.get(shader_ref).?.items[0].stage;
         for (st.channels.out.keys(), st.channels.out.values()) |key, stor| {
             if (!stor.lazy) {
-                const readback: *Readback = c_state.readbacks.getPtr(key).?;
+                const readback: *instr_decls.Readback = c_state.readbacks.getPtr(key).?;
                 switch (stor.location) {
                     .interface => |interface| {
                         switch (stage) {
@@ -821,7 +835,8 @@ fn processOutput(instrumentation: shaders.InstrumentationResult, platform: instr
                         }
                     },
                     .buffer => |buffer| {
-                        gl.BindBuffer(gl.SHADER_STORAGE_BUFFER, readback.ref);
+                        gl.BindBuffer(gl.SHADER_STORAGE_BUFFER, @intCast(readback.ref));
+                        // TODO: use mapBuffer
                         gl.GetBufferSubData(gl.SHADER_STORAGE_BUFFER, @intCast(buffer.offset), @intCast(readback.data.len), readback.data.ptr);
                     },
                 }
@@ -830,7 +845,7 @@ fn processOutput(instrumentation: shaders.InstrumentationResult, platform: instr
     }
     for (current.instrument_clients.items) |*instrument| {
         if (instrument.onResult) |onResult| {
-            onResult(current, &instrumentation, &platform) catch |err| {
+            onResult(current.toOpaque(), instrumentation.toOpaqueConst(), @ptrCast(&c_state.readbacks), platform.toOpaque()) catch |err| {
                 log.err("Instrumentation client onResult failed: {}", .{err});
             };
         }
@@ -879,8 +894,9 @@ fn getFrambufferSize(fbo: gl.uint) [2]gl.int {
         gl.GetTextureLevelParameteriv(attachment_object_name, 0, gl.TEXTURE_WIDTH, @ptrCast(&result[0]));
         gl.GetTextureLevelParameteriv(gl.TEXTURE_2D, 0, gl.TEXTURE_HEIGHT, @ptrCast(&result[1]));
     } else if (attachment_object_type == gl.RENDERBUFFER) {
-        gl.GetNamedRenderbufferParameteriv(attachment_object_name, gl.RENDERBUFFER_WIDTH, @ptrCast(&result[0]));
-        gl.GetNamedRenderbufferParameteriv(attachment_object_name, gl.RENDERBUFFER_HEIGHT, @ptrCast(&result[1]));
+        gl.BindRenderbuffer(gl.RENDERBUFFER, attachment_object_name);
+        gl.GetRenderbufferParameteriv(gl.RENDERBUFFER, gl.RENDERBUFFER_WIDTH, @ptrCast(&result[0]));
+        gl.GetRenderbufferParameteriv(gl.RENDERBUFFER, gl.RENDERBUFFER_HEIGHT, @ptrCast(&result[1]));
     }
     return result;
 }
@@ -919,7 +935,7 @@ fn getContextParams(program: *shaders.Shader.Program) !shaders.State.Params.Cont
 
     // Can be u5 because maximum attachments is limited to 32 by the API, and is often limited to 8
     // TODO query GL_PROGRAM_OUTPUT to check actual used attachments
-    var used_attachments = try std.ArrayList(u5).initCapacity(common.allocator, @intCast(c_state.max_attachments));
+    var used_attachments = try std.ArrayList(u5).initCapacity(common.allocator, @intCast(c_state.max.attachments));
     defer used_attachments.deinit();
 
     // NOTE we assume that all attachments that shader really uses are bound
@@ -963,9 +979,9 @@ fn getContextParams(program: *shaders.Shader.Program) !shaders.State.Params.Cont
     var buffer_mode: gl.int = 0;
     gl.GetProgramiv(program.ref.cast(gl.uint), gl.TRANSFORM_FEEDBACK_BUFFER_MODE, &buffer_mode);
     return shaders.State.Params.Context{
-        .max_attachments = c_state.max_attachments,
-        .max_buffers = @intCast(c_state.max_buffers),
-        .max_xfb = if (buffer_mode == gl.SEPARATE_ATTRIBS) @max(0, c_state.max_xfb_streams * c_state.max_xfb_sep_components) else @max(0, c_state.max_xfb_interleaved_components),
+        .max_attachments = c_state.max.attachments,
+        .max_buffers = @intCast(c_state.max.buffers),
+        .max_xfb = if (buffer_mode == gl.SEPARATE_ATTRIBS) @max(0, c_state.max.xfb.streams * c_state.max.xfb.sep_components) else @max(0, c_state.max.xfb.interleaved_components),
         .program = program,
         .search_paths = c_state.search_paths,
         .screen = screen_u,
@@ -978,7 +994,7 @@ fn beginXfbQueries() void {
     const c_state = state.getPtr(current.context).?;
     const queries = &c_state.primitives_written_queries;
     // TODO handle stale queries from previous frame
-    for (0..@intCast(c_state.max_xfb_buffers)) |i| {
+    for (0..@intCast(c_state.max.xfb.buffers)) |i| {
         var xfb_stream: gl.int = 0;
         // check if some buffer is bound to the stream `i`
         gl.GetIntegeri_v(gl.TRANSFORM_FEEDBACK_BUFFER_BINDING, @intCast(i), (&xfb_stream)[0..1]);
@@ -1094,7 +1110,7 @@ pub export fn glDispatchComputeIndirect(address: gl.intptr) callconv(.c) void {
         var buffer: gl.int = 0;
         gl.GetIntegerv(gl.DISPATCH_INDIRECT_BUFFER_BINDING, @ptrCast(&buffer));
         if (buffer != 0) {
-            gl.GetNamedBufferSubData(@intCast(buffer), address, @sizeOf(IndirectComputeCommand), &command);
+            gl.GetBufferSubData(gl.DISPATCH_INDIRECT_BUFFER, address, @sizeOf(IndirectComputeCommand), &command);
         }
 
         dispatchDebugCompute(instrumentCompute, .{[_]usize{ @intCast(command.num_groups_x), @intCast(command.num_groups_y), @intCast(command.num_groups_z) }}, gl.DispatchComputeIndirect, .{address});
@@ -2174,14 +2190,14 @@ pub fn makeCurrent(comptime api: anytype, params: anytype, c: ?*const anyopaque)
                 }
             };
 
-            if (c_state.max_xfb_streams == 0) {
-                gl.GetIntegerv(gl.MAX_COLOR_ATTACHMENTS, @ptrCast(&c_state.max_attachments));
-                gl.GetIntegerv(gl.MAX_SHADER_STORAGE_BUFFER_BINDINGS, @ptrCast(&c_state.max_buffers));
-                gl.GetIntegerv(gl.MAX_TRANSFORM_FEEDBACK_BUFFERS, (&c_state.max_xfb_buffers)[0..1]);
-                gl.GetIntegerv(gl.MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS, (&c_state.max_xfb_interleaved_components)[0..1]);
-                gl.GetIntegerv(gl.MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS, (&c_state.max_xfb_sep_attribs)[0..1]);
-                gl.GetIntegerv(gl.MAX_TRANSFORM_FEEDBACK_SEPARATE_COMPONENTS, (&c_state.max_xfb_sep_components)[0..1]);
-                gl.GetIntegerv(gl.MAX_VERTEX_STREAMS, (&c_state.max_xfb_streams)[0..1]);
+            if (c_state.max.xfb.streams == 0) {
+                gl.GetIntegerv(gl.MAX_COLOR_ATTACHMENTS, @ptrCast(&c_state.max.attachments));
+                gl.GetIntegerv(gl.MAX_SHADER_STORAGE_BUFFER_BINDINGS, @ptrCast(&c_state.max.buffers));
+                gl.GetIntegerv(gl.MAX_TRANSFORM_FEEDBACK_BUFFERS, (&c_state.max.xfb.buffers)[0..1]);
+                gl.GetIntegerv(gl.MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS, (&c_state.max.xfb.interleaved_components)[0..1]);
+                gl.GetIntegerv(gl.MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS, (&c_state.max.xfb.sep_attribs)[0..1]);
+                gl.GetIntegerv(gl.MAX_TRANSFORM_FEEDBACK_SEPARATE_COMPONENTS, (&c_state.max.xfb.sep_components)[0..1]);
+                gl.GetIntegerv(gl.MAX_VERTEX_STREAMS, (&c_state.max.xfb.streams)[0..1]);
             }
 
             try contextInvalidatedEvent();
@@ -2235,12 +2251,12 @@ pub fn deinit() void {
 }
 //#endregion
 
-pub const default_instrument_clients = blk: {
+const default_instrument_clients = blk: {
     var count = 0;
     const i_decls = std.meta.declarations(gl_instruments);
     for (i_decls) |decl| {
         const instr_def = @field(gl_instruments, decl.name);
-        if ((@typeInfo(@TypeOf(instr_def)) != .@"struct")) {
+        if ((@typeInfo(instr_def) != .@"struct")) {
             //probabaly not an instrument definition
             continue;
         }
@@ -2249,16 +2265,15 @@ pub const default_instrument_clients = blk: {
     var instrs: [count]instr_decls.InstrumentClient = undefined;
     for (i_decls, 0..) |decl, i| {
         const instr_def = @field(gl_instruments, decl.name);
-        if ((@typeInfo(@TypeOf(instr_def)) != .@"struct")) {
+        if ((@typeInfo(instr_def) != .@"struct")) {
             //probabaly not an instrument definition
             continue;
         }
         const instr = instr_decls.InstrumentClient{
-            .init = if (@hasField(instr_def, "init")) &instr_def.init else null,
-            .deinit = if (@hasField(instr_def, "deinit")) &instr_def.deinit else null,
-            .onBeforeDraw = if (@hasField(instr_def, "onBeforeDraw")) &instr_def.onBeforeDraw else null,
-            .onResult = if (@hasField(instr_def, "onResult")) &instr_def.onResult else null,
-            .onRestore = if (@hasField(instr_def, "onRestore")) &instr_def.onRestore else null,
+            .deinit = if (@hasDecl(instr_def, "deinit")) @ptrCast(&instr_def.deinit) else null,
+            .onBeforeDraw = if (@hasDecl(instr_def, "onBeforeDraw")) @ptrCast(&instr_def.onBeforeDraw) else null,
+            .onResult = if (@hasDecl(instr_def, "onResult")) @ptrCast(&instr_def.onResult) else null,
+            .onRestore = if (@hasDecl(instr_def, "onRestore")) @ptrCast(&instr_def.onRestore) else null,
         };
         instrs[i] = instr;
     }

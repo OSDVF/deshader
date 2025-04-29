@@ -234,3 +234,5 @@ Deshader is licensed under the [GPL-3.0](https://www.gnu.org/licenses/gpl-3.0.ht
 This repository also contains third-party software, which is licensed under their respective licenses. See [NOTICES](NOTICES.md) for more information.
 
 If Deshader saved some of your time, you can leave a comment in the [discussions](https://github.com/OSDVF/deshader/discussions) or [star](https://github.com/OSDVF/deshader/star) the repo.
+
+And promise me you won't use the time saved by using Deshader to do more work, but to do more living instead.

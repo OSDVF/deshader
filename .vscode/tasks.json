@@ -86,8 +86,8 @@
                 "focus": false,
                 "panel": "shared",
                 "showReuseMessage": true,
-                "clear": true,
-            },
+                "clear": true
+            }
         },
         {
             "label": "Build Documentation",
@@ -185,7 +185,8 @@
                 "-Dotype=None",
                 "-Dllvm=false"
             ],
-            "group": "build"
+            "group": "build",
+            "problemMatcher": "$zig"
         },
         {
             "label": "Check errors continuously",
@@ -201,8 +202,7 @@
                 "--summary",
                 "none"
             ],
-            "problemMatcher": "$zig",
-            "group": "build"
+            "problemMatcher": []
         },
         {
             "label": "Build Examples",
@@ -306,7 +306,7 @@
             "problemMatcher": []
         },
         {
-            "label": "Build Headers Generator",
+            "label": "Build and run Headers Generator",
             "command": "zig",
             "args": [
                 "build",
@@ -345,7 +345,8 @@
             "command": "zig",
             "args": [
                 "build",
-                "dependencies"
+                "vcpkg",
+                "editor"
             ],
             "problemMatcher": "$zig",
             "group": "build",

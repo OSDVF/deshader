@@ -1,4 +1,4 @@
-// Copyright (C) 2024  Ondřej Sabela
+// Copyright (C) 2025  Ondřej Sabela
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -122,7 +122,7 @@ pub const OutputEvent = struct {
 };
 
 pub const Breakpoint = struct {
-    /// For Deshader specifically, this is the stop point index.
+    /// Must be session-unique
     id: ?usize,
     verified: bool = false,
     message: ?String = null,

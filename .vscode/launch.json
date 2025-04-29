@@ -300,14 +300,5 @@
                 "set environment DESHADER_PROCESS example_quad"
             ],
         },
-        {
-            "type": "gdb",
-            "request": "launch",
-            "name": "GDB - Header Generator",
-            "target": "./zig-out/bin/generate_headers",
-            "cwd": "${workspaceRoot}",
-            "valuesFormatting": "parseText",
-            "preLaunchTask": "Build Headers Generator",
-        }
     ]
 }

@@ -9,7 +9,13 @@ void main() {
     fColor = vec4(vColor, 1);
     test = 1;
     dummy[1] = 3;
-    if(test == 1) {
+    if(test == 1, test == 2) {
         test = 2;
+    } else if (test == 2) {
+        test = 3;
+        dummy[0] = 2;
+    } else {
+        test = 4;
+        dummy[0] = 3;
     }
 }
