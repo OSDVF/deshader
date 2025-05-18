@@ -61,6 +61,9 @@ const ContextState = struct {
 
     // memory for used indexed buffer binding indexed. OpenGL does not provide a standard way to query them.
     indexed_buffer_bindings: std.EnumMap(BufferType, usize) = .{},
+    /// Maps buffer textures to the underlying buffer refs
+    tex_buffers: std.AutoHashMapUnmanaged(gl.uint, gl.uint) = .empty,
+    tex_target: std.AutoHashMapUnmanaged(gl.uint, gl.@"enum") = .empty,
     search_paths: std.AutoHashMapUnmanaged(shaders.Shader.Stage.Ref, []String) = .empty,
 
     replacement_attachment_textures: [32]gl.uint = [_]gl.uint{0} ** 32,
@@ -155,6 +158,8 @@ const ContextState = struct {
         }
         s.readbacks.deinit(common.allocator);
         s.readbacks_cache.deinit(common.allocator);
+        s.tex_buffers.deinit(common.allocator);
+        s.tex_target.deinit(common.allocator);
         gl.makeProcTableCurrent(prev_proc_table);
     }
 
@@ -259,9 +264,11 @@ inline fn getUinteger(parameter: gl.@"enum") Error!gl.uint {
 
 /// Holds the state before the instrumentation process
 const Snapshot = struct {
+    copy_read: gl.uint = 0,
+    copy_write: gl.uint = 0,
     /// The previous drawBuffers configuration
-    draw_buffers: [32]c_uint = [_]c_uint{0} ** 32,
-    draw_buffers_len: c_uint = 0,
+    draw_buffers: [32]c_uint,
+    draw_buffers_len: c_uint,
     pixel_pack_buffer: c_uint,
     pack: Pack,
     unpack: Pack,
@@ -272,6 +279,347 @@ const Snapshot = struct {
     fbo: gl.uint = 0,
     /// The previous renderbuffer binding
     rbo: gl.uint = 0,
+    ssbo: gl.uint = 0,
+
+    /// Writable memory snapshot
+    memory: Memory,
+
+    const Memory = struct {
+        // TODO other types of writable
+        textures: TextureCache,
+        /// special source 0 means "buffer used by a texture"
+        buffers: ObjectCache,
+        renderbuffers: ObjectCache,
+
+        pub fn capture(program: *const shaders.Shader.Program, draw_buffers: *const [32]gl.uint) !@This() {
+            const program_ref = program.ref.cast(gl.uint);
+            const c_state = state.getPtr(current.context) orelse return error.NoState;
+
+            var buffers = ObjectCache.empty;
+            var renderbuffers = ObjectCache.empty;
+            var textures = TextureCache.empty;
+
+            // query program interface
+            { // Buffers
+                var count: gl.int = 0;
+                gl.GetProgramInterfaceiv(program_ref, gl.SHADER_STORAGE_BLOCK, gl.ACTIVE_RESOURCES, (&count)[0..1]);
+                var i: gl.uint = 0;
+                while (i < count) : (i += 1) {
+                    const param: gl.@"enum" = gl.BUFFER_BINDING;
+                    // SAFETY: assigned right after by OpenGL
+                    var source: gl.uint = undefined; // get the binding number
+                    gl.GetProgramResourceiv(program_ref, gl.SHADER_STORAGE_BLOCK, i, 1, (&param)[0..1], 1, null, @ptrCast(&source));
+                    if (buffers.contains(source)) continue;
+
+                    if (source != 0) {
+                        try copyBuffer(&buffers, source);
+                    }
+                }
+            }
+            {
+                // Images
+                var count: gl.int = 0;
+                gl.GetProgramiv(program_ref, gl.ACTIVE_UNIFORMS, &count);
+                if (count > 0) {
+                    const indices = try common.allocator.alloc(gl.uint, @intCast(count));
+                    const result = try common.allocator.alloc(gl.int, @intCast(count));
+                    defer common.allocator.free(indices);
+                    defer common.allocator.free(result);
+
+                    for (0..@intCast(count), indices) |i, *index| {
+                        index.* = @intCast(i);
+                    }
+
+                    gl.GetActiveUniformsiv(program_ref, count, indices.ptr, gl.UNIFORM_TYPE, result.ptr);
+                    for (result, 0..@intCast(count)) |r, location| {
+                        // SAFETY: assigned right after by OpenGL
+                        var unit: gl.int = undefined;
+                        gl.GetUniformiv(program_ref, @intCast(location), (&unit)[0..1]);
+
+                        if (unit > 0) {
+                            // SAFETY: assigned right after by OpenGL
+                            var texture: gl.int = undefined;
+                            gl.GetIntegeri_v(gl.IMAGE_BINDING_NAME, @intCast(unit), (&texture)[0..1]);
+                            if (imageToTarget(@intCast(r)) orelse c_state.tex_target.get(@intCast(texture))) |target| {
+                                var level: gl.int = 0;
+                                gl.GetIntegeri_v(gl.IMAGE_BINDING_LEVEL, @intCast(unit), (&level)[0..1]);
+                                var is_layered: gl.int = 0;
+                                gl.GetIntegeri_v(gl.IMAGE_BINDING_LAYERED, @intCast(unit), (&is_layered)[0..1]);
+                                var layer: gl.int = 0;
+                                gl.GetIntegeri_v(gl.IMAGE_BINDING_LAYER, @intCast(unit), (&layer)[0..1]);
+
+                                copyTexture(
+                                    &textures,
+                                    &buffers,
+                                    target,
+                                    c_state,
+                                    @intCast(texture),
+                                    level,
+                                    if (is_layered == gl.FALSE) layer else null,
+                                ) catch continue;
+                            }
+                        }
+                    }
+                }
+            }
+            {
+                // Renderbuffers and framebuffer textures
+                // enumerate renderbuffers used in drawbuffers, chgeck agains program interface
+                var interface = try getOutputInterface(program_ref);
+                defer interface.deinit(common.allocator);
+
+                var last_interface_match: usize = 0;
+
+                for (draw_buffers, 0..) |db, i| {
+                    if (db == 0) continue;
+
+                    // filter out unused attachments
+                    for (interface.items[last_interface_match..]) |location| {
+                        if (location == i) {
+                            last_interface_match = i;
+                            break;
+                        }
+                    } else continue;
+
+                    // SAFETY: assigned right after
+                    var t: gl.int = undefined;
+                    gl.GetFramebufferAttachmentParameteriv(gl.DRAW_FRAMEBUFFER, db, gl.FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE, &t);
+
+                    // SAFETY: assigned right after by OpenGL
+                    var name: gl.int = undefined;
+                    gl.GetFramebufferAttachmentParameteriv(gl.DRAW_FRAMEBUFFER, db, gl.FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, &name);
+
+                    switch (t) {
+                        gl.TEXTURE => {
+                            var level: gl.int = gl.FALSE;
+                            gl.GetFramebufferAttachmentParameteriv(gl.DRAW_FRAMEBUFFER, db, gl.FRAMEBUFFER_ATTACHMENT_TEXTURE_LEVEL, &level);
+                            var face: gl.int = gl.FALSE;
+                            gl.GetFramebufferAttachmentParameteriv(gl.DRAW_FRAMEBUFFER, db, gl.FRAMEBUFFER_ATTACHMENT_TEXTURE_CUBE_MAP_FACE, &face);
+                            var layer: gl.int = gl.FALSE;
+                            gl.GetFramebufferAttachmentParameteriv(gl.DRAW_FRAMEBUFFER, db, gl.FRAMEBUFFER_ATTACHMENT_TEXTURE_LAYER, &layer);
+                            var is_layered: gl.int = gl.FALSE;
+                            gl.GetFramebufferAttachmentParameteriv(gl.DRAW_FRAMEBUFFER, db, gl.FRAMEBUFFER_ATTACHMENT_LAYERED, &is_layered);
+
+                            const target = c_state.tex_target.get(@intCast(name)) orelse continue;
+
+                            copyTexture(
+                                &textures,
+                                &buffers,
+                                target,
+                                c_state,
+                                @intCast(name),
+                                level,
+                                if (is_layered == gl.FALSE) layer else null,
+                            ) catch continue;
+                        },
+                        gl.RENDERBUFFER => {
+                            gl.BindRenderbuffer(gl.RENDERBUFFER, @intCast(name));
+
+                            // SAFETY: assigned right below
+                            var width: gl.int = undefined;
+                            // SAFETY: assigned right below
+                            var height: gl.int = undefined;
+                            gl.GetRenderbufferParameteriv(gl.RENDERBUFFER, gl.RENDERBUFFER_WIDTH, (&width)[0..1]);
+                            gl.GetRenderbufferParameteriv(gl.RENDERBUFFER, gl.RENDERBUFFER_HEIGHT, (&height)[0..1]);
+                            // SAFETY: assigned right below
+                            var internal_format: gl.int = undefined;
+                            gl.GetRenderbufferParameteriv(gl.RENDERBUFFER, gl.RENDERBUFFER_INTERNAL_FORMAT, (&internal_format)[0..1]);
+                            // SAFETY: assigned right below
+                            var samples: gl.int = undefined;
+                            gl.GetRenderbufferParameteriv(gl.RENDERBUFFER, gl.RENDERBUFFER_SAMPLES, (&samples)[0..1]);
+
+                            // SAFETY: assigned right below
+                            var cache: gl.uint = undefined;
+                            gl.GenRenderbuffers(1, (&cache)[0..1]);
+                            gl.BindRenderbuffer(gl.RENDERBUFFER, cache);
+
+                            if (samples > 0) {
+                                gl.RenderbufferStorageMultisample(gl.RENDERBUFFER, samples, @intCast(internal_format), width, height);
+                            } else {
+                                gl.RenderbufferStorage(gl.RENDERBUFFER, @intCast(internal_format), width, height);
+                            }
+
+                            gl.CopyImageSubData(@intCast(name), gl.RENDERBUFFER, 0, 0, 0, 0, cache, gl.RENDERBUFFER, 0, 0, 0, 0, width, height, 1);
+                            try renderbuffers.put(common.allocator, @intCast(name), cache);
+                        },
+                        else => {},
+                    }
+                }
+            }
+
+            return @This(){
+                .textures = textures,
+                .buffers = buffers,
+                .renderbuffers = renderbuffers,
+            };
+        }
+
+        pub fn copyBuffer(buffers: *ObjectCache, source: gl.uint) !void {
+            gl.BindBuffer(gl.COPY_READ_BUFFER, source);
+
+            var size: gl.int64 = 0;
+            gl.GetBufferParameteri64v(gl.COPY_READ_BUFFER, gl.BUFFER_SIZE, &size);
+
+            // create a new buffer as a cache
+            // TODO: do this only for writable buffers
+            var cache: gl.uint = 0;
+            gl.GenBuffers(1, (&cache)[0..1]);
+            gl.BindBuffer(gl.COPY_WRITE_BUFFER, cache);
+
+            gl.CopyBufferSubData(gl.COPY_READ_BUFFER, gl.COPY_WRITE_BUFFER, 0, 0, @intCast(size));
+            try buffers.put(common.allocator, source, cache);
+        }
+
+        pub fn copyTexture(
+            textures: *TextureCache,
+            buffers: *ObjectCache,
+            target: gl.@"enum",
+            c_state: *ContextState,
+            texture: gl.uint,
+            level: gl.int,
+            layer: ?gl.int,
+        ) !void {
+            if (textures.contains(.{ .name = texture, .layer = layer })) return;
+            if (textures.contains(.{ .name = texture, .layer = null })) return;
+
+            if (target == gl.TEXTURE_BUFFER) {
+                const buffer = c_state.tex_buffers.get(texture) orelse {
+                    log.err("Could not find buffer for texture {d}", .{texture});
+                    return error.NoBufferForTexture;
+                };
+                try copyBuffer(buffers, buffer);
+            } else {
+                gl.BindTexture(target, @intCast(texture));
+                if (texture != 0) {
+                    // SAFETY: assigned right after by OpenGL
+                    var internal_format: gl.int = undefined;
+                    gl.GetTexParameteriv(target, gl.TEXTURE_INTERNAL_FORMAT, (&internal_format)[0..1]);
+                    const format = internalFormatToFormat(@intCast(internal_format)) orelse return error.UnknownInternalFormat;
+
+                    // SAFETY: assigned right after by OpenGL
+                    var width: gl.int = undefined;
+                    gl.GetTexLevelParameteriv(target, level, gl.TEXTURE_WIDTH, (&width)[0..1]);
+                    // SAFETY: assigned right after by OpenGL
+                    var height: gl.int = undefined;
+                    gl.GetTexLevelParameteriv(target, level, gl.TEXTURE_HEIGHT, (&height)[0..1]);
+                    // SAFETY: assigned right after by OpenGL
+                    var depth: gl.int = undefined;
+                    gl.GetTexLevelParameteriv(target, level, gl.TEXTURE_DEPTH, (&depth)[0..1]);
+
+                    var cache: gl.uint = 0;
+                    gl.GenTextures(1, (&cache)[0..1]);
+                    const real_target = proxyToTarget(target) orelse return error.InvalidTarget;
+                    glBindTexture(if (layer) |_| targetToLayer(real_target) orelse return error.NoLayerForTarget else real_target, cache);
+
+                    switch (real_target) {
+                        gl.TEXTURE_1D, gl.PROXY_TEXTURE_1D => {
+                            glTexImage1D(real_target, 0, internal_format, width, 0, format.format, format.t, null);
+                            gl.CopyImageSubData(texture, target, 0, 0, 0, 0, cache, real_target, 0, 0, 0, 0, width, 1, 1);
+                        },
+                        gl.TEXTURE_2D,
+                        gl.PROXY_TEXTURE_2D,
+                        gl.TEXTURE_2D_MULTISAMPLE,
+                        gl.PROXY_TEXTURE_2D_MULTISAMPLE,
+                        gl.TEXTURE_RECTANGLE,
+                        gl.PROXY_TEXTURE_RECTANGLE,
+                        gl.TEXTURE_1D_ARRAY,
+                        gl.PROXY_TEXTURE_1D_ARRAY,
+                        => {
+                            // TODO use GL_TEXTURE_CUBEMAP_* to specify the face
+                            if (layer) |l| {
+                                glTexImage1D(real_target, 0, internal_format, width, 0, format.format, format.t, null);
+                                gl.CopyImageSubData(texture, target, 0, 0, l, 0, cache, real_target, 0, 0, 0, 0, width, height, 1);
+                            } else {
+                                glTexImage2D(real_target, 0, internal_format, width, height, 0, format.format, format.t, null);
+                                gl.CopyImageSubData(texture, target, 0, 0, 0, 0, cache, real_target, 0, 0, 0, 0, width, height, 1);
+                            }
+                        },
+                        gl.TEXTURE_3D,
+                        gl.PROXY_TEXTURE_3D,
+                        gl.TEXTURE_2D_MULTISAMPLE_ARRAY,
+                        gl.PROXY_TEXTURE_2D_MULTISAMPLE_ARRAY,
+                        gl.TEXTURE_2D_ARRAY,
+                        gl.PROXY_TEXTURE_2D_ARRAY,
+                        => {
+                            if (layer) |l| {
+                                // copy only one layer
+                                glTexImage2D(real_target, 0, internal_format, width, height, 0, format.format, format.t, null);
+                                gl.CopyImageSubData(texture, target, level, 0, 0, l, cache, real_target, level, 0, 0, 0, width, height, 1);
+                            } else {
+                                glTexImage3D(real_target, 0, internal_format, width, height, depth, 0, format.format, format.t, null);
+                                gl.CopyImageSubData(texture, target, level, 0, 0, 0, cache, real_target, level, 0, 0, 0, width, height, depth);
+                            }
+                        },
+                        else => {
+                            log.warn("Unsupported texture target for capture {x}", .{target});
+                            return error.UnsupportedTextureTarget;
+                        },
+                    }
+
+                    // TODO support copyTexImageXX
+
+                    try textures.put(common.allocator, .{ .name = texture, .layer = layer }, cache);
+                }
+            }
+        }
+
+        pub fn targetToLayer(target: gl.@"enum") ?gl.@"enum" {
+            return switch (target) {
+                gl.TEXTURE_3D, gl.TEXTURE_2D_ARRAY, gl.TEXTURE_CUBE_MAP => gl.TEXTURE_2D,
+                gl.TEXTURE_CUBE_MAP_ARRAY => gl.TEXTURE_CUBE_MAP,
+                gl.TEXTURE_2D_MULTISAMPLE_ARRAY => gl.TEXTURE_2D_MULTISAMPLE,
+                else => null,
+            };
+        }
+
+        pub fn proxyToTarget(proxy: gl.@"enum") ?gl.@"enum" {
+            return switch (proxy) {
+                gl.PROXY_TEXTURE_1D => gl.TEXTURE_1D,
+                gl.PROXY_TEXTURE_2D => gl.TEXTURE_2D,
+                gl.PROXY_TEXTURE_3D => gl.TEXTURE_3D,
+                gl.PROXY_TEXTURE_CUBE_MAP => gl.TEXTURE_CUBE_MAP,
+                gl.PROXY_TEXTURE_RECTANGLE => gl.TEXTURE_RECTANGLE,
+                gl.PROXY_TEXTURE_2D_MULTISAMPLE => gl.TEXTURE_2D_MULTISAMPLE,
+                gl.PROXY_TEXTURE_2D_MULTISAMPLE_ARRAY => gl.TEXTURE_2D_ARRAY,
+                gl.PROXY_TEXTURE_CUBE_MAP_ARRAY => gl.TEXTURE_CUBE_MAP_ARRAY,
+                else => null,
+            };
+        }
+
+        /// Converts image binding type to texture target
+        pub fn imageToTarget(image: gl.@"enum") ?gl.@"enum" {
+            return switch (image) {
+                gl.IMAGE_1D, gl.INT_IMAGE_1D, gl.UNSIGNED_INT_IMAGE_1D => gl.TEXTURE_1D,
+                gl.IMAGE_2D, gl.INT_IMAGE_2D, gl.UNSIGNED_INT_IMAGE_2D => gl.TEXTURE_2D,
+                gl.IMAGE_3D, gl.INT_IMAGE_3D, gl.UNSIGNED_INT_IMAGE_3D => gl.TEXTURE_3D,
+                gl.IMAGE_2D_RECT, gl.INT_IMAGE_2D_RECT, gl.UNSIGNED_INT_IMAGE_2D_RECT => gl.TEXTURE_RECTANGLE,
+                gl.IMAGE_CUBE, gl.INT_IMAGE_CUBE, gl.UNSIGNED_INT_IMAGE_CUBE => gl.TEXTURE_CUBE_MAP,
+                gl.IMAGE_BUFFER, gl.INT_IMAGE_BUFFER, gl.UNSIGNED_INT_IMAGE_BUFFER => gl.TEXTURE_BUFFER,
+                gl.IMAGE_1D_ARRAY, gl.INT_IMAGE_1D_ARRAY, gl.UNSIGNED_INT_IMAGE_1D_ARRAY => gl.TEXTURE_1D_ARRAY,
+                gl.IMAGE_2D_ARRAY, gl.INT_IMAGE_2D_ARRAY, gl.UNSIGNED_INT_IMAGE_2D_ARRAY => gl.TEXTURE_2D_ARRAY,
+                gl.IMAGE_CUBE_MAP_ARRAY, gl.INT_IMAGE_CUBE_MAP_ARRAY, gl.UNSIGNED_INT_IMAGE_CUBE_MAP_ARRAY => gl.TEXTURE_CUBE_MAP_ARRAY,
+                gl.IMAGE_2D_MULTISAMPLE, gl.INT_IMAGE_2D_MULTISAMPLE, gl.UNSIGNED_INT_IMAGE_2D_MULTISAMPLE => gl.TEXTURE_2D_MULTISAMPLE,
+                gl.IMAGE_2D_MULTISAMPLE_ARRAY,
+                gl.INT_IMAGE_2D_MULTISAMPLE_ARRAY,
+                gl.UNSIGNED_INT_IMAGE_2D_MULTISAMPLE_ARRAY,
+                => gl.TEXTURE_2D_MULTISAMPLE_ARRAY,
+                else => null,
+            };
+        }
+
+        /// Maps object ref to its cached obejct ref
+        pub const ObjectCache = std.AutoHashMapUnmanaged(gl.uint, gl.uint);
+        pub const TextureCache = std.AutoHashMapUnmanaged(TextureOrLayer, gl.uint);
+        pub const TextureOrLayer = struct {
+            name: gl.uint,
+            layer: ?gl.int,
+        };
+        pub const Texture = struct {
+            binding_type: gl.@"enum",
+            target: gl.@"enum",
+            dimensions: usize,
+        };
+    };
 
     /// (un)pack parameters
     const Pack = struct {
@@ -311,6 +659,33 @@ const Snapshot = struct {
         return group_sizes;
     }
 
+    /// Query the output interface of the last shader in the pipeline. This is normally the fragment shader.
+    ///
+    /// The returned list is sorted increasingly.
+    pub fn getOutputInterface(program: gl.uint) !std.ArrayListUnmanaged(usize) {
+        var out_interface = std.ArrayListUnmanaged(usize){};
+        // SAFETY: assigned right after by OpenGL
+        var count: gl.uint = undefined;
+        gl.GetProgramInterfaceiv(program, gl.PROGRAM_OUTPUT, gl.ACTIVE_RESOURCES, @ptrCast(&count));
+        // filter out used outputs
+        {
+            var i: gl.uint = 0;
+            var name: [64:0]gl.char = undefined;
+            while (i < count) : (i += 1) {
+                gl.GetProgramResourceName(program, gl.PROGRAM_OUTPUT, i, 64, null, &name);
+                if (!std.mem.startsWith(u8, &name, Processor.templates.prefix)) {
+                    const location: gl.int = gl.GetProgramResourceLocation(program, gl.PROGRAM_OUTPUT, &name);
+                    // is negative on error (program has compile errors...)
+                    if (location >= 0) {
+                        try out_interface.append(common.allocator, @intCast(location));
+                    }
+                }
+            }
+        }
+        std.sort.heap(usize, out_interface.items, {}, std.sort.asc(usize));
+        return out_interface;
+    }
+
     fn restoreGlParams(comptime Schema: type, source: Schema, comptime function: String, comptime prefix: String) void {
         inline for (@typeInfo(Schema).@"struct".fields) |field| {
             const f = @field(source, field.name);
@@ -325,23 +700,12 @@ const Snapshot = struct {
         }
     }
 
-    fn capture(program: *const shaders.Shader.Program) @This() {
-        var snapshot = Snapshot{
-            .pack = getGlParams(Pack, "PACK_"),
-            .unpack = getGlParams(Pack, "UNPACK_"),
-            //
-            // Bindings
-            //
-            .pixel_pack_buffer = getUinteger(gl.PIXEL_PACK_BUFFER_BINDING) catch 0,
-            .read_buffer = getUinteger(gl.READ_BUFFER) catch 0,
-            .fbo = getUinteger(gl.FRAMEBUFFER_BINDING) catch 0,
-            .read_fbo = getUinteger(gl.READ_FRAMEBUFFER_BINDING) catch 0,
-            .rbo = getUinteger(gl.RENDERBUFFER_BINDING) catch 0,
-        };
-
+    fn capture(program: *const shaders.Shader.Program) !@This() {
         //
         // Other configurations
         //
+        var draw_buffers: [32]c_uint = [_]c_uint{0} ** 32;
+        var draw_buffers_len: c_uint = 0;
 
         var it = program.stages.valueIterator();
         while (it.next()) |stage| {
@@ -361,29 +725,29 @@ const Snapshot = struct {
                             gl.GetIntegerv(gl.DRAW_BUFFER0 + i, @ptrCast(&previous));
                             switch (previous) {
                                 gl.BACK => {
-                                    snapshot.draw_buffers[i] = gl.BACK_LEFT;
-                                    snapshot.draw_buffers_len = i + 1;
+                                    draw_buffers[i] = gl.BACK_LEFT;
+                                    draw_buffers_len = i + 1;
                                 },
                                 gl.FRONT => {
-                                    snapshot.draw_buffers[i] = gl.FRONT_LEFT;
-                                    snapshot.draw_buffers_len = i + 1;
+                                    draw_buffers[i] = gl.FRONT_LEFT;
+                                    draw_buffers_len = i + 1;
                                 },
                                 gl.FRONT_AND_BACK => {
-                                    snapshot.draw_buffers[i] = gl.BACK_LEFT;
-                                    snapshot.draw_buffers_len = i + 1;
+                                    draw_buffers[i] = gl.BACK_LEFT;
+                                    draw_buffers_len = i + 1;
                                 },
                                 gl.LEFT => {
-                                    snapshot.draw_buffers[i] = gl.FRONT_LEFT;
-                                    snapshot.draw_buffers_len = i + 1;
+                                    draw_buffers[i] = gl.FRONT_LEFT;
+                                    draw_buffers_len = i + 1;
                                 },
                                 gl.RIGHT => {
-                                    snapshot.draw_buffers[i] = gl.FRONT_RIGHT;
-                                    snapshot.draw_buffers_len = i + 1;
+                                    draw_buffers[i] = gl.FRONT_RIGHT;
+                                    draw_buffers_len = i + 1;
                                 },
-                                gl.NONE => snapshot.draw_buffers[i] = previous,
+                                gl.NONE => draw_buffers[i] = previous,
                                 else => {
-                                    snapshot.draw_buffers[i] = previous;
-                                    snapshot.draw_buffers_len = i + 1;
+                                    draw_buffers[i] = previous;
+                                    draw_buffers_len = i + 1;
                                 },
                             }
                         }
@@ -392,7 +756,26 @@ const Snapshot = struct {
                 else => {},
             }
         }
-        return snapshot;
+
+        return Snapshot{
+            .draw_buffers = draw_buffers,
+            .draw_buffers_len = draw_buffers_len,
+            .pack = getGlParams(Pack, "PACK_"),
+            .unpack = getGlParams(Pack, "UNPACK_"),
+
+            .memory = try Memory.capture(program, &draw_buffers),
+            //
+            // Bindings
+            //
+            .copy_read = getUinteger(gl.COPY_READ_BUFFER_BINDING) catch 0,
+            .copy_write = getUinteger(gl.COPY_WRITE_BUFFER_BINDING) catch 0,
+            .pixel_pack_buffer = getUinteger(gl.PIXEL_PACK_BUFFER_BINDING) catch 0,
+            .read_buffer = getUinteger(gl.READ_BUFFER) catch 0,
+            .fbo = getUinteger(gl.FRAMEBUFFER_BINDING) catch 0,
+            .read_fbo = getUinteger(gl.READ_FRAMEBUFFER_BINDING) catch 0,
+            .rbo = getUinteger(gl.RENDERBUFFER_BINDING) catch 0,
+            .ssbo = getUinteger(gl.SHADER_STORAGE_BUFFER_BINDING) catch 0,
+        };
     }
 
     fn restore(snapshot: Snapshot) !void {
@@ -416,8 +799,8 @@ const Snapshot = struct {
         gl.BindBuffer(gl.PIXEL_PACK_BUFFER, snapshot.pixel_pack_buffer);
 
         // (un)pack parameters
-        restoreGlParams(Snapshot.Pack, snapshot.pack, "PixelStorei", "PACK_");
-        restoreGlParams(Snapshot.Pack, snapshot.unpack, "PixelStorei", "UNPACK_");
+        restoreGlParams(Pack, snapshot.pack, "PixelStorei", "PACK_");
+        restoreGlParams(Pack, snapshot.unpack, "PixelStorei", "UNPACK_");
     }
 };
 
@@ -498,7 +881,7 @@ fn dispatchDebugImpl(
     // - Dispatch debugging draw calls and read the outputs while a breakpoint or a step is reached
     // Call the original draw call...
 
-    const snapshot = Snapshot.capture(program);
+    const snapshot = try Snapshot.capture(program);
     while (true) {
         shaders.user_action = false;
 
@@ -748,6 +1131,90 @@ fn formatToPlatform(format: Processor.OutputStorage.Location.Format) PlatformFor
             .type = gl.SHORT,
             .internal_format = gl.RGBA16I,
         },
+    };
+}
+
+fn internalFormatToFormat(internal_format: gl.@"enum") ?struct {
+    format: gl.@"enum",
+    t: gl.@"enum",
+    pixel_size: usize,
+} {
+    return switch (internal_format) {
+        gl.R8 => .{ .format = gl.RED, .t = gl.UNSIGNED_BYTE, .pixel_size = 1 },
+        gl.R8_SNORM => .{ .format = gl.RED, .t = gl.BYTE, .pixel_size = 1 },
+        gl.R16 => .{ .format = gl.RED, .t = gl.UNSIGNED_SHORT, .pixel_size = 2 },
+        gl.R16_SNORM => .{ .format = gl.RED, .t = gl.SHORT, .pixel_size = 2 },
+        gl.RG8 => .{ .format = gl.RG, .t = gl.UNSIGNED_BYTE, .pixel_size = 2 },
+        gl.RG8_SNORM => .{ .format = gl.RG, .t = gl.BYTE, .pixel_size = 2 },
+        gl.RG16 => .{ .format = gl.RG, .t = gl.UNSIGNED_SHORT, .pixel_size = 4 },
+        gl.RG16_SNORM => .{ .format = gl.RG, .t = gl.SHORT, .pixel_size = 4 },
+        gl.RGB8 => .{ .format = gl.RGB, .t = gl.UNSIGNED_BYTE, .pixel_size = 3 },
+        gl.RGB8_SNORM => .{ .format = gl.RGB, .t = gl.BYTE, .pixel_size = 3 },
+        gl.RGB16 => .{ .format = gl.RGB, .t = gl.UNSIGNED_SHORT, .pixel_size = 6 },
+        gl.RGB16_SNORM => .{ .format = gl.RGB, .t = gl.SHORT, .pixel_size = 6 },
+        gl.RGBA8 => .{ .format = gl.RGBA, .t = gl.UNSIGNED_BYTE, .pixel_size = 4 },
+        gl.RGBA8_SNORM => .{ .format = gl.RGBA, .t = gl.BYTE, .pixel_size = 4 },
+        gl.RGB10_A2 => .{ .format = gl.RGBA, .t = gl.UNSIGNED_INT_2_10_10_10_REV, .pixel_size = 4 },
+        gl.R3_G3_B2 => .{ .format = gl.RGB, .t = gl.UNSIGNED_BYTE_3_3_2, .pixel_size = 1 },
+        gl.RGB9_E5 => .{ .format = gl.RGB, .t = gl.UNSIGNED_INT_5_9_9_9_REV, .pixel_size = 4 },
+        gl.RGBA16 => .{ .format = gl.RGBA, .t = gl.UNSIGNED_SHORT, .pixel_size = 8 },
+        gl.RGBA16_SNORM => .{ .format = gl.RGBA, .t = gl.SHORT, .pixel_size = 8 },
+        gl.RGBA32I => .{ .format = gl.RGBA, .t = gl.INT, .pixel_size = 16 },
+        gl.RGBA32UI => .{ .format = gl.RGBA, .t = gl.UNSIGNED_INT, .pixel_size = 16 },
+        gl.RGBA16F => .{ .format = gl.RGBA, .t = gl.HALF_FLOAT, .pixel_size = 8 },
+        gl.DEPTH_COMPONENT => .{ .format = gl.DEPTH_COMPONENT, .t = gl.UNSIGNED_INT, .pixel_size = 4 },
+        gl.DEPTH_COMPONENT16 => .{ .format = gl.DEPTH_COMPONENT, .t = gl.UNSIGNED_SHORT, .pixel_size = 2 },
+        gl.DEPTH_COMPONENT24 => .{ .format = gl.DEPTH_COMPONENT, .t = gl.UNSIGNED_INT, .pixel_size = 4 },
+        gl.DEPTH_COMPONENT32F => .{ .format = gl.DEPTH_COMPONENT, .t = gl.FLOAT, .pixel_size = 4 },
+        gl.DEPTH24_STENCIL8 => .{ .format = gl.DEPTH_STENCIL, .t = gl.UNSIGNED_INT_24_8, .pixel_size = 4 },
+        gl.DEPTH32F_STENCIL8 => .{ .format = gl.DEPTH_STENCIL, .t = gl.FLOAT_32_UNSIGNED_INT_24_8_REV, .pixel_size = 5 },
+        gl.SRGB8 => .{ .format = gl.RGB, .t = gl.UNSIGNED_BYTE, .pixel_size = 3 },
+        gl.SRGB8_ALPHA8 => .{ .format = gl.RGBA, .t = gl.UNSIGNED_BYTE, .pixel_size = 4 },
+        gl.R16F => .{ .format = gl.RED, .t = gl.HALF_FLOAT, .pixel_size = 2 },
+        gl.RG16F => .{ .format = gl.RG, .t = gl.HALF_FLOAT, .pixel_size = 4 },
+        gl.RGB16F => .{ .format = gl.RGB, .t = gl.HALF_FLOAT, .pixel_size = 6 },
+        gl.R32F => .{ .format = gl.RED, .t = gl.FLOAT, .pixel_size = 4 },
+        gl.RG32F => .{ .format = gl.RG, .t = gl.FLOAT, .pixel_size = 8 },
+        gl.RGB32F => .{ .format = gl.RGB, .t = gl.FLOAT, .pixel_size = 12 },
+        gl.RGBA32F => .{ .format = gl.RGBA, .t = gl.FLOAT, .pixel_size = 16 },
+        gl.R11F_G11F_B10F => .{ .format = gl.RGB, .t = gl.UNSIGNED_INT_10F_11F_11F_REV, .pixel_size = 4 },
+        gl.R8I => .{ .format = gl.RED, .t = gl.BYTE, .pixel_size = 1 },
+        gl.R8UI => .{ .format = gl.RED, .t = gl.UNSIGNED_BYTE, .pixel_size = 1 },
+        gl.R16I => .{ .format = gl.RED, .t = gl.SHORT, .pixel_size = 2 },
+        gl.R16UI => .{ .format = gl.RED, .t = gl.UNSIGNED_SHORT, .pixel_size = 2 },
+        gl.R32I => .{ .format = gl.RED, .t = gl.INT, .pixel_size = 4 },
+        gl.R32UI => .{ .format = gl.RED, .t = gl.UNSIGNED_INT, .pixel_size = 4 },
+        gl.RG8I => .{ .format = gl.RG, .t = gl.BYTE, .pixel_size = 2 },
+        gl.RG8UI => .{ .format = gl.RG, .t = gl.UNSIGNED_BYTE, .pixel_size = 2 },
+        gl.RG16I => .{ .format = gl.RG, .t = gl.SHORT, .pixel_size = 4 },
+        gl.RG16UI => .{ .format = gl.RG, .t = gl.UNSIGNED_SHORT, .pixel_size = 4 },
+        gl.RG32I => .{ .format = gl.RG, .t = gl.INT, .pixel_size = 8 },
+        gl.RG32UI => .{ .format = gl.RG, .t = gl.UNSIGNED_INT, .pixel_size = 8 },
+        gl.RGB8I => .{ .format = gl.RGB, .t = gl.BYTE, .pixel_size = 3 },
+        gl.RGB8UI => .{ .format = gl.RGB, .t = gl.UNSIGNED_BYTE, .pixel_size = 3 },
+        gl.RGB16I => .{ .format = gl.RGB, .t = gl.SHORT, .pixel_size = 6 },
+        gl.RGB16UI => .{ .format = gl.RGB, .t = gl.UNSIGNED_SHORT, .pixel_size = 6 },
+        gl.RGB32I => .{ .format = gl.RGB, .t = gl.INT, .pixel_size = 12 },
+        gl.RGB32UI => .{ .format = gl.RGB, .t = gl.UNSIGNED_INT, .pixel_size = 12 },
+        gl.RGBA8I => .{ .format = gl.RGBA, .t = gl.BYTE, .pixel_size = 4 },
+        gl.RGBA8UI => .{ .format = gl.RGBA, .t = gl.UNSIGNED_BYTE, .pixel_size = 4 },
+        gl.RGBA16I => .{ .format = gl.RGBA, .t = gl.SHORT, .pixel_size = 8 },
+        gl.RGBA16UI => .{ .format = gl.RGBA, .t = gl.UNSIGNED_SHORT, .pixel_size = 8 },
+        gl.COMPRESSED_RED => .{ .format = gl.RED, .t = gl.UNSIGNED_BYTE, .pixel_size = 1 },
+        gl.COMPRESSED_RG => .{ .format = gl.RG, .t = gl.UNSIGNED_BYTE, .pixel_size = 2 },
+        gl.COMPRESSED_RGB => .{ .format = gl.RGB, .t = gl.UNSIGNED_BYTE, .pixel_size = 3 },
+        gl.COMPRESSED_RGBA => .{ .format = gl.RGBA, .t = gl.UNSIGNED_BYTE, .pixel_size = 4 },
+        gl.COMPRESSED_SRGB => .{ .format = gl.RGB, .t = gl.UNSIGNED_BYTE, .pixel_size = 3 },
+        gl.COMPRESSED_SRGB_ALPHA => .{ .format = gl.RGBA, .t = gl.UNSIGNED_BYTE, .pixel_size = 4 },
+        gl.COMPRESSED_RED_RGTC1 => .{ .format = gl.RED, .t = gl.UNSIGNED_BYTE, .pixel_size = 1 },
+        gl.COMPRESSED_SIGNED_RED_RGTC1 => .{ .format = gl.RED, .t = gl.BYTE, .pixel_size = 1 },
+        gl.COMPRESSED_RG_RGTC2 => .{ .format = gl.RG, .t = gl.UNSIGNED_BYTE, .pixel_size = 2 },
+        gl.COMPRESSED_SIGNED_RG_RGTC2 => .{ .format = gl.RG, .t = gl.BYTE, .pixel_size = 2 },
+        gl.COMPRESSED_RGBA_BPTC_UNORM => .{ .format = gl.RGBA, .t = gl.UNSIGNED_BYTE, .pixel_size = 4 },
+        gl.COMPRESSED_SRGB_ALPHA_BPTC_UNORM => .{ .format = gl.RGBA, .t = gl.UNSIGNED_BYTE, .pixel_size = 4 },
+        gl.COMPRESSED_RGB_BPTC_SIGNED_FLOAT => .{ .format = gl.RGB, .t = gl.FLOAT, .pixel_size = 12 },
+        gl.COMPRESSED_RGB_BPTC_UNSIGNED_FLOAT => .{ .format = gl.RGB, .t = gl.UNSIGNED_INT, .pixel_size = 12 },
+        else => null,
     };
 }
 
@@ -1046,31 +1513,6 @@ fn getFrambufferSize(fbo: gl.uint) [2]gl.int {
     return result;
 }
 
-/// query the output interface of the last shader in the pipeline. This is normally the fragment shader.
-fn getOutputInterface(program: gl.uint) !std.ArrayListUnmanaged(usize) {
-    var out_interface = std.ArrayListUnmanaged(usize){};
-    // SAFETY: assigned right after by OpenGL
-    var count: gl.uint = undefined;
-    gl.GetProgramInterfaceiv(program, gl.PROGRAM_OUTPUT, gl.ACTIVE_RESOURCES, @ptrCast(&count));
-    // filter out used outputs
-    {
-        var i: gl.uint = 0;
-        var name: [64:0]gl.char = undefined;
-        while (i < count) : (i += 1) {
-            gl.GetProgramResourceName(program, gl.PROGRAM_OUTPUT, i, 64, null, &name);
-            if (!std.mem.startsWith(u8, &name, Processor.templates.prefix)) {
-                const location: gl.int = gl.GetProgramResourceLocation(program, gl.PROGRAM_OUTPUT, &name);
-                // is negative on error (program has compile errors...)
-                if (location >= 0) {
-                    try out_interface.append(common.allocator, @intCast(location));
-                }
-            }
-        }
-    }
-    std.sort.heap(usize, out_interface.items, {}, std.sort.asc(usize));
-    return out_interface;
-}
-
 fn getContextParams(program: *shaders.Shader.Program) !shaders.Shader.Program.State.Params.Context {
     const c_state = state.getPtr(current.context) orelse return error.NoState;
 
@@ -1111,10 +1553,10 @@ fn getContextParams(program: *shaders.Shader.Program) !shaders.Shader.Program.St
         if (rast_discard == gl.TRUE) {
             //used_vertex_interface = try getOutputInterface(@intCast(program.ref));
             gl.Disable(gl.RASTERIZER_DISCARD);
-            used_fragment_interface = try getOutputInterface(program.ref.cast(gl.uint));
+            used_fragment_interface = try Snapshot.getOutputInterface(program.ref.cast(gl.uint));
             gl.Enable(gl.RASTERIZER_DISCARD);
         } else {
-            used_fragment_interface = try getOutputInterface(program.ref.cast(gl.uint));
+            used_fragment_interface = try Snapshot.getOutputInterface(program.ref.cast(gl.uint));
             gl.Enable(gl.RASTERIZER_DISCARD);
             //used_vertex_interface = try getOutputInterface(@intCast(program.ref));
             gl.Disable(gl.RASTERIZER_DISCARD);
@@ -1899,6 +2341,14 @@ pub export fn glAttachShader(program: gl.uint, shader: gl.uint) callconv(.c) voi
     gl.AttachShader(program, shader);
 }
 
+pub export fn glBindTexture(target: gl.@"enum", texture: gl.uint) callconv(.c) void {
+    gl.BindTexture(target, texture);
+    if (gl.GetError() == gl.NO_ERROR) {
+        const c_state = state.getPtr(current.context) orelse return;
+        c_state.tex_target.put(common.allocator, @intCast(texture), target) catch {};
+    }
+}
+
 pub export fn glDetachShader(program: gl.uint, shader: gl.uint) callconv(.c) void {
     current.programDetachStage(@enumFromInt(program), @enumFromInt(shader)) catch |err| {
         log.err("Failed to detach shader {x} from program {x}: {any}", .{ shader, program, err });
@@ -1906,6 +2356,503 @@ pub export fn glDetachShader(program: gl.uint, shader: gl.uint) callconv(.c) voi
 
     gl.DetachShader(program, shader);
 }
+
+//
+//#region Texture binding functions
+//
+
+pub export fn glDeleteTextures(n: gl.sizei, textures: [*]gl.uint) callconv(.c) void {
+    const c_state = state.getPtr(current.context) orelse return;
+    for (textures[0..@intCast(n)]) |texture| {
+        _ = c_state.tex_buffers.remove(@intCast(texture));
+        _ = c_state.tex_target.remove(@intCast(texture));
+    }
+    gl.DeleteTextures(n, textures);
+}
+
+pub export fn glTexBuffer(target: gl.@"enum", internal_format: gl.@"enum", buffer: gl.uint) callconv(.c) void {
+    gl.TexBuffer(target, internal_format, buffer);
+    if (gl.GetError() == gl.NO_ERROR) {
+        // SAFETY: assigned right after
+        var texture: gl.int = undefined;
+        gl.GetIntegerv(gl.TEXTURE_BINDING_BUFFER, @ptrCast(&texture));
+        if (texture > 0) {
+            const c_state = state.getPtr(current.context) orelse return;
+            c_state.tex_buffers.put(common.allocator, @intCast(texture), buffer) catch {};
+        }
+    }
+}
+
+pub export fn glTexImage2D(
+    target: gl.@"enum",
+    level: gl.int,
+    internal_format: gl.int,
+    width: gl.sizei,
+    height: gl.sizei,
+    border: gl.int,
+    format: gl.@"enum",
+    _type: gl.@"enum",
+    pixels: ?*const anyopaque,
+) callconv(.c) void {
+    gl.TexImage2D(target, level, internal_format, width, height, border, format, _type, pixels);
+    if (gl.GetError() == gl.NO_ERROR) {
+        const c_state = state.getPtr(current.context) orelse return;
+        // SAFETY: assigned right below
+        var texture: gl.int = undefined;
+        gl.GetIntegerv(gl.TEXTURE_BINDING_2D, (&texture)[0..1]);
+        c_state.tex_target.put(common.allocator, @intCast(texture), target) catch {};
+    }
+}
+
+pub export fn glTexImage3D(
+    target: gl.@"enum",
+    level: gl.int,
+    internal_format: gl.int,
+    width: gl.sizei,
+    height: gl.sizei,
+    depth: gl.sizei,
+    border: gl.int,
+    format: gl.@"enum",
+    _type: gl.@"enum",
+    pixels: ?*const anyopaque,
+) callconv(.c) void {
+    gl.TexImage3D(target, level, internal_format, width, height, depth, border, format, _type, pixels);
+    if (gl.GetError() == gl.NO_ERROR) {
+        const c_state = state.getPtr(current.context) orelse return;
+        // SAFETY: assigned right below
+        var texture: gl.int = undefined;
+        gl.GetIntegerv(gl.TEXTURE_BINDING_3D, (&texture)[0..1]);
+        c_state.tex_target.put(common.allocator, @intCast(texture), target) catch {};
+    }
+}
+
+pub export fn glTexSubImage2D(
+    target: gl.@"enum",
+    level: gl.int,
+    xoffset: gl.int,
+    yoffset: gl.int,
+    width: gl.sizei,
+    height: gl.sizei,
+    format: gl.@"enum",
+    _type: gl.@"enum",
+    pixels: ?*const anyopaque,
+) callconv(.c) void {
+    gl.TexSubImage2D(target, level, xoffset, yoffset, width, height, format, _type, pixels);
+    if (gl.GetError() == gl.NO_ERROR) {
+        const c_state = state.getPtr(current.context) orelse return;
+        // SAFETY: assigned right below
+        var texture: gl.int = undefined;
+        gl.GetIntegerv(gl.TEXTURE_BINDING_2D, (&texture)[0..1]);
+        c_state.tex_target.put(common.allocator, @intCast(texture), target) catch {};
+    }
+}
+
+pub export fn glTexSubImage3D(
+    target: gl.@"enum",
+    level: gl.int,
+    xoffset: gl.int,
+    yoffset: gl.int,
+    zoffset: gl.int,
+    width: gl.sizei,
+    height: gl.sizei,
+    depth: gl.sizei,
+    format: gl.@"enum",
+    _type: gl.@"enum",
+    pixels: ?*const anyopaque,
+) callconv(.c) void {
+    gl.TexSubImage3D(target, level, xoffset, yoffset, zoffset, width, height, depth, format, _type, pixels);
+    if (gl.GetError() == gl.NO_ERROR) {
+        const c_state = state.getPtr(current.context) orelse return;
+        // SAFETY: assigned right below
+        var texture: gl.int = undefined;
+        gl.GetIntegerv(gl.TEXTURE_BINDING_3D, (&texture)[0..1]);
+        c_state.tex_target.put(common.allocator, @intCast(texture), target) catch {};
+    }
+}
+
+pub export fn glTexImage1D(
+    target: gl.@"enum",
+    level: gl.int,
+    internal_format: gl.int,
+    width: gl.sizei,
+    border: gl.int,
+    format: gl.@"enum",
+    _type: gl.@"enum",
+    pixels: ?*const anyopaque,
+) callconv(.c) void {
+    gl.TexImage1D(target, level, internal_format, width, border, format, _type, pixels);
+    if (gl.GetError() == gl.NO_ERROR) {
+        const c_state = state.getPtr(current.context) orelse return;
+        // SAFETY: assigned right below
+        var texture: gl.int = undefined;
+        gl.GetIntegerv(gl.TEXTURE_BINDING_1D, (&texture)[0..1]);
+        c_state.tex_target.put(common.allocator, @intCast(texture), target) catch {};
+    }
+}
+
+pub export fn glTexImage2DMultisample(
+    target: gl.@"enum",
+    samples: gl.sizei,
+    internal_format: gl.uint,
+    width: gl.sizei,
+    height: gl.sizei,
+    fixed_sample_locations: gl.boolean,
+) callconv(.c) void {
+    gl.TexImage2DMultisample(target, samples, internal_format, width, height, fixed_sample_locations);
+    if (gl.GetError() == gl.NO_ERROR) {
+        const c_state = state.getPtr(current.context) orelse return;
+        // SAFETY: assigned right below
+        var texture: gl.int = undefined;
+        gl.GetIntegerv(gl.TEXTURE_BINDING_2D_MULTISAMPLE, (&texture)[0..1]);
+        c_state.tex_target.put(common.allocator, @intCast(texture), target) catch {};
+    }
+}
+
+pub export fn glTexImage3DMultisample(
+    target: gl.@"enum",
+    samples: gl.sizei,
+    internal_format: gl.uint,
+    width: gl.sizei,
+    height: gl.sizei,
+    depth: gl.sizei,
+    fixed_sample_locations: gl.boolean,
+) callconv(.c) void {
+    gl.TexImage3DMultisample(target, samples, internal_format, width, height, depth, fixed_sample_locations);
+    if (gl.GetError() == gl.NO_ERROR) {
+        const c_state = state.getPtr(current.context) orelse return;
+        // SAFETY: assigned right below
+        var texture: gl.int = undefined;
+        gl.GetIntegerv(gl.TEXTURE_BINDING_3D, (&texture)[0..1]);
+        c_state.tex_target.put(common.allocator, @intCast(texture), target) catch {};
+    }
+}
+
+pub export fn glCompressedTexImage2D(
+    target: gl.@"enum",
+    level: gl.int,
+    internal_format: gl.uint,
+    width: gl.sizei,
+    height: gl.sizei,
+    border: gl.int,
+    image_size: gl.sizei,
+    data: ?*const anyopaque,
+) callconv(.c) void {
+    gl.CompressedTexImage2D(target, level, internal_format, width, height, border, image_size, data);
+    if (gl.GetError() == gl.NO_ERROR) {
+        const c_state = state.getPtr(current.context) orelse return;
+        // SAFETY: assigned right below
+        var texture: gl.int = undefined;
+        gl.GetIntegerv(gl.TEXTURE_BINDING_2D, (&texture)[0..1]);
+        c_state.tex_target.put(common.allocator, @intCast(texture), target) catch {};
+    }
+}
+
+pub export fn glCompressedTexImage3D(
+    target: gl.@"enum",
+    level: gl.int,
+    internal_format: gl.uint,
+    width: gl.sizei,
+    height: gl.sizei,
+    depth: gl.sizei,
+    border: gl.int,
+    image_size: gl.sizei,
+    data: ?*const anyopaque,
+) callconv(.c) void {
+    gl.CompressedTexImage3D(target, level, internal_format, width, height, depth, border, image_size, data);
+    if (gl.GetError() == gl.NO_ERROR) {
+        const c_state = state.getPtr(current.context) orelse return;
+        // SAFETY: assigned right below
+        var texture: gl.int = undefined;
+        gl.GetIntegerv(gl.TEXTURE_BINDING_3D, (&texture)[0..1]);
+        c_state.tex_target.put(common.allocator, @intCast(texture), target) catch {};
+    }
+}
+
+pub export fn glCompressedTexSubImage2D(
+    target: gl.@"enum",
+    level: gl.int,
+    xoffset: gl.int,
+    yoffset: gl.int,
+    width: gl.sizei,
+    height: gl.sizei,
+    format: gl.@"enum",
+    image_size: gl.sizei,
+    data: ?*const anyopaque,
+) callconv(.c) void {
+    gl.CompressedTexSubImage2D(target, level, xoffset, yoffset, width, height, format, image_size, data);
+    if (gl.GetError() == gl.NO_ERROR) {
+        const c_state = state.getPtr(current.context) orelse return;
+        // SAFETY: assigned right below
+        var texture: gl.int = undefined;
+        gl.GetIntegerv(gl.TEXTURE_BINDING_2D, (&texture)[0..1]);
+        c_state.tex_target.put(common.allocator, @intCast(texture), target) catch {};
+    }
+}
+
+pub export fn glCompressedTexSubImage3D(
+    target: gl.@"enum",
+    level: gl.int,
+    xoffset: gl.int,
+    yoffset: gl.int,
+    zoffset: gl.int,
+    width: gl.sizei,
+    height: gl.sizei,
+    depth: gl.sizei,
+    format: gl.@"enum",
+    image_size: gl.sizei,
+    data: ?*const anyopaque,
+) callconv(.c) void {
+    gl.CompressedTexSubImage3D(target, level, xoffset, yoffset, zoffset, width, height, depth, format, image_size, data);
+    if (gl.GetError() == gl.NO_ERROR) {
+        const c_state = state.getPtr(current.context) orelse return;
+        // SAFETY: assigned right below
+        var texture: gl.int = undefined;
+        gl.GetIntegerv(gl.TEXTURE_BINDING_3D, (&texture)[0..1]);
+        c_state.tex_target.put(common.allocator, @intCast(texture), target) catch {};
+    }
+}
+
+pub export fn glTextureSubImage2D(
+    texture: gl.uint,
+    level: gl.int,
+    xoffset: gl.int,
+    yoffset: gl.int,
+    width: gl.sizei,
+    height: gl.sizei,
+    format: gl.@"enum",
+    _type: gl.@"enum",
+    pixels: ?*const anyopaque,
+) callconv(.c) void {
+    gl.TextureSubImage2D(texture, level, xoffset, yoffset, width, height, format, _type, pixels);
+    if (gl.GetError() == gl.NO_ERROR) {
+        const c_state = state.getPtr(current.context) orelse return;
+        c_state.tex_target.put(common.allocator, @intCast(texture), format) catch {};
+    }
+}
+
+pub export fn glTextureSubImage3D(
+    texture: gl.uint,
+    level: gl.int,
+    xoffset: gl.int,
+    yoffset: gl.int,
+    zoffset: gl.int,
+    width: gl.sizei,
+    height: gl.sizei,
+    depth: gl.sizei,
+    format: gl.@"enum",
+    _type: gl.@"enum",
+    pixels: ?*const anyopaque,
+) callconv(.c) void {
+    gl.TextureSubImage3D(texture, level, xoffset, yoffset, zoffset, width, height, depth, format, _type, pixels);
+    if (gl.GetError() == gl.NO_ERROR) {
+        const c_state = state.getPtr(current.context) orelse return;
+        c_state.tex_target.put(common.allocator, @intCast(texture), format) catch {};
+    }
+}
+
+pub export fn glTexStorage1D(
+    target: gl.@"enum",
+    levels: gl.sizei,
+    internal_format: gl.uint,
+    width: gl.sizei,
+) callconv(.c) void {
+    gl.TexStorage1D(target, levels, internal_format, width);
+    if (gl.GetError() == gl.NO_ERROR) {
+        const c_state = state.getPtr(current.context) orelse return;
+        // SAFETY: assigned right below
+        var texture: gl.int = undefined;
+        gl.GetIntegerv(gl.TEXTURE_BINDING_1D, (&texture)[0..1]);
+        c_state.tex_target.put(common.allocator, @intCast(texture), target) catch {};
+    }
+}
+
+pub export fn glTexStorage2D(
+    target: gl.@"enum",
+    levels: gl.sizei,
+    internal_format: gl.uint,
+    width: gl.sizei,
+    height: gl.sizei,
+) callconv(.c) void {
+    gl.TexStorage2D(target, levels, internal_format, width, height);
+    if (gl.GetError() == gl.NO_ERROR) {
+        const c_state = state.getPtr(current.context) orelse return;
+        // SAFETY: assigned right below
+        var texture: gl.int = undefined;
+        gl.GetIntegerv(gl.TEXTURE_BINDING_2D, (&texture)[0..1]);
+        c_state.tex_target.put(common.allocator, @intCast(texture), target) catch {};
+    }
+}
+
+pub export fn glTexStorage3D(
+    target: gl.@"enum",
+    levels: gl.sizei,
+    internal_format: gl.uint,
+    width: gl.sizei,
+    height: gl.sizei,
+    depth: gl.sizei,
+) callconv(.c) void {
+    gl.TexStorage3D(target, levels, internal_format, width, height, depth);
+    if (gl.GetError() == gl.NO_ERROR) {
+        const c_state = state.getPtr(current.context) orelse return;
+        // SAFETY: assigned right below
+        var texture: gl.int = undefined;
+        gl.GetIntegerv(gl.TEXTURE_BINDING_3D, (&texture)[0..1]);
+        c_state.tex_target.put(common.allocator, @intCast(texture), target) catch {};
+    }
+}
+
+pub export fn glTexStorage2DMultisample(
+    target: gl.@"enum",
+    samples: gl.sizei,
+    internal_format: gl.uint,
+    width: gl.sizei,
+    height: gl.sizei,
+    fixed_sample_locations: gl.boolean,
+) callconv(.c) void {
+    gl.TexStorage2DMultisample(target, samples, internal_format, width, height, fixed_sample_locations);
+    if (gl.GetError() == gl.NO_ERROR) {
+        const c_state = state.getPtr(current.context) orelse return;
+        // SAFETY: assigned right below
+        var texture: gl.int = undefined;
+        gl.GetIntegerv(gl.TEXTURE_BINDING_2D_MULTISAMPLE, (&texture)[0..1]);
+        c_state.tex_target.put(common.allocator, @intCast(texture), target) catch {};
+    }
+}
+
+pub export fn glTexStorage3DMultisample(
+    target: gl.@"enum",
+    samples: gl.sizei,
+    internal_format: gl.uint,
+    width: gl.sizei,
+    height: gl.sizei,
+    depth: gl.sizei,
+    fixed_sample_locations: gl.boolean,
+) callconv(.c) void {
+    gl.TexStorage3DMultisample(target, samples, internal_format, width, height, depth, fixed_sample_locations);
+    if (gl.GetError() == gl.NO_ERROR) {
+        const c_state = state.getPtr(current.context) orelse return;
+        // SAFETY: assigned right below
+        var texture: gl.int = undefined;
+        gl.GetIntegerv(gl.TEXTURE_BINDING_3D, (&texture)[0..1]);
+        c_state.tex_target.put(common.allocator, @intCast(texture), target) catch {};
+    }
+}
+
+pub export fn glTextureStorage2D(
+    texture: gl.uint,
+    levels: gl.sizei,
+    internal_format: gl.uint,
+    width: gl.sizei,
+    height: gl.sizei,
+) callconv(.c) void {
+    gl.TextureStorage2D(texture, levels, internal_format, width, height);
+    if (gl.GetError() == gl.NO_ERROR) {
+        const c_state = state.getPtr(current.context) orelse return;
+        c_state.tex_target.put(common.allocator, @intCast(texture), internal_format) catch {};
+    }
+}
+
+pub export fn glTextureStorage3D(
+    texture: gl.uint,
+    levels: gl.sizei,
+    internal_format: gl.uint,
+    width: gl.sizei,
+    height: gl.sizei,
+    depth: gl.sizei,
+) callconv(.c) void {
+    gl.TextureStorage3D(texture, levels, internal_format, width, height, depth);
+    if (gl.GetError() == gl.NO_ERROR) {
+        const c_state = state.getPtr(current.context) orelse return;
+        c_state.tex_target.put(common.allocator, @intCast(texture), internal_format) catch {};
+    }
+}
+
+pub export fn glTextureStorage2DMultisample(
+    texture: gl.uint,
+    samples: gl.sizei,
+    internal_format: gl.uint,
+    width: gl.sizei,
+    height: gl.sizei,
+    fixed_sample_locations: gl.boolean,
+) callconv(.c) void {
+    gl.TextureStorage2DMultisample(texture, samples, internal_format, width, height, fixed_sample_locations);
+    if (gl.GetError() == gl.NO_ERROR) {
+        const c_state = state.getPtr(current.context) orelse return;
+        c_state.tex_target.put(common.allocator, @intCast(texture), internal_format) catch {};
+    }
+}
+
+pub export fn glTextureStorage3DMultisample(
+    texture: gl.uint,
+    samples: gl.sizei,
+    internal_format: gl.uint,
+    width: gl.sizei,
+    height: gl.sizei,
+    depth: gl.sizei,
+    fixed_sample_locations: gl.boolean,
+) callconv(.c) void {
+    gl.TextureStorage3DMultisample(texture, samples, internal_format, width, height, depth, fixed_sample_locations);
+    if (gl.GetError() == gl.NO_ERROR) {
+        const c_state = state.getPtr(current.context) orelse return;
+        c_state.tex_target.put(common.allocator, @intCast(texture), internal_format) catch {};
+    }
+}
+
+pub export fn glCompressedTextureSubImage1D(
+    texture: gl.uint,
+    level: gl.int,
+    xoffset: gl.int,
+    width: gl.sizei,
+    format: gl.@"enum",
+    image_size: gl.sizei,
+    data: ?*const anyopaque,
+) callconv(.c) void {
+    gl.CompressedTextureSubImage1D(texture, level, xoffset, width, format, image_size, data);
+    if (gl.GetError() == gl.NO_ERROR) {
+        const c_state = state.getPtr(current.context) orelse return;
+        c_state.tex_target.put(common.allocator, @intCast(texture), format) catch {};
+    }
+}
+
+pub export fn glCompressedTextureSubImage2D(
+    texture: gl.uint,
+    level: gl.int,
+    xoffset: gl.int,
+    yoffset: gl.int,
+    width: gl.sizei,
+    height: gl.sizei,
+    format: gl.@"enum",
+    image_size: gl.sizei,
+    data: ?*const anyopaque,
+) callconv(.c) void {
+    gl.CompressedTextureSubImage2D(texture, level, xoffset, yoffset, width, height, format, image_size, data);
+    if (gl.GetError() == gl.NO_ERROR) {
+        const c_state = state.getPtr(current.context) orelse return;
+        c_state.tex_target.put(common.allocator, @intCast(texture), format) catch {};
+    }
+}
+
+pub export fn glCompressedTextureSubImage3D(
+    texture: gl.uint,
+    level: gl.int,
+    xoffset: gl.int,
+    yoffset: gl.int,
+    zoffset: gl.int,
+    width: gl.sizei,
+    height: gl.sizei,
+    depth: gl.sizei,
+    format: gl.@"enum",
+    image_size: gl.sizei,
+    data: ?*const anyopaque,
+) callconv(.c) void {
+    gl.CompressedTextureSubImage3D(texture, level, xoffset, yoffset, zoffset, width, height, depth, format, image_size, data);
+    if (gl.GetError() == gl.NO_ERROR) {
+        const c_state = state.getPtr(current.context) orelse return;
+        c_state.tex_target.put(common.allocator, @intCast(texture), format) catch {};
+    }
+}
+
+//#endregion
 
 pub const errors = struct {
     pub fn workspacePath(path: anytype, err: anytype) void {

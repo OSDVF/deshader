@@ -360,6 +360,7 @@ inserts: Inserts = .{}, // Will be inserted many times but iterated only once at
 
 /// These are not meant to be used externally because they will be postfixed with a random number or stage name
 pub const templates = struct {
+    /// Used to filter out the variables that are added by deshader when querying program outputs
     pub const prefix = "deshader_";
     pub const cursor = "cursor";
     const temp = prefix ++ "temp";
@@ -372,17 +373,10 @@ pub const templates = struct {
 const echo_diagnostics = builtin.mode == .Debug;
 
 pub fn deinit(self: *@This()) void {
-    _ = self.toOwnedChannels();
-    self.config.stage.deinit(self.config.allocator);
-}
-
-pub fn toOwnedChannels(self: *@This()) StageChannels {
     self.config.allocator.free(self.threads);
     self.inserts.deinit(self.config.allocator);
     self.scratch.deinit(self.config.allocator);
     self.arena.deinit();
-
-    return self.config.stage;
 }
 
 fn findDirectParent(tag: analyzer.parse.Tag, tree: analyzer.parse.Tree, node: NodeId, comptime extractor: type) ?extractor {
@@ -1206,8 +1200,8 @@ fn resolveNode(self: *@This(), node: NodeId, context: *TraverseContext, do_instr
             }
             const is_else_if = tree.tag(tree.children(node).start) == .keyword_else;
             const after_else_kw: u32 = cond.start + @as(u32, if (is_else_if) 4 else 0); // e l s e
-            try self.insertStart("{", after_else_kw);
-            try self.insertEnd("}", close_pos, 0);
+            try self.insertStart("{\n", after_else_kw); //TODO wraps the whole i-else-.. block instead of just the else branch
+            try self.insertEnd("\n}\n", close_pos, 0);
             const previous = context.statement;
             context.statement = .{ // now we are in a new statement context
                 .start = after_else_kw,

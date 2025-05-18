@@ -1261,7 +1261,7 @@ pub const Shader = struct {
             self.state = state.value_ptr;
 
             // Get new instrumentation
-            const instrumentation = try self.instrument(service);
+            var instrumentation = try self.instrument(service);
             defer instrumentation.deinit(self.allocator);
 
             if (state.value_ptr.channels.diagnostics.items.len > 0) {
@@ -1425,6 +1425,7 @@ pub const Shader = struct {
             defer service.allocator.free(processor.config.source);
 
             try processor.setup();
+            defer processor.deinit();
             // Generates instrumented source with breakpoints and debug outputs applied
             const applied = try processor.apply();
             return applied;
