@@ -43,9 +43,6 @@ jobs:
         with:
             bun-version: latest
 
-      - name: Inject secrets
-        run: echo '${{ secrets.ENV }}' > editor/deshader-vscode/.env
-
       - name: Install Makedeb
         run: bash -c "$(wget -qO - 'https://shlink.makedeb.org/install')"
         env: 

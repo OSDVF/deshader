@@ -1630,8 +1630,12 @@ pub const Shader = struct {
         pub const Steps = std.MultiArrayList(Step);
 
         pub fn init(self: *@This(), stage: *Stage) void {
-            self.stat = storage.Stat.now();
-            self.stage = stage;
+            const now = storage.Stat.now();
+            self.* = .{
+                .stat = now,
+                .i_stat = .empty_readonly,
+                .stage = stage,
+            };
         }
 
         pub fn deinit(self: *@This()) !void {
