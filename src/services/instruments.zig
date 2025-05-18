@@ -114,6 +114,9 @@ pub const Step = struct {
     };
     const Guarded = std.AutoHashMapUnmanaged(Processor.NodeId, void);
 
+    /// Just advance
+    const step_advance = "i";
+    /// Check for condition
     const step_if = "if_";
     const hit_storage = Processor.templates.prefix ++ "global_hit_id";
     const was_hit = Processor.templates.prefix ++ "global_was_hit";
@@ -147,13 +150,12 @@ pub const Step = struct {
     //
     pub fn disableBreakpoints(service: *shaders, stage_ref: shaders.Shader.Stage.Ref) !void {
         const stage: *shaders.Shader.Stage = service.Shaders.all.get(stage_ref) orelse return error.TargetNotFound;
-        const program = stage.program.?;
-        const c = controls(&program.channels) orelse return shaders.Error.NoInstrumentation;
+        const program = stage.program orelse return shaders.Error.NoInstrumentation;
+        const state = &((program.state orelse return shaders.Error.NoInstrumentation));
+        const c = controls(&state.channels) orelse return shaders.Error.NoInstrumentation;
 
         c.desired_bp = std.math.maxInt(u32); // TODO shader uses u32. Would 64bit be a lot slower?
-        if (program.state) |*st| {
-            st.dirty = true;
-        }
+        state.uniforms_dirty = true;
     }
 
     /// Continue to next breakpoint hit or the end of the shader
@@ -182,8 +184,7 @@ pub const Step = struct {
         const next = (if (r.reached) |s| s.counter else 0) +% 1;
 
         if (c.desired_step == null) {
-            // invalidate instrumented code because stepping was previously disabled
-            state.dirty = true;
+            stage.invalidate();
         }
 
         c.desired_step = next; //TODO limits
@@ -198,7 +199,7 @@ pub const Step = struct {
 
         if (c.desired_step) {
             c.desired_step = null;
-            shader.program.?.state.?.dirty = true;
+            shader.invalidate();
         }
     }
 
@@ -207,6 +208,11 @@ pub const Step = struct {
         const shader: *shaders.Shader.Stage = service.Shaders.all.get(shader_ref) orelse return error.TargetNotFound;
         const state = &((shader.program orelse return shaders.Error.NoInstrumentation).state orelse return shaders.Error.NoInstrumentation);
         const c = controls(&state.channels) orelse return shaders.Error.NoInstrumentation;
+
+        if (c.desired_step == null) {
+            shader.invalidate();
+        }
+
         c.desired_step = 0;
         c.desired_bp = 0;
 
@@ -549,7 +555,12 @@ pub const Step = struct {
         try processor.insertEnd("uniform uint " ++ desired_step ++ ";\n", processor.after_version, 0);
         try processor.insertEnd("uniform uint " ++ desired_bp ++ ";\n", processor.after_version, 0);
 
-        // #define step check macros
+        // #define step adnvance and check macros (for better insturmented code readability)
+        try processor.insertEnd(try processor.print(
+            "#define {s}{s} (" ++ step_counter ++ "++)\n",
+            .{ step_identifier, step_advance },
+        ), processor.after_version, 0);
+
         try processor.insertEnd(try processor.print(
             "#define {s}{s}(id, cond, ret) if((" ++ step_counter ++ ">=" ++ desired_step ++ ") || cond )" ++
                 "{{{s}{s}=id;{s}{s}=" ++ step_counter ++ ";{s}=true;return ret;}}else " ++
@@ -619,9 +630,13 @@ pub const Step = struct {
                         span.length(),
                     );
                 } else {
-                    // just remove the __step__() identifier
+                    // just advance the step counter
                     try context.inserts.insertEnd(
-                        "",
+                        try processor.print("{s}{s}{s}", .{
+                            step_identifier,                                         step_advance,
+                            // not wrapped in expression
+                            if (context.inserts == &processor.inserts) ";" else ",",
+                        }),
                         span.start,
                         span.length(),
                     );

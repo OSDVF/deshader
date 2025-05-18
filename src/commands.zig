@@ -58,6 +58,7 @@ pub const MutliListener = struct {
 
     // various command providers
     http: ?*positron.Provider = null,
+    // TODO make this array safe with mutex
     // SAFETY: private variable assigned in the `start()` function
     ws: std.ArrayList(*websocket.Conn) = undefined,
 
@@ -606,6 +607,15 @@ pub const MutliListener = struct {
                 self.context.do_resume = true;
             }
         }
+
+        pub fn close(self: *@This()) void {
+            for (self.context.ws.items, 0..) |ws, i| {
+                if (ws == self.conn) {
+                    _ = self.context.ws.swapRemove(i);
+                    break;
+                }
+            }
+        }
     };
 
     fn stringToBool(val: ?String) bool {
@@ -945,6 +955,8 @@ pub const MutliListener = struct {
             const in_params = try parseArgs(dap.PauseArguments, args);
             const running = shaders.Running.Locator.parse(in_params.value.threadId);
             try instruments.Step.pause(try running.service(), running.stage());
+
+            instance.?.unPause();
         }
 
         pub fn pauseMode(args: ?ArgumentsMap) !void {
@@ -1001,6 +1013,17 @@ pub const MutliListener = struct {
 
         pub fn readMemory(_: ?ArgumentsMap) !void {
             //TODO
+        }
+
+        /// Revert all instrumentation state and restart debugging
+        pub fn restart(_: ?ArgumentsMap) !void {
+            DeshaderLog.info("Restarting debugging", .{});
+            for (shaders.allServices()) |s| {
+                s.revert_requested = true;
+            }
+            shaders.debugging = true;
+
+            instance.?.unPause();
         }
 
         pub fn scopes(_: ?ArgumentsMap) !void {

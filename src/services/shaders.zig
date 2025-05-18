@@ -105,6 +105,7 @@ var breakpoints_counter: usize = 0;
 
 pub var available_data: std.StringHashMap(Data) = undefined;
 pub var data_breakpoints: std.StringHashMap(StoredDataBreakpoint) = undefined;
+/// Set to true to indicate a request for starting debugging to the backend
 pub var debugging = false;
 /// Sets if only the selected shader thread will be paused and the others will run the whole program
 pub var single_pause_mode = true; // TODO more modes (breakpoint only, free run)
@@ -1253,14 +1254,16 @@ pub const Shader = struct {
         pub fn instrumentAndCompile(self: *Shader.Stage, service: *Service) !void {
             // create stage state
             const state = try service.state.getOrPutValue(service.allocator, self.ref, State{});
+            errdefer {
+                service.state.removeByPtr(state.key_ptr);
+                self.state = null;
+            }
             self.state = state.value_ptr;
 
             // Get new instrumentation
-            var instrumentation = try self.instrument(service);
-            errdefer {
-                //_ = service.state.remove(stage.ref);
-                instrumentation.deinit(self.allocator);
-            }
+            const instrumentation = try self.instrument(service);
+            defer instrumentation.deinit(self.allocator);
+
             if (state.value_ptr.channels.diagnostics.items.len > 0) {
                 log.info("Stage {x} instrumentation diagnostics:", .{self.ref});
                 for (state.value_ptr.channels.diagnostics.items) |diag| {
@@ -2889,11 +2892,8 @@ pub fn checkDebuggingOrRevert(service: *Service) bool {
     if (service.revert_requested) {
         service.revert_requested = false;
         service.revert() catch |err| log.err("Failed to revert instrumentation: {} at {?}", .{ err, @errorReturnTrace() });
-        debugging = false;
-        return false;
-    } else {
-        return debugging;
     }
+    return debugging;
 }
 
 const ShaderInfoForGLSLang = struct {

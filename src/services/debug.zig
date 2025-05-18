@@ -350,7 +350,7 @@ pub const ConfigurationDoneResponse = struct {
     success: bool,
 };
 
-pub const LaunchRequest = struct {
+pub const LaunchArguments = struct {
     args: ?[]const String,
     console: ?ConsoleType,
     consoleHost: ?String,
