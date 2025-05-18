@@ -1141,7 +1141,7 @@ fn addVcpkgInstalledPaths(b: *std.Build, c: anytype, triplet: String, debug_lib:
 }
 
 /// Must be called at the end of configure phase, because it could dispatch vcpkg installation
-fn linkVcpkgLibrary(compile: anytype, name: String, triplet: String, debug: bool) !void {
+fn linkVcpkgLibraryStatus(compile: anytype, name: String, triplet: String, debug: bool) !bool {
     const b = if (@hasField(@TypeOf(compile.*), "step")) compile.step.owner else compile.owner;
     const target = if (@hasDecl(@TypeOf(compile.*), "rootModuleTarget")) compile.rootModuleTarget() else if (compile.resolved_target) |r|
         r.result
@@ -1174,7 +1174,7 @@ fn linkVcpkgLibrary(compile: anytype, name: String, triplet: String, debug: bool
         ))) |full_name| {
             compile.addObjectFile(.{ .cwd_relative = full_name });
             log.info("Linked {s} from VCPKG", .{full_name});
-            return;
+            return true;
         } else if (try fileWithPrefixExists(b.allocator, vcpkg_dir_real, try std.mem.concat(
             b.allocator,
             u8,
@@ -1182,12 +1182,17 @@ fn linkVcpkgLibrary(compile: anytype, name: String, triplet: String, debug: bool
         ))) |full_name| {
             compile.addObjectFile(.{ .cwd_relative = full_name });
             log.info("Linked {s} from VCPKG", .{full_name});
-            return;
+            return true;
         }
     }
+    return false;
+}
 
-    if (@hasField(@TypeOf(compile.*), "root_module")) compile.root_module.linkSystemLibrary(name, .{}) else compile.linkSystemLibrary(name, .{});
-    log.warn("Could not link {s} from VCPKG but maybe it is in system.", .{name});
+fn linkVcpkgLibrary(compile: anytype, name: String, triplet: String, debug: bool) !void {
+    if (!try linkVcpkgLibraryStatus(compile, name, triplet, debug)) {
+        if (@hasField(@TypeOf(compile.*), "root_module")) compile.root_module.linkSystemLibrary(name, .{}) else compile.linkSystemLibrary(name, .{});
+        log.warn("Could not link {s} from VCPKG but maybe it is in system.", .{name});
+    }
 }
 
 fn installVcpkgLibrary(i: *std.Build.Step.InstallArtifact, name: String, triplet: String, debug_lib: bool) !String {
@@ -1241,7 +1246,8 @@ fn linkGlew(c: *std.Build.Step.Compile, prefer_system: bool, triplet: String, de
     } else if (prefer_system) {
         c.linkSystemLibrary2("glew", .{ .preferred_link_mode = .dynamic });
     } else {
-        try linkVcpkgLibrary(c, "glew", triplet, debug_lib);
+        if (!try linkVcpkgLibraryStatus(c, "glew", triplet, debug_lib))
+            _ = try linkVcpkgLibraryStatus(c, "GLEW", triplet, debug_lib); // is capitalized on Ubuntu for some reason
     }
 }
 
