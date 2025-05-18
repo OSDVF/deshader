@@ -208,7 +208,7 @@ pub fn build(b: *std.Build) !void {
             deshader_lib.linkFramework("OpenGL");
         },
         .windows => {
-            deshader_lib.linkSystemLibrary("Crypt32");
+            deshader_lib.linkSystemLibrary("crypt32");
         },
         else => {},
     }

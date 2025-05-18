@@ -24,6 +24,7 @@ const c = @cImport({
         @cInclude("windows.h");
         @cInclude("GL/gl.h"); // Letter case is important (when cross-compiling from Linux)
     } else {
+        @cDefine("_GNU_SOURCE", "1");
         @cInclude("dlfcn.h");
     }
 });

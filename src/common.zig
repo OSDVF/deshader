@@ -259,7 +259,7 @@ pub fn selfExePath() !String {
 pub fn LoadLibraryEx(path_or_name: String, only_system: bool) !std.os.windows.HMODULE {
     if (!only_system) {
         if (std.fs.path.dirname(path_or_name)) |dirname| {
-            const dir = try std.unicode.utf8ToUtf16LeWithNull(allocator, dirname);
+            const dir = try std.unicode.utf8ToUtf16LeAllocZ(allocator, dirname);
             defer allocator.free(dir);
             if (c.AddDllDirectory(dir) == null) {
                 log.err("Failed to add DLL directory {s}: {}", .{ dirname, std.os.windows.kernel32.GetLastError() });
