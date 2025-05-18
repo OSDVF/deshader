@@ -22,7 +22,6 @@ const positron = @import("positron");
 const serve = @import("serve");
 const common = @import("common");
 const options = @import("options");
-const ctregex = @import("ctregex");
 const extended_wv = @import("extended_wv.zig");
 
 const log = std.log.scoped(.GUI);
@@ -170,7 +169,7 @@ pub fn createEditorProvider(port: u16, commands_uri: ?String, lsp_host: ?String)
         defer provider.allocator.free(concatOrigin);
         try provider.allowed_origins.?.insert(concatOrigin);
     }
-    const dll_path = if (builtin.mode == .Debug) try resolveSelfDllTarget(provider.allocator);
+    const dll_path = if (builtin.mode == .Debug) try resolveSelfDllTarget(provider.allocator) else "";
 
     defer if (builtin.mode == .Debug) provider.allocator.free(dll_path);
     if (builtin.mode == .Debug) {
@@ -182,17 +181,21 @@ pub fn createEditorProvider(port: u16, commands_uri: ?String, lsp_host: ?String)
         try provider.embedded.append(positron.Provider.EmbedDir{ .address = "/", .path = editor_dir_path, .resolveMime = &resolveMime });
     }
     inline for (options.files) |file| {
-        const lastDot = std.mem.lastIndexOf(u8, file, &[_]u8{@as(u8, '.')});
+        @setEvalBranchQuota(5000);
+        const lastDot = comptime std.mem.lastIndexOfScalar(u8, file, '.');
         const fileExt = if (lastDot != null) file[lastDot.? + 1 ..] else "";
         const mime_type = resolveMime(file);
 
-        if (builtin.mode != .Debug and try ctregex.search("map|ts", .{}, fileExt) != null) {
+        if (builtin.mode != .Debug and
+            comptime (std.ascii.indexOfIgnoreCase(fileExt, "map") != null or std.ascii.indexOfIgnoreCase(fileExt, "ts") != null))
+        {
             comptime continue; // Do not include sourcemaps in release builds
         }
+
         const f_address = file[options.editor_dir.len..];
         // assume all paths start with `options.editor_dir`
         const compressed_or_content = if (builtin.mode != .Debug) @embedFile(file);
-        if (comptime std.ascii.eqlIgnoreCase(f_address, ext_js_address)) {
+        if (std.ascii.eqlIgnoreCase(f_address, ext_js_address)) {
             const decompressed_data = try decompress(provider, file, dll_path, compressed_or_content);
             defer provider.allocator.free(decompressed_data);
             // Inject editor config into Deshader extension

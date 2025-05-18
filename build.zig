@@ -683,7 +683,7 @@ pub fn build(b: *std.Build) !void {
                 try files.append(path);
                 if (optimize != .Debug) {
                     // In debug mode files are served from physical filesystem so one does not need to recompile Deshader each time
-                    try embedCompressedFile(deshader_lib, if (options.editor) &dependencies_step.step else null, path);
+                    try embedCompressedFile(launcher_exe, if (options.editor) &dependencies_step.step else null, path);
                 }
             }
         }
