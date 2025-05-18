@@ -69,9 +69,19 @@ pub const GenerateStubsStep = struct {
 ///
 /// The function returns an error if there is an issue with parsing the main.zig file or writing to the output file.
 pub fn generateStubs(allocator: std.mem.Allocator, output: std.fs.File, short_names: bool) !void {
+    const stubs_start = "#STUBS START HERE";
     // Struct decalrations
-    try output.writeAll(@embedFile("../src/declarations/shaders.zig"));
-    try output.writeAll(@embedFile("../src/declarations/instruments.zig"));
+    inline for (.{
+        @embedFile("../src/declarations/types.zig"),
+        @embedFile("../src/declarations/instrumentation.zig"),
+        @embedFile("../src/declarations/shaders.zig"),
+    }) |content| {
+        if (std.mem.indexOf(u8, content, stubs_start)) |start| {
+            try output.writeAll(content[start + 1 + stubs_start.len ..]);
+        } else {
+            try output.writeAll(content);
+        }
+    }
 
     // Function declarations
     var tree = try std.zig.Ast.parse(allocator, @embedFile("../src/main.zig"), .zig);

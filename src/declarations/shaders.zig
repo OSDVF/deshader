@@ -12,6 +12,9 @@
 //
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
+const types = @import("types.zig");
+const PlatformRef = types.PlatformRef;
+// #STUBS START HERE
 
 /// Both API specific and agnostic declarations that will be included verbatim in the exported deshader.zig header file
 const CString = [*:0]const u8;
@@ -31,7 +34,7 @@ pub const ExistsBehavior = enum(c_int) {
 pub const LanguageType = enum(c_int) { GLSL = 1, _ };
 
 /// Specifies both shader type and API backend type
-pub const Stage = enum(c_int) {
+pub const StageType = enum(c_int) {
     gl_vertex = 0x8b31,
     gl_fragment = 0x8b30,
     gl_geometry = 0x8dd9,
@@ -57,7 +60,7 @@ pub const Stage = enum(c_int) {
     unknown = 0,
 
     /// Including the dot
-    pub fn toExtension(stage: Stage) []const u8 {
+    pub fn toExtension(stage: StageType) []const u8 {
         return switch (stage) {
             .gl_fragment, .vk_fragment => ".frag",
             .gl_vertex, .vk_vertex => ".vert",
@@ -77,18 +80,18 @@ pub const Stage = enum(c_int) {
         };
     }
 
-    pub fn toString(stage: Stage) []const u8 {
+    pub fn toString(stage: StageType) []const u8 {
         return stage.toExtension()[1..];
     }
 
-    pub fn isFragment(self: Stage) bool {
+    pub fn isFragment(self: StageType) bool {
         return switch (self) {
             .gl_fragment, .vk_fragment => true,
             else => false,
         };
     }
 
-    pub fn isVertex(self: Stage) bool {
+    pub fn isVertex(self: StageType) bool {
         return switch (self) {
             .gl_vertex, .vk_vertex => true,
             else => false,
@@ -96,14 +99,14 @@ pub const Stage = enum(c_int) {
     }
 };
 
-/// Mutiple shader source codes which are meant to be compiled together as a single shader
-/// Used for communicating through ABI boundaries
-pub const SourcesPayload = extern struct {
+/// Mutiple shader source codes which are meant to be compiled together as a single shader stage.
+/// This struct is used for communicating through ABI boundaries.
+pub const StagePayload = extern struct {
     /// Graphics API level shader reference.
     /// Will be GLuint for OpenGL, pointer to VkShaderModule on Vulkan.
     ///
     /// Special ref 0 means that this is source part is a named string (not a standalone shader)
-    ref: usize = 0,
+    ref: PlatformRef = 0,
     /// Shader tag/virtual paths list. Has the size of 'count'.
     /// Paths are copied when stored by Deshader.
     ///
@@ -123,7 +126,7 @@ pub const SourcesPayload = extern struct {
     // Count of paths/sources/contexts
     count: usize = 0,
     /// Represents both type of the shader (vertex, fragment, etc) and the graphics backend (GL, VK)
-    stage: Stage = @enumFromInt(0), // Default to unknown (_) value
+    stage: StageType = @enumFromInt(0), // Default to unknown (_) value
     /// Represents the language of the shader source (GLSL ...)
     language: LanguageType = @enumFromInt(0), // Default to unknown (_) value
     /// (Non-null => user-specified) or default source assignment and compile function to be executed when
@@ -133,15 +136,15 @@ pub const SourcesPayload = extern struct {
     /// length is the length of the `instrumented` source. If it is 0, then there is no instrumented source.
     /// The instrumented source is also always null-terminated.
     /// Should return `0` when there is no error.
-    compile: ?*const fn (source: SourcesPayload, instrumented: CString, length: i32) callconv(.c) u8 = null,
+    compile: ?*const fn (source: StagePayload, instrumented: CString, length: i32) callconv(.c) u8 = null,
     /// Get the instrumented version of the source code. Deshader executes this function when requested by the frontend.
     /// TODO: if the function is not provided, store always the source code somewhere.
-    currentSource: ?*const fn (context: ?*anyopaque, ref: usize, path: ?CString, length: usize) callconv(.c) ?CString = null,
+    currentSource: ?*const fn (context: ?*anyopaque, ref: PlatformRef, path: ?CString, length: usize) callconv(.c) ?CString = null,
     /// Free the memory returned by `currentSource`
-    free: ?*const fn (ref: usize, context: ?*anyopaque, string: CString) callconv(.c) void = null,
+    free: ?*const fn (ref: PlatformRef, context: ?*anyopaque, string: CString) callconv(.c) void = null,
     /// Function to execute when user wants to save a source in the Deshader editor. Set to override the default behavior.
     /// The function must return 0 if there is no error.
-    save: ?*const fn (ref: usize, index: usize, content: CString, length: usize, physical: ?CString) callconv(.c) u8 = null,
+    save: ?*const fn (ref: PlatformRef, index: usize, content: CString, length: usize, physical: ?CString) callconv(.c) u8 = null,
 
     pub fn toString(self: *const @This()) []const u8 {
         return self.stage.toExtension();
@@ -150,9 +153,10 @@ pub const SourcesPayload = extern struct {
 
 /// See `SourcesPayload`
 pub const ProgramPayload = extern struct {
-    ref: usize = 0,
+    ref: PlatformRef = 0,
     path: ?CString = null,
-    shaders: ?[*]usize = null,
+    /// Shaders to be attached to the program
+    shaders: ?[*]PlatformRef = null,
     count: usize = 0,
     context: ?*anyopaque = null,
     /// If `ProgramPayload.count` is 0, the function will only link the program.
@@ -161,4 +165,17 @@ pub const ProgramPayload = extern struct {
     ///
     /// If the program was already linked in the past, the function must also re-set all the uniforms and attributes to their original values.
     link: ?*const fn (self: ProgramPayload) callconv(.c) u8 = null,
+};
+
+pub const BreakpointResult = extern struct {
+    /// Must be session-unique
+    id: usize = 0,
+    verified: bool = false,
+    message: ?[*:0]const u8 = null,
+    line: usize = 0,
+    column: usize = 0,
+    end_line: usize = 0,
+    end_column: usize = 0,
+    /// Reason for not being verified 'pending', 'failed'
+    reason: ?[*:0]const u8 = null,
 };

@@ -184,6 +184,7 @@ pub const DependenciesStep = struct {
     }
 
     fn doSubSteps(self: *DependenciesStep, sub_steps: []SubStep, progressNode: std.Progress.Node) !void {
+        if (sub_steps.len == 0) std.log.warn("No dependencies to build", .{});
         // Spawn
         for (sub_steps) |*sub_step| {
             if (sub_step.create) |c| {

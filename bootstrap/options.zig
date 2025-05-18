@@ -16,7 +16,7 @@ pub const Options = struct {
     llvm: bool,
     log_intercept: bool,
     log_level: Level,
-    memory_frames: u32,
+    memory_safety: ?u32,
     output: OutputType,
     sanitize: bool,
     sdk: ?[]const u8,

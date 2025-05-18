@@ -24,24 +24,33 @@ const std = @import("std");
 const builtin = @import("builtin");
 const analyzer = @import("glsl_analyzer");
 const log = @import("common").log;
-const decls = @import("../declarations/shaders.zig");
+const decls = @import("../declarations.zig");
 const shaders = @import("shaders.zig");
 const sema = @import("sema.zig");
 
 const String = []const u8;
 const CString = [*:0]const u8;
 const ZString = [:0]const u8;
+// TODO this sould be a hashmap keyed by NodeIds
+const CompoundResult = sema.Symbol.Content;
+
 pub const NodeId = u32;
 
-pub const Error = error{ InvalidTree, OutOfStorage, NoArguments };
+pub const Error = error{
+    InvalidTree,
+    OutOfStorage,
+    NoArguments,
+    /// Type resolution failed for expression that requires it
+    Resolution,
+};
 pub const Parsed = struct {
     arena_state: std.heap.ArenaAllocator.State,
     tree: analyzer.parse.Tree,
     ignored: []const analyzer.parse.Token,
     diagnostics: []const analyzer.parse.Diagnostic,
 
-    /// sorted ascending by position in the code
-    calls: std.StringHashMap(std.ArrayList(NodeId)),
+    /// Maps function names to the list of their calls sorted ascending by position in the code
+    calls: std.StringHashMapUnmanaged(std.AutoArrayHashMapUnmanaged(NodeId, void)),
     /// GLSL version
     version: u16,
     /// Is this an OpenGL ES shader?
@@ -56,33 +65,34 @@ pub const Parsed = struct {
     }
 
     pub fn parseSource(
-        parent_allocator: std.mem.Allocator,
+        allocator: std.mem.Allocator,
         text: []const u8,
     ) (std.fmt.ParseIntError || std.mem.Allocator.Error || analyzer.parse.Parser.Error)!@This() {
-        var arena = std.heap.ArenaAllocator.init(parent_allocator);
+        var arena = std.heap.ArenaAllocator.init(allocator);
         errdefer arena.deinit();
+        const arena_allocator = arena.allocator();
 
-        var diagnostics = std.ArrayList(analyzer.parse.Diagnostic).init(arena.allocator());
+        var diagnostics = std.ArrayList(analyzer.parse.Diagnostic).init(arena_allocator);
 
-        var ignored = std.ArrayList(analyzer.parse.Token).init(parent_allocator);
+        var ignored = std.ArrayList(analyzer.parse.Token).init(arena_allocator);
         defer ignored.deinit();
 
-        var calls = std.StringHashMap(std.ArrayList(NodeId)).init(arena.allocator());
+        var calls = std.StringHashMapUnmanaged(std.AutoArrayHashMapUnmanaged(NodeId, void)).empty;
         errdefer {
             var it = calls.valueIterator();
             while (it.next()) |v| {
-                v.deinit();
+                v.deinit(arena_allocator);
             }
-            calls.deinit();
+            calls.deinit(arena_allocator);
         }
 
-        const tree = try analyzer.parse.parse(arena.allocator(), text, .{
+        const tree = try analyzer.parse.parse(arena_allocator, text, .{
             .ignored = &ignored,
             .diagnostics = &diagnostics,
             .calls = &calls,
         });
 
-        var extensions = std.ArrayList([]const u8).init(arena.allocator());
+        var extensions = std.ArrayList([]const u8).init(arena_allocator);
         errdefer extensions.deinit();
 
         var version: u16 = 0;
@@ -130,105 +140,46 @@ pub const Result = struct {
     /// The new source code with the inserted instrumentation or null if no changes were made by the instrumentation
     source: ?CString,
     length: usize,
-    channels: Result.StageChannels,
     spirv: ?String,
-
-    /// Actually it can be modified by the platform specific code (e.g. to set the selected thread location)
-    pub const StageChannels = struct {
-        /// Filled with storages created by the individual instruments
-        /// Do not access this from instruments directly. Use `Processor.outChannel` instead.
-        out: std.AutoArrayHashMapUnmanaged(u64, *OutputStorage) = .empty,
-        /// Filled with control variables created by the individual instruments (e.g. desired step)
-        controls: std.AutoArrayHashMapUnmanaged(u64, *anyopaque) = .empty,
-        /// Provided for storing `result` variables from the platform backend instrument clients (e.g. reached step)
-        responses: std.AutoArrayHashMapUnmanaged(u64, *anyopaque) = .empty,
-        /// Each group has the dimensions of `group_dim`
-        group_dim: []usize,
-        /// Number of groups in each grid dimension
-        group_count: ?[]usize = null,
-
-        /// Function names. Index in the values array is the function's id (used when creating a stack trace)
-        functions: []String,
-        diagnostics: std.ArrayListUnmanaged(struct {
-            d: analyzer.parse.Diagnostic,
-            free: bool = false,
-        }) = .{},
-
-        pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
-            for (self.out.values()) |v| {
-                allocator.destroy(v);
-            }
-            self.out.deinit(allocator);
-            self.controls.deinit(allocator);
-            for (self.diagnostics.items) |d| {
-                if (d.free)
-                    allocator.free(d.d.message);
-            }
-            self.diagnostics.deinit(allocator);
-            allocator.free(self.group_dim);
-            for (self.functions) |f| {
-                allocator.free(f);
-            }
-            allocator.free(self.functions);
-        }
-
-        /// The total global count of threads summed from all dimensions and all groups
-        pub fn totalThreadsCount(self: @This()) usize {
-            var total: usize = 1;
-            for (self.group_dim) |dim| {
-                total *= dim;
-            }
-            if (self.group_count) |groups| {
-                for (groups) |count| {
-                    total *= count;
-                }
-            }
-            return total;
-        }
-
-        pub fn getControl(self: @This(), comptime T: type, id: u64) ?T {
-            return if (self.controls.get(id)) |p| @ptrCast(p) else null;
-        }
-
-        pub fn getResponse(self: @This(), comptime T: type, id: u64) ?T {
-            return if (self.responses.get(id)) |p| @ptrCast(p) else null;
-        }
-    };
 
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
         if (self.source) |s| {
             allocator.free(s[0 .. self.length - 1 :0]);
         }
-        self.channels.deinit(allocator);
-    }
-
-    /// Frees the source buffer and returns the Output object
-    pub fn toOwnedChannels(self: *@This(), allocator: std.mem.Allocator) Result.StageChannels {
-        if (self.source) |s| {
-            allocator.free(s[0 .. self.length - 1 :0]); // Include the null-terminator (asserting :0 adds one to the length)
-        }
-        return self.channels;
     }
 };
 
-/// Prototype for function that instruments the shader code
+/// Payload of function prototypes for manipulating the shader code
 pub const Instrument = struct {
-    pub const Id = u64;
-    id: Id,
+    pub const ID = u64;
+    id: ID,
     tag: ?analyzer.parse.Tag,
+    /// An array of IDs of instruments that should have their `instrument` method called before this one
+    dependencies: ?[]const ID,
 
     collect: ?*const fn () void, //TODO
     constructors: ?*const fn (processor: *Processor, main: NodeId) anyerror!void,
-    deinit: ?*const fn (state: *shaders.State) anyerror!void,
-    instrument: ?*const fn (processor: *Processor, node: NodeId, context: *TraverseContext) anyerror!void,
+    deinitProgram: ?*const fn (program: *decls.instrumentation.Program) anyerror!void,
+    deinitStage: ?*const fn (stage: *decls.types.Stage) anyerror!void,
+    instrument: ?*const fn (
+        processor: *Processor,
+        node: NodeId,
+        result: ?*const decls.instrumentation.Expression,
+        context: *TraverseContext,
+    ) anyerror!void,
     preprocess: ?*const fn (processor: *Processor, source_parts: []*shaders.Shader.SourcePart, result: *std.ArrayListUnmanaged(u8)) anyerror!void,
+    /// Called when a new instrumentation is created for a program that has been already instrumented
+    renewProgram: ?*const fn (state: *decls.instrumentation.Program) anyerror!void,
+    /// Called when a new instrumentation is created for a stage that has been already instrumented
+    renewStage: ?*const fn (state: *decls.types.Stage) anyerror!void,
     setup: ?*const fn (processor: *Processor) anyerror!void,
-    /// Can be used to destroy scratch variables
-    setupDone: ?*const fn (processor: *Processor) anyerror!void,
+    /// Runs after the end of tree traversal. Can be used to destroy scratch variables
+    finally: ?*const fn (processor: *Processor) anyerror!void,
 };
 
-/// Physically are the channels always stored in one of program's stage's `Channels` and thes maps inside this struct contains references only
-pub const Channels = struct {
+// TODO create Channels mixin
+/// Physically are the channels always stored in one of program's stage's `Channels` and thes maps inside this struct contains references only.
+pub const ProgramChannels = struct {
     out: std.AutoArrayHashMapUnmanaged(u64, *Processor.OutputStorage) = .empty,
     controls: std.AutoArrayHashMapUnmanaged(u64, *anyopaque) = .empty,
     responses: std.AutoArrayHashMapUnmanaged(u64, *anyopaque) = .empty,
@@ -245,6 +196,63 @@ pub const Channels = struct {
         self.out.deinit(allocator);
         self.controls.deinit(allocator);
         self.responses.deinit(allocator);
+    }
+
+    pub fn renew(self: *@This()) void {
+        self.out.clearRetainingCapacity();
+    }
+};
+
+/// Output channels and control variables that can be modified by the platform specific (backend) code (e.g. to set the selected thread location).
+/// `out` variables are flushed every time a new instrumentation is created. `controls` and `responses` survive every re-instrumentation and are
+/// flushed only when the source code is modified externally. Backend should also deinit all readbacks when a re-instrumentation is performed.
+pub const StageChannels = struct {
+    /// Filled with storages created by the individual instruments
+    /// Do not access this from instruments directly. Use `Processor.outChannel` instead.
+    out: std.AutoArrayHashMapUnmanaged(u64, *OutputStorage) = .empty,
+    /// Filled with control variables created by the individual instruments (e.g. desired step)
+    controls: std.AutoArrayHashMapUnmanaged(u64, *anyopaque) = .empty,
+    /// Provided for storing `result` variables from the platform backend instrument clients (e.g. reached step)
+    responses: std.AutoArrayHashMapUnmanaged(u64, *anyopaque) = .empty,
+
+    diagnostics: std.ArrayListUnmanaged(struct {
+        d: analyzer.parse.Diagnostic,
+        free: bool = false,
+    }) = .{},
+
+    pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+        for (self.out.values()) |v| {
+            allocator.destroy(v);
+        }
+        self.out.deinit(allocator);
+        self.controls.deinit(allocator);
+        for (self.diagnostics.items) |d| {
+            if (d.free)
+                allocator.free(d.d.message);
+        }
+        self.diagnostics.deinit(allocator);
+    }
+
+    pub fn getOrCreateControl(self: *@This(), allocator: std.mem.Allocator, comptime T: type, id: u64, default_value: T) !*T {
+        return if (self.controls.get(id)) |p| @alignCast(@ptrCast(p)) else blk: {
+            const p = try self.allocator.create(T);
+            p.* = default_value;
+            try self.controls.put(allocator, id, p);
+            break :blk p;
+        };
+    }
+
+    pub fn getControl(self: @This(), comptime T: type, id: u64) ?T {
+        return if (self.controls.get(id)) |p| @alignCast(@ptrCast(p)) else null;
+    }
+
+    pub fn getResponse(self: @This(), comptime T: type, id: u64) ?T {
+        return if (self.responses.get(id)) |p| @alignCast(@ptrCast(p)) else null;
+    }
+
+    pub fn renew(self: *@This()) void {
+        self.out.clearRetainingCapacity();
+        self.diagnostics.clearRetainingCapacity();
     }
 };
 
@@ -289,6 +297,7 @@ pub const Config = struct {
         }
     };
 
+    /// This allocator will be used for allocating all the output channels, controls and responses. So it should not be a temporary arena allocator.
     allocator: std.mem.Allocator,
     spec: analyzer.Spec,
     source: String,
@@ -297,14 +306,15 @@ pub const Config = struct {
     force_support: bool,
     group_dim: []const usize,
     groups_count: ?[]const usize,
-    /// Program-wide channels, shared between all shader stages. The channels should be onlly Buffers
-    program: *Channels,
+    /// Program-wide channels, shared between all shader stages. The out channels should be only Buffers
+    program: *ProgramChannels,
     instruments_any: []const Instrument,
     instruments_scoped: std.EnumMap(analyzer.parse.Tag, std.ArrayListUnmanaged(Instrument)),
     max_buffers: usize,
     max_interface: usize,
-    shader_stage: decls.Stage,
+    shader_stage: decls.shaders.StageType,
     single_thread_mode: bool,
+    stage: *StageChannels,
     /// Program-wide
     uniform_locations: *std.ArrayListUnmanaged(String), //will be filled by the instrumentation routine
     /// Program-wide
@@ -320,7 +330,7 @@ config: Config,
 //
 // Working variables
 //
-threads_total: usize = 0, // Sum of all threads dimesions sizes
+threads_total: usize = 1, // Product of all threads dimesions sizes
 /// Dimensions of the output buffer (vertex count / screen resolution / global threads count)
 // SAFETY: assigned in setup()
 threads: []usize = undefined,
@@ -329,12 +339,6 @@ threads: []usize = undefined,
 after_version: usize = 0,
 // SAFETY: assigned in setup()
 arena: std.heap.ArenaAllocator = undefined,
-channels: Result.StageChannels = .{ // undefined fields will be assigned in setup()
-    // SAFETY: assigned in setup()
-    .group_dim = undefined,
-    // SAFETY: assigned in setup()
-    .functions = undefined,
-},
 last_interface_decl: usize = 0,
 last_interface_node: NodeId = 0,
 last_interface_location: usize = 0,
@@ -344,7 +348,7 @@ vulkan: bool = false,
 parsed: Parsed = undefined,
 // SAFETY: assigned in setup()
 rand: std.Random.DefaultPrng = undefined,
-scratch: std.AutoArrayHashMapUnmanaged(Instrument.Id, *anyopaque) = .empty,
+scratch: std.AutoArrayHashMapUnmanaged(Instrument.ID, *anyopaque) = .empty,
 
 /// Maps offsets in file to the inserted instrumented code fragments (sorted)
 /// Both the key and the value are stored as Treap's Key (a bit confusing)
@@ -360,25 +364,25 @@ pub const templates = struct {
     pub const cursor = "cursor";
     const temp = prefix ++ "temp";
     pub const local_thread_counts = prefix ++ "threads";
-    /// Provided as a identifier of the current thread in global space
-    pub const global_thread_id = prefix ++ "global_id";
+    /// Provided as a identifier of the current thread in linear one-dimensional space
+    pub const linear_thread_id = prefix ++ "linear_id";
     pub const wg_size = Processor.templates.prefix ++ "workgroup_size";
 };
 
-const echo_diagnostics = false;
+const echo_diagnostics = builtin.mode == .Debug;
 
 pub fn deinit(self: *@This()) void {
     _ = self.toOwnedChannels();
-    self.channels.deinit(self.config.allocator);
+    self.config.stage.deinit(self.config.allocator);
 }
 
-pub fn toOwnedChannels(self: *@This()) Result.StageChannels {
+pub fn toOwnedChannels(self: *@This()) StageChannels {
     self.config.allocator.free(self.threads);
     self.inserts.deinit(self.config.allocator);
     self.scratch.deinit(self.config.allocator);
     self.arena.deinit();
 
-    return self.channels;
+    return self.config.stage;
 }
 
 fn findDirectParent(tag: analyzer.parse.Tag, tree: analyzer.parse.Tree, node: NodeId, comptime extractor: type) ?extractor {
@@ -396,24 +400,29 @@ pub fn setup(self: *@This()) !void {
     self.arena = std.heap.ArenaAllocator.init(self.config.allocator);
     self.rand = std.Random.DefaultPrng.init(@intCast(std.time.timestamp()));
     self.inserts.init(self.config.allocator);
-    self.channels.group_dim = try self.config.allocator.dupe(usize, self.config.group_dim);
-    self.channels.group_count = if (self.config.groups_count) |g| try self.config.allocator.dupe(usize, g) else null;
 
     self.parsed = try Parsed.parseSource(self.config.allocator, self.config.source);
     defer self.parsed.deinit(self.config.allocator);
     const tree = self.parsed.tree;
     const source = self.config.source;
 
-    var function_id_counter: usize = 0;
+    var functions = sema.Scope.Functions.empty;
+    defer {
+        var it = functions.valueIterator();
+        while (it.next()) |v| {
+            v.deinit(self.config.allocator);
+        }
+        functions.deinit(self.config.allocator);
+    }
     var root_scope = sema.Scope{
-        .function_counter = &function_id_counter,
+        .functions = &functions,
     };
     defer root_scope.deinit(self.config.allocator);
 
     var root_ctx = TraverseContext{
         .block = tree.root,
         .function = null,
-        .inserts = self.inserts,
+        .inserts = &self.inserts,
         .scope = &root_scope,
         .statement = null,
     };
@@ -425,18 +434,18 @@ pub fn setup(self: *@This()) !void {
     self.after_version = self.parsed.version_span.end + 1; // assume there is a line break
     self.last_interface_decl = self.after_version;
 
-    if (self.config.groups_count) |groups| {
-        std.debug.assert(groups.len == self.config.group_dim.len);
+    if (self.config.groups_count) |group_count| {
+        std.debug.assert(group_count.len == self.config.group_dim.len);
 
-        self.threads = try self.config.allocator.alloc(usize, groups.len);
-        for (self.config.group_dim, groups, self.threads) |dim, count, *thread| {
+        self.threads = try self.config.allocator.alloc(usize, group_count.len);
+        for (self.config.group_dim, group_count, self.threads) |dim, count, *thread| {
             thread.* = dim * count;
         }
     } else {
         self.threads = try self.config.allocator.dupe(usize, self.config.group_dim);
     }
     for (self.threads) |thread| {
-        self.threads_total += thread;
+        self.threads_total *= thread;
     }
 
     try self.declareThreadId();
@@ -444,30 +453,81 @@ pub fn setup(self: *@This()) !void {
     // Run the setup phase of the instruments
     try self.runAllInstrumentsPhase(tree.root, "setup", .{self});
 
+    // Pre-pass to collect all the functions and resolve some shader characteristics
     // Iterate through top-level declarations
     // Traverse the tree top-down
     if (tree.nodes.len > 1) { // not only the `file` node
-        var node: NodeId = 0;
-        while (node < tree.nodes.len) : (node = tree.children(node).end) {
+        const children = tree.children(tree.root);
+        for (children.start..children.end) |n| {
+            const node: NodeId = @intCast(n);
             const tag = tree.tag(node);
             switch (tag) {
-                .function_declaration => {
-                    if (try root_scope.fill(self.config.allocator, tree, node, source)) |ext| {
-                        switch (ext) {
-                            .function => |decl| {
-                                const name = decl.get(.identifier, tree).?.text(source, tree);
+                .block_declaration => {
+                    const decl = analyzer.syntax.BlockDeclaration.tryExtract(tree, node) orelse return Error.InvalidTree;
+                    const name = try self.extractNodeTextForce(decl, .specifier);
+                    const t = try root_scope.getOrPutType(self.config.allocator, name);
 
-                                // Initialize hit indicator in the "step storage"
-                                if (std.mem.eql(u8, name, "main")) {
-                                    const block = decl.get(.block, tree).?;
+                    if (self.extract(decl, .variable)) |variable| {
+                        // The fields scoped inside the block
+                        const var_node = variable.node;
+                        const var_node_text = tree.nodeSpan(var_node).text(source);
+                        var content = try self.resolveNode(var_node, &root_ctx, false) orelse return Error.Resolution;
 
-                                    // Run the constructors phase of the instruments
-                                    try self.runAllInstrumentsPhase(node, "constructors", .{ self, block.node });
-                                }
+                        switch (content.type) {
+                            .array => |*array| {
+                                array.base = name;
                             },
-                            else => {},
+                            .basic => |*basic| {
+                                basic.* = name;
+                            },
                         }
-                    } else log.warn("Could not extract declaration at node {d}", .{node});
+
+                        try root_scope.fillVariable(self.config.allocator, var_node_text, content);
+                    }
+
+                    if (self.extract(decl, .fields)) |fields| {
+                        var it = fields.iterator();
+                        while (it.next(tree)) |field| {
+                            const field_spec = try self.resolveNode(try self.extractNodeForce(field, .specifier), &root_ctx, false) orelse
+                                return Error.Resolution;
+
+                            const field_vars = self.extract(field, .variables) orelse return Error.InvalidTree;
+                            var it2 = field_vars.iterator();
+                            while (it2.next(tree)) |variable| {
+                                const var_name = try self.extractNodeTextForce(variable, .name);
+                                try t.put(self.config.allocator, var_name, field_spec.type);
+                            }
+                        }
+                    }
+                },
+
+                .function_declaration => {
+                    const decl = analyzer.syntax.FunctionDeclaration.tryExtract(tree, node) orelse return Error.InvalidTree;
+                    const name = decl.get(.identifier, tree).?.text(source, tree);
+                    const p = decl.get(.parameters, tree);
+                    const parameter_types_list =
+                        if (p) |parameters| try self.extractParameters(parameters) else &.{};
+                    defer if (p) |_| {
+                        for (parameter_types_list) |*item| {
+                            item.deinit(self.config.allocator);
+                        }
+                        self.config.allocator.free(parameter_types_list);
+                    };
+
+                    try functions.put(self.config.allocator, .{
+                        .name = name,
+                        .parameters = parameter_types_list,
+                    }, sema.Symbol{
+                        .name = name,
+                        .content = try self.resolveNode(try self.extractNodeForce(decl, .specifier), &root_ctx, false) orelse return Error.Resolution,
+                    });
+
+                    if (std.mem.eql(u8, name, "main")) {
+                        const block = decl.get(.block, tree).?;
+
+                        // Run the constructors phase of the instruments
+                        try self.runAllInstrumentsPhase(node, "constructors", .{ self, block.node });
+                    }
                 },
                 .declaration => {
                     log.debug("Top level declaration: {s}", .{tree.nodeSpan(node).text(source)});
@@ -543,7 +603,7 @@ pub fn setup(self: *@This()) !void {
                             }
                         }
                         if (self.last_interface_node == node) {
-                            // TODO implicit locations až se vzbudíš, TODO glBindFragDataLocation
+                            // TODO implicit locations, TODO glBindFragDataLocation
                             self.last_interface_location = location orelse (self.last_interface_location + 1);
                         }
                     }
@@ -559,26 +619,15 @@ pub fn setup(self: *@This()) !void {
     }
 
     // Start the instrumentation by processing the root node
-    _ = try self.processNode(
-        tree.root,
-        &root_ctx,
-    );
+    _ = try self.processNode(tree.root, &root_ctx, true);
 
-    // Copy the function to id mapping to outputs
-    self.channels.functions = try self.config.allocator.alloc(String, root_scope.functions.size);
-    var it = root_scope.functions.keyIterator();
-    var i: usize = 0;
-    while (it.next()) |func| {
-        self.channels.functions[i] = try self.config.allocator.dupe(u8, func.*);
-        i += 1;
-    }
     //const result = try self.config.allocator.alloc([]const analyzer.lsp.Position, stops.items.len);
     //for (result, stops.items) |*target, src| {
     //    target.* = try self.config.allocator.dupe(analyzer.lsp.Position, src.items);
     //}
-    //self.channelss.steps = result;
-    // Run the setupDone phase of the instruments
-    try self.runAllInstrumentsPhase(tree.root, "setupDone", .{self});
+    //self.config.stages.steps = result;
+    // Run the finally phase of the instruments
+    try self.runAllInstrumentsPhase(tree.root, "finally", .{self});
 }
 
 fn runAllInstrumentsPhase(self: *@This(), node: NodeId, comptime func: String, args: anytype) !void {
@@ -610,7 +659,7 @@ pub fn declareThreadId(self: *@This()) !void {
             try self.insertStart(
                 try self.print(
                     "const uvec2 " ++ templates.local_thread_counts ++ "= uvec2({d}, {d});\n" ++
-                        "uint " ++ templates.global_thread_id ++ " = uint(gl_FragCoord.y) * " ++ templates.local_thread_counts ++
+                        "uint " ++ templates.linear_thread_id ++ " = uint(gl_FragCoord.y) * " ++ templates.local_thread_counts ++
                         ".x + uint(gl_FragCoord.x);\n",
                     .{ self.threads[0], self.threads[1] },
                 ),
@@ -620,21 +669,21 @@ pub fn declareThreadId(self: *@This()) !void {
         .gl_geometry => {
             try self.insertStart(try self.print(
                 "const uint " ++ templates.local_thread_counts ++ "= {d};\n" ++
-                    "uint " ++ templates.global_thread_id ++ "= gl_PrimitiveIDIn * " ++ templates.local_thread_counts ++ " + gl_InvocationID;\n",
+                    "uint " ++ templates.linear_thread_id ++ "= gl_PrimitiveIDIn * " ++ templates.local_thread_counts ++ " + gl_InvocationID;\n",
                 .{self.threads[0]},
             ), self.after_version);
         },
         .gl_tess_evaluation => {
             try self.insertStart(try self.print(
                 "ivec2 " ++ templates.local_thread_counts ++ "= ivec2(gl_TessCoord.xy * float({d}-1) + 0.5);\n" ++
-                    "uint " ++ templates.global_thread_id ++ " =" ++ templates.local_thread_counts ++ ".y * {d} + " ++
+                    "uint " ++ templates.linear_thread_id ++ " =" ++ templates.local_thread_counts ++ ".y * {d} + " ++
                     templates.local_thread_counts ++ ".x;\n",
                 .{ self.threads[0], self.threads[0] },
             ), self.after_version);
         },
         .gl_mesh, .gl_task, .gl_compute => {
             try self.insertStart(
-                try self.print("uint " ++ templates.global_thread_id ++
+                try self.print("uint " ++ templates.linear_thread_id ++
                     "= gl_GlobalInvocationID.z * gl_NumWorkGroups.x * gl_NumWorkGroups.y * " ++ templates.wg_size ++
                     " + gl_GlobalInvocationID.y * gl_NumWorkGroups.x * " ++ templates.wg_size ++ " + gl_GlobalInvocationID.x);\n", .{}),
                 self.after_version,
@@ -660,8 +709,12 @@ pub fn declareThreadId(self: *@This()) !void {
 
 const StoragePreference = enum { Buffer, Interface, PreferBuffer, PreferInterface };
 
-/// Creates a storage slot in the shader (or program-wide for buffers), and also adds it to correct channel definitions and initializes
-/// its readback buffer (if the passed `size` > 0).
+/// Creates a storage slot description for the stage's output interface (XFB / FB) (or program-wide for buffers), and also adds it to result channel
+/// collection. If the result channel is a buffer and the program already has a buffer with the same `id`, the existing buffer will be **reused**.
+///
+/// The caller must keep in mind that this function doesn't "just" create some output storage, but that the storage can be program- or stage- wide and
+/// could end up being shared with other stages. (So some branching on these circumstances may be necessary - for example creating another storage
+/// with a different `id` if there is need to have it per-stage)
 ///
 /// `format`, `fit_into_component` and `component` are used only for interface storages.
 pub fn addStorage(
@@ -686,7 +739,7 @@ pub fn addStorage(
 
     const result: *OutputStorage = switch (value.location) {
         .interface => blk: {
-            const local = try self.channels.out.getOrPut(self.config.allocator, id);
+            const local = try self.config.stage.out.getOrPut(self.config.allocator, id);
             local.value_ptr.* = try self.config.allocator.create(OutputStorage);
             std.debug.assert(!local.found_existing);
             break :blk local.value_ptr.*;
@@ -694,10 +747,11 @@ pub fn addStorage(
         .buffer => blk: {
             const global = try self.config.program.out.getOrPut(self.config.allocator, id);
             if (!global.found_existing) {
-                const local = try self.channels.out.getOrPut(self.config.allocator, id);
+                const local = try self.config.stage.out.getOrPut(self.config.allocator, id);
                 global.value_ptr.* = try self.config.allocator.create(OutputStorage);
                 local.value_ptr.* = global.value_ptr.*;
             }
+            // THE STORAGE IS REUSED WHEN EXISTING
             break :blk global.value_ptr.*;
         },
     };
@@ -749,11 +803,12 @@ fn varImpl(
 }
 
 pub fn controlVar(self: *@This(), id: u64, comptime T: type, program_wide: bool, default: ?T) !VarResult(T) {
-    return varImpl(self, id, T, default, &self.channels.controls, if (program_wide) &self.config.program.controls else null);
+    return varImpl(self, id, T, default, &self.config.stage.controls, if (program_wide) &self.config.program.controls else null);
 }
 
+/// Returns the `OutputStorage` for the given ID if it exists in the stage or program output channels.
 pub fn outChannel(self: *@This(), id: u64) ?*OutputStorage {
-    return self.channels.out.get(id) orelse self.config.program.out.get(id);
+    return self.config.stage.out.get(id) orelse self.config.program.out.get(id);
 }
 
 pub fn scratchVar(self: *@This(), id: u64, comptime T: type, default: ?T) !VarResult(T) {
@@ -761,7 +816,7 @@ pub fn scratchVar(self: *@This(), id: u64, comptime T: type, default: ?T) !VarRe
 }
 
 pub fn responseVar(self: *@This(), id: u64, comptime T: type, program_wide: bool, default: ?T) !VarResult(T) {
-    return varImpl(self, id, T, default, &self.channels.responses, if (program_wide) &self.config.program.responses else null);
+    return varImpl(self, id, T, default, &self.config.stage.responses, if (program_wide) &self.config.program.responses else null);
 }
 
 //
@@ -778,18 +833,14 @@ pub fn printZ(self: *@This(), comptime fmt: String, args: anytype) !ZString {
     return std.fmt.allocPrintZ(self.arena.allocator(), fmt, args);
 }
 
-const ForLoop = analyzer.syntax.Extractor(.statement, struct {
-    keyword_for: analyzer.syntax.Token(.keyword_for),
-    condition_list: analyzer.syntax.ConditionList,
-    block: analyzer.syntax.Block,
-});
-
-/// Stores the information about important language entities in the upper layers of currently traversed syntax tree
+/// Stores the information about
+/// - important language entities in the upper layers of currently traversed syntax tree
+/// - the whole scope tree
 pub const TraverseContext = struct {
     /// Parent function
     function: ?Function,
-    /// Will be either the root `Processor` Inserts array or the `wrapped_expr` Inserts array
-    inserts: Inserts,
+    /// Will be either the root `Processor`'s `Inserts` array or the `wrapped_expr` `Inserts array
+    inserts: *Inserts,
     /// A flag to set when an instrument wants to make changes to the source code that corresponds to this contexts
     instrumented: bool = false,
     /// The nearest parent block node
@@ -809,37 +860,120 @@ pub const TraverseContext = struct {
         var nested_context = self;
         nested_context.scope = try allocator.create(sema.Scope);
         nested_context.scope.* = sema.Scope{
+            .functions = self.scope.functions,
             .parent = self.scope,
-            .function_counter = self.scope.function_counter,
         };
         return nested_context;
     }
 
+    fn collect(self: *@This(), nested_ctx: *const @This()) void {
+        self.instrumented = nested_ctx.instrumented;
+    }
+
     /// The returned `Context` has a standalone `inserts` field, which must be deinited using the `Context.inExpressionDeinit()` method.
-    pub fn inExpression(self: @This(), allocator: std.mem.Allocator) @This() {
+    pub fn inExpression(self: @This(), allocator: std.mem.Allocator) !@This() {
         std.debug.assert(self.statement != null); // Expression nodes must be in a statement context
-        var wrapped_context = TraverseContext{
+        var inserts = try allocator.create(Inserts);
+        inserts.* = .{}; // initialize default values
+        inserts.init(allocator); // initialize node pool
+
+        return TraverseContext{
             .scope = self.scope,
-            .inserts = .{},
+            .inserts = inserts,
+            .instrumented = false, // The expression is instrumented separately (owns own `Inserts`), so this flag is initally false
             .block = self.block,
             .function = self.function,
             .statement = self.statement,
         };
-        wrapped_context.inserts.init(allocator);
-        return wrapped_context;
+    }
+
+    pub fn inFunction(self: @This(), function: Function, tree: analyzer.parse.Tree, allocator: std.mem.Allocator) !@This() {
+        var new = try self.nested(allocator);
+
+        new.block = function.syntax.get(.block, tree).?.node;
+        new.function = function;
+        new.statement = null;
+        return new;
+    }
+
+    pub fn functionDeinit(self: *@This(), allocator: std.mem.Allocator, parent: *@This()) void {
+        self.nestedDeinit(allocator, parent);
     }
 
     /// Deinitialize the `scope` field
-    pub fn nestedDeinit(self: *@This(), allocator: std.mem.Allocator) void {
+    pub fn nestedDeinit(self: *@This(), allocator: std.mem.Allocator, parent: *@This()) void {
+        parent.collect(self);
         self.scope.deinit(allocator);
         allocator.destroy(self.scope);
     }
 
     /// Deinitialize the `inserts` field
-    pub fn inExpressionDeinit(self: *@This(), allocator: std.mem.Allocator) void {
+    pub fn inExpressionDeinit(self: *@This(), allocator: std.mem.Allocator, parent: *@This()) void {
+        parent.collect(self);
         self.inserts.deinit(allocator);
+        allocator.destroy(self.inserts);
     }
 };
+
+fn extract(
+    self: *const Processor,
+    extractor: anytype,
+    comptime field: @TypeOf(extractor).FieldEnum,
+) ?std.meta.FieldType(@TypeOf(extractor).Type, field) {
+    return extractor.get(field, self.parsed.tree);
+}
+
+fn extractNode(self: *const Processor, extractor: anytype, comptime field: @TypeOf(extractor).FieldEnum) ?NodeId {
+    return if (self.extract(extractor, field)) |e| if (@hasField(@TypeOf(e), "node")) e.node else e.getNode() else null;
+}
+
+fn extractNodeForce(self: *Processor, extractor: anytype, comptime field: @TypeOf(extractor).FieldEnum) !NodeId {
+    const extracted = self.extract(extractor, field) orelse {
+        _ = try self.addDiagnostic(self.print("Expected {s}", .{@tagName(field)}), @src(), self.parsed.tree.nodeSpan(extractor.node), null);
+        return Error.InvalidTree;
+    };
+    return if (@hasField(@TypeOf(extracted), "node")) extracted.node else extracted.getNode();
+}
+
+fn extractNodeSpanForce(self: *Processor, extractor: anytype, comptime field: @TypeOf(extractor).FieldEnum) !NodeId {
+    const extracted = self.extract(extractor, field) orelse {
+        _ = try self.addDiagnostic(self.print("Expected {s}", .{@tagName(field)}), @src(), self.parsed.tree.nodeSpan(extractor.node), null);
+        return Error.InvalidTree;
+    };
+    return self.parsed.tree.nodeSpan(extracted.node);
+}
+
+fn extractNodeTextForce(self: *Processor, extractor: anytype, comptime field: @TypeOf(extractor).FieldEnum) !String {
+    const extracted = self.extract(extractor, field) orelse {
+        _ = try self.addDiagnostic(self.print("Expected {s}", .{@tagName(field)}), @src(), self.parsed.tree.nodeSpan(extractor.node), null);
+        return Error.InvalidTree;
+    };
+    return self.parsed.tree.nodeSpan(if (@hasField(@TypeOf(extracted), "node")) extracted.node else extracted.getNode()).text(self.config.source);
+}
+
+pub fn extractParameters(
+    self: *const Processor,
+    parameters: analyzer.syntax.ParameterList,
+) ![]sema.Symbol.Type {
+    const tree = self.parsed.tree;
+    const source = self.config.source;
+
+    const parameters_count = parameters.items.length();
+    var params = std.ArrayListUnmanaged(sema.Symbol.Type).empty;
+    errdefer params.deinit(self.config.allocator);
+    try params.ensureTotalCapacity(self.config.allocator, parameters_count);
+
+    var it: analyzer.syntax.ListIterator(analyzer.syntax.Parameter) = parameters.iterator();
+    var i: usize = 0;
+    while (it.next(tree)) |param| : (i += 1) {
+        const specifier = param.get(.specifier, tree).?;
+        const s_slice = tree.nodeSpan(specifier.getNode()).text(source);
+        if (!std.mem.eql(u8, s_slice, "void")) {
+            try params.append(self.config.allocator, try sema.Symbol.Type.parse(self.config.allocator, s_slice));
+        }
+    }
+    return params.toOwnedSlice(self.config.allocator);
+}
 
 pub fn extractFunction(tree: analyzer.parse.Tree, node: Processor.NodeId, source: String) Error!TraverseContext.Function {
     const func = analyzer.syntax.FunctionDeclaration.tryExtract(tree, node) orelse return Error.InvalidTree;
@@ -853,15 +987,25 @@ pub fn extractFunction(tree: analyzer.parse.Tree, node: Processor.NodeId, source
     };
 }
 
-pub fn processExpression(self: *@This(), node: NodeId, context: *TraverseContext) FnErrorSet(@TypeOf(processNode))!?String {
-    var wrapped_ctx = context.inExpression(self.config.allocator);
-    defer wrapped_ctx.inExpressionDeinit(self.config.allocator);
+/// Process and resolve inner expressions of the given node and apply the instrumentation `Inserts` immediately.
+fn processExpression(
+    self: *@This(),
+    node: NodeId,
+    context: *TraverseContext,
+    do_instruments: bool,
+    only_children: bool,
+) FnErrorSet(@TypeOf(processNode))!?CompoundResult {
+    var wrapped_ctx = try context.inExpression(self.config.allocator);
+    defer wrapped_ctx.inExpressionDeinit(self.config.allocator, context);
 
     const tree = self.parsed.tree;
 
     const wrapped_span = tree.nodeSpan(node);
     const wrapped_orig_str = wrapped_span.text(self.config.source);
-    const wrapped_type = try self.processNode(node, context);
+    const wrapped_result = if (only_children)
+        try self.processAllChildren(node, context, do_instruments)
+    else
+        try self.processNode(node, context, do_instruments);
     var applied = try wrapped_ctx.inserts.applyToOffseted(self.config.source, tree.nodeSpan(node).start, self.config.allocator);
     const wrapped_str = if (applied) |*s|
         try s.toOwnedSlice(self.config.allocator)
@@ -877,10 +1021,10 @@ pub fn processExpression(self: *@This(), node: NodeId, context: *TraverseContext
         const parent_span = tree.nodeSpan(tree.parent(node).?);
         // insert the wrapped code before the original statement. Assign its result into a temporary var
         try self.insertEnd(
-            if (wrapped_type) |w_t|
+            if (wrapped_result) |w_t|
                 try self.print(
-                    "{s} {s}{x:8}={s};",
-                    .{ w_t, templates.temp, temp_rand, wrapped_str },
+                    "{} {s}{x:8}={s};\n",
+                    .{ w_t.type, templates.temp, temp_rand, wrapped_str },
                 )
             else
                 try self.print("{s};\n", .{wrapped_str}),
@@ -898,52 +1042,152 @@ pub fn processExpression(self: *@This(), node: NodeId, context: *TraverseContext
         result_var = temp_rand;
     } else try self.addDiagnostic(Error.InvalidTree, @src(), tree.nodeSpan(node), @errorReturnTrace());
 
-    return wrapped_type;
+    return wrapped_result;
 }
 
 /// Returns the result of the last child processed
-fn processAllChildren(self: *@This(), node: NodeId, context: *TraverseContext) FnErrorSet(@TypeOf(processNode))!?String {
+fn processAllChildren(
+    self: *@This(),
+    node: NodeId,
+    context: *TraverseContext,
+    do_instruments: bool,
+) FnErrorSet(@TypeOf(processNode))!?CompoundResult {
     std.debug.assert(self.parsed.tree.tag(node).isSyntax());
     const children = self.parsed.tree.children(node);
-    var result: ?String = null;
+    var result: ?CompoundResult = null;
     for (children.start..children.end) |child| {
-        result = try self.processNode(@intCast(child), context);
+        result = try self.processNode(@intCast(child), context, do_instruments);
     }
     return result;
 }
 
-fn processInstruments(self: *@This(), node: NodeId, context: *TraverseContext) !void {
-    for (self.config.instruments_any) |instrument| {
-        if (instrument.instrument) |i| i(self, node, context) catch |err| {
-            try self.addDiagnostic(err, @src(), self.parsed.tree.nodeSpan(node), @errorReturnTrace());
-        };
-    }
-    const tag = self.parsed.tree.tag(node);
-    if (self.config.instruments_scoped.getPtr(tag)) |scoped| {
-        for (scoped.items) |instrument| {
-            log.debug("Instrumenting {s} at {d} by {x}", .{ @tagName(tag), self.parsed.tree.nodeSpanExtreme(node, .start), instrument.id });
-            if (instrument.instrument) |i| i(self, node, context) catch |err| {
-                try self.addDiagnostic(err, @src(), self.parsed.tree.nodeSpan(node), @errorReturnTrace());
-            };
+fn processInstrumentsImpl(
+    self: *@This(),
+    node: NodeId,
+    result: ?CompoundResult,
+    context: *TraverseContext,
+    processed: *std.AutoHashMapUnmanaged(Instrument.ID, void),
+    instruments: []const Instrument,
+) !void {
+    for (instruments) |instrument| {
+        if (!processed.contains(instrument.id)) {
+            _ = try processed.getOrPut(self.config.allocator, instrument.id);
+            if (instrument.dependencies) |deps| {
+                var deps_array = std.ArrayListUnmanaged(Processor.Instrument).empty;
+                defer deps_array.deinit(self.config.allocator);
+
+                for (deps) |dep| {
+                    for (self.config.instruments_any) |dep_instr| {
+                        if (dep_instr.id == dep) {
+                            try deps_array.append(self.config.allocator, dep_instr);
+                            break;
+                        }
+                    } else {
+                        var it = self.config.instruments_scoped.iterator();
+                        find_id: while (it.next()) |scoped_instrs| {
+                            for (scoped_instrs.value.items) |dep_instr| {
+                                if (dep_instr.id == dep) {
+                                    try deps_array.append(self.config.allocator, dep_instr);
+                                    break :find_id;
+                                }
+                            }
+                        }
+                    }
+                }
+                try self.processInstrumentsImpl(node, result, context, processed, deps_array.items);
+            }
+            if (instrument.instrument) |i| {
+                const payload = if (result) |r| try r.toPayload(self.config.allocator) else null;
+                defer if (payload) |p| {
+                    self.config.allocator.free(std.mem.span(p.type.basic));
+                    if (p.type.array) |a| self.config.allocator.free(std.mem.span(a));
+                };
+
+                i(self, node, if (payload) |*p| p else null, context) catch |err| {
+                    try self.addDiagnostic(err, @src(), self.parsed.tree.nodeSpan(node), @errorReturnTrace());
+                };
+            }
         }
     }
 }
 
-const IfBranch = analyzer.syntax.Extractor(.if_branch, struct {
-    /// maybe else-if
-    keyword_else: analyzer.syntax.Token(.keyword_else),
-    keyword_if: analyzer.syntax.Token(.keyword_if),
-    condition_list: analyzer.syntax.ConditionList,
+/// This function should be called on every tree's node after the node's type has been resolved.
+fn processInstruments(self: *@This(), node: NodeId, result: ?CompoundResult, context: *TraverseContext) !void {
+    var processed = std.AutoHashMapUnmanaged(Instrument.ID, void).empty;
+    defer processed.deinit(self.config.allocator);
+
+    try self.processInstrumentsImpl(node, result, context, &processed, self.config.instruments_any);
+    const tag = self.parsed.tree.tag(node);
+
+    if (self.config.instruments_scoped.getPtr(tag)) |scoped| {
+        for (scoped.items) |instrument| {
+            if (!processed.contains(instrument.id)) {
+                log.debug("Instrumenting {s} at {d} by {x}", .{ @tagName(tag), self.parsed.tree.nodeSpanExtreme(node, .start), instrument.id });
+            }
+        }
+        try self.processInstrumentsImpl(node, result, context, &processed, scoped.items);
+    }
+}
+
+const BlockOrStatement = union(enum) {
+    pub const extractor = analyzer.syntax.UnionExtractorMixin(@This());
+    pub const extract = extractor.extract;
+    pub const getNode = extractor.getNode;
+    pub const match = extractor.match;
+    pub const tryExtract = extractor.extractor.tryExtract;
+
+    statement: analyzer.syntax.Statement,
     block: analyzer.syntax.Block,
+};
+
+const DoLoop = analyzer.syntax.Extractor(.statement, struct {
+    keyword_do: analyzer.syntax.Token(.keyword_do),
+    block: BlockOrStatement,
+    keyword_while: analyzer.syntax.Token(.keyword_while),
+    condition_list: analyzer.syntax.ConditionList,
+});
+
+const ForLoop = analyzer.syntax.Extractor(.statement, struct {
+    keyword_for: analyzer.syntax.Token(.keyword_for),
+    condition_list: analyzer.syntax.ConditionList,
+    block: BlockOrStatement,
+});
+
+const WhileLoop = analyzer.syntax.Extractor(.statement, struct {
+    keyword_while: analyzer.syntax.Token(.keyword_while),
+    condition_list: analyzer.syntax.ConditionList,
+    block: BlockOrStatement,
 });
 
 /// Process a tree node recursively. Depth-first traversal.
+/// Performs type resolution and optionally runs instrumentation.
+/// Fills the context with variables and scopes.
 ///
-/// Returns the type of the processed expression.
-fn processNode(self: *@This(), node: NodeId, context: *TraverseContext) !?String {
+/// Not running instrumentation can be useful if the node's type lies outside of the node itself (e.g. function return type).
+/// The instruments can be then run separately by calling `processInstruments`.
+fn processNode(self: *@This(), node: NodeId, context: *TraverseContext, do_instruments: bool) FnErrorSet(@TypeOf(resolveNode))!?CompoundResult {
+    const result = try self.resolveNode(node, context, do_instruments);
+    if (do_instruments)
+        try self.processInstruments(node, result, context);
+    return result;
+}
+
+/// Resolves the type of the given node and optionally runs instrumentation *only on *children** nodes.
+/// Fills the context with variables and scopes.
+fn resolveNode(self: *@This(), node: NodeId, context: *TraverseContext, do_instruments: bool) !?CompoundResult {
     const tree = self.parsed.tree;
     const source = self.config.source;
-    switch (tree.tag(node)) { // TODO serialize the recursive traversal
+    return switch (tree.tag(node)) { // TODO serialize the recursive traversal
+        .array, .parenthized => { // array indexing and parenthized expression has three children: open, value, close
+            const children = tree.children(node);
+            std.debug.assert(children.length() == 3);
+            _ = try self.processNode(children.start, context, do_instruments);
+            // return the thing inside
+            const result = try self.processNode(children.start + 1, context, do_instruments);
+            _ = try self.processNode(children.start + 2, context, do_instruments);
+
+            return result;
+        },
         .if_branch => {
             // if(a(ahoj) == 1) {
             //
@@ -969,141 +1213,313 @@ fn processNode(self: *@This(), node: NodeId, context: *TraverseContext) !?String
                 .start = after_else_kw,
                 .end = close_pos,
             };
-            const if_branch = IfBranch.tryExtract(tree, node) orelse return Error.InvalidTree;
-            // Process the condition list
-            _ = try self.processAllChildren(if_branch.get(.condition_list, tree).?.node, context);
-            // Process the block
-            _ = try self.processAllChildren(if_branch.get(.block, tree).?.node, context);
+
+            _ = try self.processAllChildren(node, context, do_instruments);
+
             context.statement = previous;
+            return null;
+        },
+        .selection => {
+            const selection = analyzer.syntax.Selection.tryExtract(tree, node) orelse return Error.InvalidTree;
+            const target = try self.extractNodeForce(selection, .target);
+            const field = try self.extractNodeTextForce(selection, .field);
+            const result = if (try self.processNode(target, context, do_instruments)) |target_t|
+                try context.scope.resolveSelection(target_t, field)
+            else
+                null;
+
+            _ = try self.processNode(try self.extractNodeForce(selection, .@"."), context, do_instruments);
+            return result;
         },
         .statement => {
             const previous = context.statement;
-            const children = tree.children(node);
-            switch (tree.tag(children.start)) {
-                .keyword_for, .keyword_while, .keyword_do => {
-                    for (children.start + 1..children.end) |child| {
-                        if (tree.tag(child) == .block) {
-                            const s = tree.nodeSpan(@intCast(child));
-                            context.statement = s;
-                            // wrap in parenthesis
-                            try self.insertStart("{", s.start);
-                            try self.insertEnd("}", s.end, 0);
-                        }
-                    }
-                },
-                else => context.statement = tree.nodeSpan(node),
-            }
-            _ = try self.processAllChildren(node, context);
-            context.statement = previous; // Pop out from the statement context
-        },
-        .keyword_for => {
-            if (ForLoop.tryExtract(tree, node)) |for_loop| {
-                const cond: analyzer.syntax.ConditionList = for_loop.get(.condition_list, tree).?;
-                var it = cond.iterator();
-                var nested = try context.nested(self.config.allocator);
-                defer nested.nestedDeinit(self.config.allocator);
-                while (it.next(tree)) |s| {
-                    _ = try nested.scope.fill(self.config.allocator, tree, s.getNode(), source);
-                }
-                _ = try self.processNode(for_loop.get(.block, tree).?.node, &nested);
-            }
-        },
-        .expression_sequence => {
-            var in_expr = context.inExpression(self.config.allocator);
-            defer in_expr.inExpressionDeinit(self.config.allocator);
+            // set the context.statement field
+            var loop_block: ?struct {
+                block: NodeId,
+                nested: ?TraverseContext = null,
+            } = blk: {
+                if (ForLoop.tryExtract(tree, node)) |for_loop| if (self.extractNode(for_loop, .keyword_for)) |for_kw| {
+                    _ = try self.processNode(for_kw, context, do_instruments);
 
-            try self.processInstruments(node, &in_expr);
-            return try self.processAllChildren(node, &in_expr);
-        },
-        .arguments_list => {
-            if (analyzer.syntax.ArgumentsList.tryExtract(tree, node)) |args| {
-                var args_it = args.iterator();
-                var i: usize = 0;
-                const span = tree.nodeSpan(node);
+                    var nested = try context.nested(self.config.allocator);
 
-                while (args_it.next(tree)) |a| { // process the arguments as "wrapped expressions"
-                    defer i += 1;
-                    const expr = a.get(.expression, tree) orelse {
-                        log.err("Expression node not found under argument {d}", .{i + 1});
-                        try self.addDiagnostic(Error.InvalidTree, @src(), span, null);
-                        continue;
+                    const cond: analyzer.syntax.ConditionList = self.extract(for_loop, .condition_list) orelse return Error.InvalidTree;
+                    _ = try self.processNode(cond.node, &nested, do_instruments);
+
+                    //TODO support breaking execution inside the loop header
+                    break :blk if (self.extractNode(for_loop, .block)) |block| .{ .block = block, .nested = nested } else {
+                        nested.nestedDeinit(self.config.allocator, context);
+                        break :blk null;
                     };
+                };
 
-                    _ = try self.processExpression(expr.node, context);
+                if (WhileLoop.tryExtract(tree, node)) |while_loop| if (self.extractNode(while_loop, .keyword_while)) |while_kw| {
+                    _ = try self.processNode(while_kw, context, do_instruments);
+                    _ = try self.processNode(try self.extractNodeForce(while_loop, .condition_list), context, do_instruments);
+
+                    break :blk if (self.extractNode(while_loop, .block)) |block| .{ .block = block } else null;
+                };
+
+                if (DoLoop.tryExtract(tree, node)) |do_loop| if (self.extractNode(do_loop, .keyword_do)) |do_kw| {
+                    _ = try self.processNode(do_kw, context, do_instruments);
+                    _ = try self.processNode(try self.extractNodeForce(do_loop, .keyword_while), context, do_instruments);
+                    _ = try self.processNode(try self.extractNodeForce(do_loop, .condition_list), context, do_instruments);
+
+                    break :blk if (self.extractNode(do_loop, .block)) |block| .{ .block = block } else null;
+                };
+
+                break :blk null;
+            };
+
+            const result = if (loop_block) |*b| blk: {
+                const s = tree.nodeSpan(b.block);
+                // wrap in parenthesis
+                try self.insertStart("{", s.start);
+                try self.insertEnd("}", s.end, 0);
+                context.statement = s;
+                defer if (b.nested) |*n| n.nestedDeinit(self.config.allocator, context);
+
+                break :blk try self.processNode(b.block, if (b.nested) |*n| n else context, do_instruments);
+            } else blk: {
+                context.statement = tree.nodeSpan(node);
+                break :blk try self.processAllChildren(node, context, do_instruments);
+            };
+
+            context.statement = previous; // Pop out from the statement context
+            return result;
+        },
+        .struct_specifier => {
+            const struct_spec = analyzer.syntax.StructSpecifier.tryExtract(tree, node) orelse return Error.InvalidTree;
+            _ = try self.processNode(try self.extractNodeForce(struct_spec, .keyword_struct), context, do_instruments);
+            const name = try self.extractNodeTextForce(struct_spec, .name);
+
+            const new_type = try context.scope.getOrPutType(self.config.allocator, name);
+            if (self.extract(struct_spec, .fields)) |f| {
+                var it = f.get(tree).iterator();
+                while (it.next(tree)) |field| {
+                    const field_spec = try self.processNode(
+                        try self.extractNodeForce(field, .specifier),
+                        context,
+                        do_instruments,
+                    ) orelse return Error.Resolution;
+
+                    const field_vars = self.extract(field, .variables) orelse return Error.InvalidTree;
+                    var it2 = field_vars.iterator();
+                    while (it2.next(tree)) |variable| {
+                        const var_name = try self.extractNodeTextForce(variable, .name);
+                        try new_type.put(self.config.allocator, var_name, field_spec.type);
+                    }
                 }
             }
+
+            return CompoundResult{ .type = .{
+                .basic = name,
+            } };
+        },
+        // expression itself is not a tree node, so we must enumerate all the nodes that shoud be processed as "expressions"
+        .argument, .expression_sequence, .initializer => try self.processExpression(node, context, do_instruments, true),
+
+        .prefix => { // TODO propagate constants even if statically imperatively assigned in different statements
+            const prefix = analyzer.syntax.PrefixExpression.tryExtract(tree, node) orelse return Error.InvalidTree;
+            var t = try self.processNode(try self.extractNodeForce(prefix, .expression), context, do_instruments);
+            const op = self.extract(prefix, .op) orelse return Error.InvalidTree;
+            _ = try self.processNode(op.getNode(), context, do_instruments);
+
+            if (t) |*ex| if (ex.constant) |cons| {
+                ex.constant =
+                    switch (op.inner) {
+                        .@"+" => cons,
+                        .@"-" => 0, // TODO now tracking only unsigned constants
+                        .@"!" => if (cons == 0) 1 else 0,
+                        .@"~" => ~cons,
+                        .@"++" => cons + 1,
+                        .@"--" => cons - 1,
+                    };
+            };
+
+            return t;
         },
         .call => {
-            if (analyzer.syntax.Call.tryExtract(tree, node)) |call| {
-                const name = call.get(.identifier, tree).?.text(source, tree);
+            const call = analyzer.syntax.Call.tryExtract(tree, node) orelse return Error.InvalidTree;
+            const name = call.get(.identifier, tree).?.text(source, tree);
+            const arguments = call.get(.arguments, tree);
 
-                var result_type: ?String = null;
-                // process all the arguments as "wrapped expressions"
-                if (call.get(.arguments, tree)) |args| {
-                    _ = try self.processNode(args.node, context);
+            var first_arg: ?sema.Symbol.Content = null;
+            var argument_types = std.ArrayListUnmanaged(sema.Symbol.Type).empty;
+            defer argument_types.deinit(self.config.allocator);
+
+            if (arguments) |args| {
+                var it = args.iterator();
+                var i: usize = 0;
+                try argument_types.ensureTotalCapacity(self.config.allocator, args.items.length());
+                while (it.next(tree)) |arg| : (i += 1) {
+                    const arg_result = try self.processNode(arg.node, context, do_instruments) orelse return Error.Resolution;
+                    if (i == 0) {
+                        first_arg = arg_result;
+                    }
+                    argument_types.appendAssumeCapacity(arg_result.type);
                 }
 
-                if (context.scope.functions.get(name)) |f| { // user function
-                    result_type = tree.nodeSpan(f.symbol.type.getNode()).text(source);
-                } else {
-                    for (self.config.spec.functions) |func| {
-                        const hash = std.hash.CityHash32.hash;
-                        if (std.mem.eql(u8, func.name, name)) { // TODO better than linear scan
-                            switch (hash(func.return_type)) { // builtin function
-                                h: {
-                                    break :h hash("genType");
-                                }, h: {
-                                    break :h hash("genDType");
-                                } => {
-                                    // return the type of the first parameter
-                                    result_type = try self.processNode((call.get(.arguments, tree) orelse {
-                                        try self.addDiagnostic(Error.NoArguments, @src(), tree.nodeSpan(node), null);
-                                        return null;
-                                    }).node, context);
-                                },
-                                else => {},
-                            }
-                        }
+                _ = try self.processInstruments(args.node, null, context);
+            }
+
+            var result: ?CompoundResult = null;
+            if (try context.scope.resolveFunction(
+                self.config.allocator,
+                .{ .name = name, .parameters = argument_types.items },
+                &self.config.spec,
+                first_arg,
+            )) |e_result| {
+                result = e_result;
+            }
+            return result;
+        },
+        .block => { // every code block (including function body) is a scope different than its parent (parameters are also different scope)
+            var nested = try context.nested(self.config.allocator);
+            defer nested.nestedDeinit(self.config.allocator, context);
+            _ = try self.processAllChildren(node, &nested, do_instruments);
+
+            return null;
+        },
+        .function_declaration => { // when entering a function scope
+            const fn_extract = try extractFunction(tree, node, source);
+            var fn_context = try context.inFunction(fn_extract, tree, self.config.allocator);
+            defer fn_context.functionDeinit(self.config.allocator, context);
+
+            _ = try self.processAllChildren(node, &fn_context, do_instruments);
+            return null;
+        },
+        .parameter => {
+            if (analyzer.syntax.Parameter.tryExtract(tree, node)) |par| {
+                // Qualifier
+                if (self.extractNode(par, .qualifiers)) |q| _ = try self.processNode(q, context, do_instruments);
+                // Type specifier
+                const t = try self.processNode(try self.extractNodeForce(par, .specifier), context, do_instruments) orelse return Error.Resolution;
+
+                // Variable name
+                if (self.extractNode(par, .variable)) |var_node| {
+                    const var_node_text = tree.nodeSpan(var_node).text(source);
+                    _ = try self.resolveNode(var_node, context, false);
+                    try context.scope.fillVariable(self.config.allocator, var_node_text, t);
+                    if (do_instruments)
+                        try self.processInstruments(var_node, t, context);
+                }
+                if (do_instruments)
+                    try self.processInstruments(par.node, t, context);
+
+                // Comma
+                if (self.extractNode(par, .comma)) |c|
+                    _ = try self.processNode(c, context, do_instruments);
+
+                return t;
+            } else return Error.InvalidTree;
+        },
+        .array_specifier => if (analyzer.syntax.ArraySpecifier(analyzer.syntax.Selectable).tryExtract(tree, node)) |array| {
+            var result = try self.processNode(array.prefix(tree).?.node, context, do_instruments);
+            // process the rest of the array specifier
+            var it = array.iterator();
+            var i: usize = 0;
+            while (it.next(tree)) |a| : (i += 1) {
+                const indexer = try self.processNode(a.node, context, do_instruments);
+                if (result) |*r| {
+                    if (r.type == .array) {
+                        r.type.array.dim[i] = if (indexer) |ii| ii.constant orelse 0 else 0;
+                    } else {
+                        r.type = .{ .array = .{
+                            .dim = try self.config.allocator.alloc(usize, array.items.length()),
+                            .base = r.type.basic,
+                        } };
+
+                        r.type.array.dim[0] = if (indexer) |ii| ii.constant orelse 0 else 0;
                     }
                 }
-                try self.processInstruments(node, context);
-                return result_type;
             }
-        },
-        .block => {
-            var nested = try context.nested(self.config.allocator);
-            defer nested.nestedDeinit(self.config.allocator);
-            _ = try self.processAllChildren(node, &nested);
-        },
-        .function_declaration => {
-            context.function = try extractFunction(tree, node, source);
-            _ = try self.processNode(context.function.?.syntax.get(.block, tree).?.node, context);
-        },
-        .declaration => {
-            if (try context.scope.fill(self.config.allocator, tree, node, source)) |ext| {
-                switch (ext) {
-                    .variable => |decl| { // Process all the variable initializations as "wrapped expressions"
-                        var it: analyzer.syntax.Variables.Iterator = decl.get(.variables, tree).?.iterator();
-                        while (it.next(tree)) |init| {
-                            const previous = context.statement;
-                            if (previous == null) { // Top-level declarations can stand alone without statement. TODO process them even here?
-                                context.statement = tree.nodeSpan(node);
-                            }
-                            var wrapped_ctx = context.inExpression(self.config.allocator);
-                            defer wrapped_ctx.inExpressionDeinit(self.config.allocator);
 
-                            _ = try self.processNode(init.node, &wrapped_ctx);
-                            context.statement = previous;
-                        }
-                    },
-                    else => {}, // functions are filled in the pre-pass
-                }
-            }
+            return result;
+        } else return Error.InvalidTree,
+
+        .conditional => {
+            const cond = analyzer.syntax.ConditionalExpression.tryExtract(tree, node) orelse return Error.InvalidTree;
+            const cond_result = try self.processNode(try self.extractNodeForce(cond, .condition), context, do_instruments);
+
+            _ = try self.processNode(try self.extractNodeForce(cond, .@"?"), context, do_instruments);
+
+            const true_result = try self.processNode(try self.extractNodeForce(cond, .true_expr), context, do_instruments);
+            _ = try self.processNode(try self.extractNodeForce(cond, .@":"), context, do_instruments);
+            const false_result = try self.processNode(try self.extractNodeForce(cond, .false_expr), context, do_instruments);
+
+            return if (cond_result) |c| if (c.constant) |con|
+                if (con != 0) true_result else false_result
+            else
+                null else null;
         },
-        else => |tag| _ = if (tag.isSyntax()) try self.processAllChildren(node, context),
-    }
-    try self.processInstruments(node, context);
-    return null;
+        .identifier => // NOT processed when inside selection (see .selection prong)
+        try context.scope.resolveVariable(self.config.allocator, tree.token(node).text(source), &self.config.spec) orelse
+            try context.scope.resolveType(self.config.allocator, tree.token(node).text(source), &self.config.spec),
+        .infix => {
+            const infix = analyzer.syntax.InfixExpression.tryExtract(tree, node) orelse return Error.InvalidTree;
+            const result = if (infix.get(.op, tree)) |op| if (infix.get(.left, tree)) |left|
+                if (try self.processExpression(left.node, context, do_instruments, false)) |left_result|
+                    sema.resolveInfix(op.inner, left_result, if (infix.get(.right, tree)) |right|
+                        try self.processExpression(right.node, context, do_instruments, false)
+                    else
+                        null)
+                else
+                    null
+            else
+                null else null;
+
+            return result;
+        },
+        .postfix => {
+            const postfix = analyzer.syntax.PostfixExpression.tryExtract(tree, node) orelse return Error.InvalidTree;
+            const result = if (postfix.get(.expression, tree)) |ex| try self.processExpression(ex.node, context, do_instruments, false) else null;
+            // ignore the operator and return the previous value
+            _ = try self.processNode(try self.extractNodeForce(postfix, .op), context, do_instruments);
+
+            return result;
+        },
+        .number => sema.resolveNumber(tree.token(node).text(source)),
+        .declaration => { // TODO can be inside struct
+            const declaration = analyzer.syntax.Declaration.tryExtract(tree, node) orelse return Error.InvalidTree;
+            // Qualifier
+            if (self.extractNode(declaration, .qualifiers)) |qualifiers|
+                _ = try self.processNode(qualifiers, context, do_instruments);
+            // Type specifier
+            var t = try self.processNode(
+                try self.extractNodeForce(declaration, .specifier),
+                context,
+                do_instruments,
+            ) orelse return Error.Resolution;
+
+            // Variables
+            const variables = self.extract(declaration, .variables).?;
+            var it: analyzer.syntax.Variables.Iterator = variables.iterator();
+            while (it.next(tree)) |variable| {
+                const var_node = variable.node;
+                const var_node_text = tree.nodeSpan(var_node).text(source);
+                if (try self.resolveNode(var_node, context, false)) |var_result| {
+                    if (var_result.constant) |cons| {
+                        t.constant = cons;
+                    }
+                }
+
+                try context.scope.fillVariable(self.config.allocator, var_node_text, t);
+                if (do_instruments)
+                    try self.processInstruments(var_node, t, context);
+            }
+            if (do_instruments)
+                try self.processInstruments(variables.getNode(), t, context);
+
+            if (self.extractNode(declaration, .semi)) |semi| {
+                _ = try self.processNode(semi, context, do_instruments);
+            }
+            return t;
+        },
+        else => |tag| if (tag.isSyntax()) try self.processAllChildren(node, context, do_instruments) else null,
+        // .arguments_list => processed inside .call
+        // .variable_declaration, .variable_declaration_list => returns constant or just process all children
+    };
 }
 
 /// Do not pass compile-time strings to this function, as they are not copied
@@ -1133,14 +1549,13 @@ pub fn apply(self: *@This()) !Result {
             null,
             null,
         );
-        return Result{ .length = 0, .channels = self.toOwnedChannels(), .source = null, .spirv = null };
+        return Result{ .length = 0, .source = null, .spirv = null };
     };
     try parts.append(self.config.allocator, 0); // null-terminate the string
 
     const len = parts.items.len;
     return Result{
         .length = len,
-        .channels = self.toOwnedChannels(),
         .source = @ptrCast((try parts.toOwnedSlice(self.config.allocator)).ptr),
         .spirv = null,
     };
@@ -1155,10 +1570,11 @@ fn addDiagnostic(
     span: ?analyzer.parse.Span,
     trace: ?*std.builtin.StackTrace,
 ) std.mem.Allocator.Error!switch (@typeInfo(@TypeOf(value))) {
-    .error_union => |err_un| err_un.payload,
+    .error_union => |err_un| ?err_un.payload,
     else => void,
 } {
-    const err_name_or_val = switch (@typeInfo(@TypeOf(value))) {
+    const info = @typeInfo(@TypeOf(value));
+    const err_name_or_val = switch (info) {
         .error_union => if (value) |success| {
             return success;
         } else |err| @errorName(err),
@@ -1175,16 +1591,21 @@ fn addDiagnostic(
             log.debug("Diagnostic {s}", .{err_name_or_val});
         }
     }
-    try self.channels.diagnostics.append(self.config.allocator, .{
+    try self.config.stage.diagnostics.append(self.config.allocator, .{
         .d = analyzer.parse.Diagnostic{
             .message = err_name_or_val,
             .span = span orelse .{ .start = 0, .end = 0 },
         },
-        .free = switch (@typeInfo(@TypeOf(value))) {
+        .free = switch (info) {
             .pointer => |p| p.size == .slice,
             else => false,
         },
     });
+
+    switch (info) {
+        .error_union => |err_un| if (err_un.payload != void) return value catch null,
+        else => {},
+    }
 }
 
 /// A data structure for storing a collection of "insert" operations to be applied to a source code.
@@ -1352,7 +1773,10 @@ pub const Inserts = struct {
                 }
             } else {
                 // write the rest of code
-                try parts.appendSlice(allocator, source[previous.?.key.offset + previous.?.key.consume_next - offset ..]);
+                const from = previous.?.key.offset + previous.?.key.consume_next - offset;
+                if (from < source.len) {
+                    try parts.appendSlice(allocator, source[from..]);
+                }
             }
         }
         return parts;
@@ -1451,6 +1875,8 @@ pub const OutputStorage = struct {
         return nextBuffer(config) catch nextInterface(config, format, fit_into, component);
     }
 
+    pub const ID = u64;
+
     pub const Location = union(enum) {
         /// binding number (for SSBOs)
         buffer: Buffer,
@@ -1507,6 +1933,48 @@ pub const OutputStorage = struct {
             @"1U32",
             @"1I32",
             @"1F32",
+
+            /// Converts this GLSL format base type to Zig data type
+            pub fn toBaseType(comptime self: @This()) type {
+                return switch (self) {
+                    .@"1U8", .@"2U8", .@"3U8", .@"4U8" => u8,
+                    .@"1I8", .@"2I8", .@"3I8", .@"4I8" => i8,
+                    .@"1U16", .@"2U16", .@"3U16", .@"4U16" => u16,
+                    .@"1I16", .@"2I16", .@"3I16", .@"4I16" => i16,
+                    .@"1F16", .@"2F16", .@"3F16", .@"4F16" => f16,
+                    .@"1U32", .@"2U32", .@"3U32", .@"4U32" => u32,
+                    .@"1I32", .@"2I32", .@"3I32", .@"4I32" => i32,
+                    .@"1F32", .@"2F32", .@"3F32", .@"4F32" => f32,
+                };
+            }
+
+            /// Converts this GLSL format to Zig data type (vectors are interpreted as arrays)
+            pub fn toType(comptime self: @This()) type {
+                return switch (self) {
+                    .@"1U8", .@"1I8", .@"1F8", .@"1U16", .@"1I16", .@"1F16", .@"1U32", .@"1I32", .@"1F32" => self.toBaseType(),
+                    .@"2U8", .@"2I8", .@"2F8", .@"2U16", .@"2I16", .@"2F16", .@"2U32", .@"2I32", .@"2F32" => [2]self.toBaseType(),
+                    .@"3U8", .@"3I8", .@"3F8", .@"3U16", .@"3I16", .@"3F16", .@"3U32", .@"3I32", .@"3F32" => [3]self.toBaseType(),
+                    .@"4U8", .@"4I8", .@"4F8", .@"4U16", .@"4I16", .@"4F16", .@"4U32", .@"4I32", .@"4F32" => [4]self.toBaseType(),
+                };
+            }
+
+            /// Returns the raw size of this format data type in bytes
+            pub fn sizeInBytes(comptime self: @This()) comptime_int {
+                return switch (self) {
+                    .@"1U8", .@"1I8", .@"1F8" => 1,
+                    .@"2U8", .@"2I8", .@"2F8" => 2,
+                    .@"3U8", .@"3I8", .@"3F8" => 3,
+                    .@"4U8", .@"4I8", .@"4F8" => 4,
+                    .@"1U16", .@"1I16", .@"1F16" => 2,
+                    .@"2U16", .@"2I16", .@"2F16" => 4,
+                    .@"3U16", .@"3I16", .@"3F16" => 6,
+                    .@"4U16", .@"4I16", .@"4F16" => 8,
+                    .@"1U32", .@"1I32", .@"1F32" => 4,
+                    .@"2U32", .@"2I32", .@"2F32" => 8,
+                    .@"3U32", .@"3I32", .@"3F32" => 12,
+                    .@"4U32", .@"4I32", .@"4F32" => 16,
+                };
+            }
         };
     };
 };

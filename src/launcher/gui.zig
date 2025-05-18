@@ -287,7 +287,10 @@ pub fn serverJoin() EditorProviderError!void {
 pub var gui_process: if (builtin.os.tag == .windows) ?std.Thread else ?std.process.Child = null;
 var gui_mutex = std.Thread.Mutex{};
 var gui_shutdown = std.Thread.Condition{};
-var state: extended_wv.State = .{};
+var state = extended_wv.State{
+    // SAFETY: assigned by the GUI process
+    .view = undefined,
+};
 
 pub const DESHADER_GUI_URL = common.env_prefix ++ "GUI_URL";
 

@@ -42,29 +42,29 @@ const storage = @This();
 ///     tags: StringArrayHashMapUnmanaged(*Tag(Stored)) // will use this storage's allocator
 ///     stat: Stat
 /// ```
+/// When `Container != void`, `Container` must have an `parts` field, which must behave as `std.ArrayListUnmanaged(Stored)`.
 /// `Nested` type is optional (can be void) and it is used for storing directories as the Stored objects (like in the case of programs)
 /// Both the types must have property
 /// ```zig
 ///     pub const Ref = enum { _ }; // or `usize` or ...
 ///     ref: Ref
 /// ```
-pub fn Storage(comptime Stored: type, comptime Nested: type, comptime Parted: bool) type {
+pub fn Storage(comptime Stored: type, comptime Nested: type, comptime Container: type) type {
     return struct {
         pub const Self = @This();
+        pub const IsParted = Container != void;
         pub const StoredDir = Dir(Stored);
         pub const StoredTag = Tag(Stored);
         /// Stores a list of untagged shader parts
-        pub const StoredOrList = if (Parted) std.ArrayListUnmanaged(Stored) else Stored;
-        pub const StoredPtrOrArray = if (Parted) []Stored else *Stored;
-        pub const RefMap = std.AutoHashMapUnmanaged(Stored.Ref, *StoredOrList);
-        pub const isParted = Parted;
+        pub const StoredOrContainer = if (IsParted) Container else Stored;
+        pub const RefMap = std.AutoHashMapUnmanaged(StoredOrContainer.Ref, *StoredOrContainer);
         pub const Locator = if (Nested == void) storage.Locator(Stored) else storage.Locator(Stored).Nesting(Nested);
         /// programs / source parts mapped by tag
         tagged_root: StoredDir,
         /// Maps `Ref` to programs / list of source parts corresponding to the same shader
         all: RefMap = .empty,
         allocator: std.mem.Allocator,
-        pool: if (Stored == void) void else std.heap.MemoryPool(StoredOrList), // for storing all the Stored objects
+        pool: if (Stored == void) void else std.heap.MemoryPool(StoredOrContainer), // for storing all the Stored objects
         bus: common.Bus(StoredTag.Event, false),
         nested_bus: if (Nested != void) *common.Bus(Tag(Nested).Event, false) else void,
 
@@ -79,12 +79,18 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime Parted: bo
                     .parent = null,
                     .stat = Stat.now(),
                 },
-                .pool = if (Stored == void) {} else std.heap.MemoryPool(StoredOrList).init(alloc),
+                .pool = if (Stored == void) {} else std.heap.MemoryPool(StoredOrContainer).init(alloc),
             };
         }
 
         const parted = struct {
-            const AppendUntaggedResult = struct { stored: *Stored, index: usize };
+            const AppendUntaggedResult = struct {
+                container: *Container,
+                stored: *Stored,
+                index: usize,
+                /// Is the container newly created
+                new: bool,
+            };
 
             /// Append to an existing parted []Stored with same ref or create a new Stored (parts list) with that ref.
             /// The returned result has `undefined` content.
@@ -95,17 +101,24 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime Parted: bo
                 const maybe_ptr = try self.all.getOrPut(self.allocator, ref);
                 if (!maybe_ptr.found_existing) {
                     const new = try self.pool.create();
-                    new.* = std.ArrayListUnmanaged(Stored){};
+                    new.* = Container{
+                        .allocator = self.allocator,
+                    };
                     maybe_ptr.value_ptr.* = new;
                 }
                 // SAFETY: meant to be initialiazed by the caller
-                try maybe_ptr.value_ptr.*.append(self.allocator, undefined);
-                const new_index = maybe_ptr.value_ptr.*.items.len - 1;
-                return AppendUntaggedResult{ .stored = &maybe_ptr.value_ptr.*.items[new_index], .index = new_index };
+                try maybe_ptr.value_ptr.*.parts.append(self.allocator, undefined);
+                const new_index = maybe_ptr.value_ptr.*.parts.items.len - 1;
+                return AppendUntaggedResult{
+                    .container = maybe_ptr.value_ptr.*,
+                    .stored = &maybe_ptr.value_ptr.*.parts.items[new_index],
+                    .index = new_index,
+                    .new = !maybe_ptr.found_existing,
+                };
             }
         };
 
-        pub const appendUntagged = if (Parted) parted.appendUntagged;
+        pub const appendUntagged = if (IsParted) parted.appendUntagged;
 
         const not_nested = struct {
             pub fn list(
@@ -143,7 +156,7 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime Parted: bo
                 switch (locator) {
                     .untagged => |combined| {
                         const var_or_list = self.all.get(combined.ref) orelse return Error.TargetNotFound;
-                        const u = if (Parted) &var_or_list.items[combined.part] else var_or_list;
+                        const u = if (IsParted) &var_or_list.items[combined.part] else var_or_list;
                         if (n) |ne| if (ne.isRoot()) {
                             return Error.InvalidPath;
                         } else {
@@ -200,8 +213,8 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime Parted: bo
             {
                 var it = self.all.valueIterator();
                 while (it.next()) |val_or_list| {
-                    if (Parted) {
-                        for (val_or_list.*.items) |*val| {
+                    if (IsParted) {
+                        for (val_or_list.*.parts.items) |*val| {
                             const deinit_fn = getInnerType(Stored).deinit;
                             const args_with_this = .{val} ++ args;
                             if (@typeInfo(@TypeOf(deinit_fn)).@"fn".return_type == void) {
@@ -210,7 +223,7 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime Parted: bo
                                 @call(.auto, deinit_fn, args_with_this) catch {};
                             }
                         }
-                        val_or_list.*.deinit(self.allocator);
+                        val_or_list.*.deinit();
                     } else {
                         const deinit_fn = getInnerType(Stored).deinit;
                         const args_with_this = .{val_or_list.*} ++ args;
@@ -381,6 +394,13 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime Parted: bo
             return (@hasField(Stored.Ref, "root") and ref_or_root == .root) or @intFromEnum(ref_or_root) == 0;
         }
 
+        fn getRef(stored: *const Stored) Stored.Ref {
+            if (@hasField(Stored, "ref")) {
+                return stored.ref;
+            }
+            return stored.ref();
+        }
+
         fn listUntaggedItem(
             allocator: std.mem.Allocator,
             result: *std.ArrayListUnmanaged(CString),
@@ -388,7 +408,7 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime Parted: bo
             index: usize,
             meta: bool,
         ) !void {
-            const locator = storage.Locator(Stored).PartRef{ .ref = item.ref, .part = index };
+            const locator = storage.Locator(Stored).PartRef{ .ref = getRef(item), .part = index };
             try result.append(allocator, try if (Nested == void) // Directories have trailing slash
                 std.fmt.allocPrintZ(allocator, "{}{s}", .{ locator, item.toExtension() })
             else
@@ -414,8 +434,8 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime Parted: bo
             if (isRoot(ref_or_root)) {
                 var iter = self.all.iterator();
                 while (iter.next()) |items| {
-                    if (Parted) {
-                        for (items.value_ptr.*.items, 0..) |*item, index| {
+                    if (IsParted) {
+                        for (items.value_ptr.*.parts.items, 0..) |*item, index| {
                             if (item.tag != null) { // skip tagged ones
                                 continue;
                             }
@@ -437,8 +457,8 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime Parted: bo
                 else
                     Error.TargetNotFound;
 
-                if (!Parted or stored_parts.items.len > 0) {
-                    const stored = if (Parted) stored_parts.items[0] else stored_parts;
+                if (!IsParted or stored_parts.items.len > 0) {
+                    const stored = if (IsParted) stored_parts.items[0] else stored_parts;
                     const has_untagged = try stored.listNested(
                         allocator,
                         "",
@@ -451,8 +471,6 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime Parted: bo
                         try result.append(allocator, try nested.untaggedRoot(allocator, ""));
                     }
                 }
-            } else {
-                return error.DirectoryNotFound;
             }
 
             return result.toOwnedSlice(allocator);
@@ -530,7 +548,7 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime Parted: bo
         ) (Error || std.mem.Allocator.Error)!*StoredTag {
             // check for all
             if (self.all.get(ref)) |ptr| {
-                return self.assignTagTo(if (Parted) &ptr.items[index] else ptr, path, if_exists);
+                return self.assignTagTo(if (IsParted) &ptr.parts.items[index] else ptr, path, if_exists);
             } else {
                 log.err("Tried to put tag {s} to {x} but the pointer has no untagged content", .{ path, ref });
                 return Error.TargetNotFound;
@@ -545,14 +563,14 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime Parted: bo
             if_exists: decls.ExistsBehavior,
         ) (Error || std.mem.Allocator.Error)!*StoredTag {
             if (if_exists == .Error) if (stored.tag) |tag| {
-                log.err("Tried to put tag {s} to {x} but the pointer has already tag {}", .{ path, stored.ref, tag });
+                log.err("Tried to put tag {s} to {x} but the pointer has already tag {}", .{ path, getRef(stored), tag });
                 return Error.TagExists;
             };
 
             var target = try self.makePathRecursive(path, true, if_exists != .Error, false);
 
             if (target.content == .Dir) {
-                log.err("Tried to put tag {s} to {x} but the path is a directory", .{ path, stored.ref });
+                log.err("Tried to put tag {s} to {x} but the path is a directory", .{ path, getRef(stored) });
                 return Error.DirExists;
             }
             if (Stored != void) {
@@ -574,8 +592,8 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime Parted: bo
         }
 
         /// Returns the pointer to the created untagged resource, with UNDEFINED content
-        pub const createUntagged = if (Parted) struct {
-            fn c(self: *Self, ref: Stored.Ref, count: usize) ![]Stored {
+        pub const createUntagged = if (IsParted) struct {
+            fn c(self: *Self, ref: Stored.Ref, count: usize) !*Container {
                 return try self.createUntaggedImpl(ref, count);
             }
         }.c else struct {
@@ -585,23 +603,24 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime Parted: bo
         }.c;
 
         /// Returns the pointer to the created untagged resource, with UNDEFINED content
-        fn createUntaggedImpl(self: *@This(), ref: Stored.Ref, count: usize) !StoredPtrOrArray {
+        fn createUntaggedImpl(self: *@This(), ref: Stored.Ref, count: usize) !*StoredOrContainer {
             if (Stored == void) {
                 @compileError("This storage stores void");
             }
             const maybe_ptr = try self.all.getOrPut(self.allocator, ref);
             if (!maybe_ptr.found_existing) {
                 const new = try self.pool.create();
-                if (Parted) {
-                    new.* = std.ArrayListUnmanaged(Stored){};
+                if (IsParted) {
+                    new.* = Container{
+                        .allocator = self.allocator,
+                    };
                 }
                 maybe_ptr.value_ptr.* = new;
             }
-            if (Parted) {
-                const prev_len = maybe_ptr.value_ptr.*.items.len;
+            if (IsParted) {
                 // SAFETY: should be handled by the caller
-                try maybe_ptr.value_ptr.*.appendNTimes(self.allocator, undefined, count);
-                return maybe_ptr.value_ptr.*.items[prev_len..];
+                try maybe_ptr.value_ptr.*.parts.appendNTimes(self.allocator, undefined, count);
+                return maybe_ptr.value_ptr.*;
             } else return maybe_ptr.value_ptr.*;
         }
 
@@ -645,8 +664,8 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime Parted: bo
             // remove the content
             const removed_maybe = self.all.fetchRemove(ref);
             if (removed_maybe) |removed| {
-                if (Parted) {
-                    for (removed.value.items) |item| {
+                if (IsParted) {
+                    for (removed.value.parts.items) |item| {
                         // Remove all which pointed to this file
                         if (item.tag) |t| for (t.backlinks.items) |tag| {
                             tag.remove();
@@ -667,7 +686,7 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime Parted: bo
         pub fn untagIndex(self: *@This(), ref: Stored.Ref, index: usize) !void {
             const contents_maybe = self.all.get(ref);
             if (contents_maybe) |contents| {
-                if (if (Parted) contents.items[index].tag else contents.tag) |tag| {
+                if (if (IsParted) contents.items[index].tag else contents.tag) |tag| {
                     self.bus.dispatchNoThrow(StoredTag.Event{ .action = .Remove, .tag = tag });
                     tag.remove();
                 } else {
@@ -682,7 +701,7 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime Parted: bo
         pub fn untagAll(self: *@This(), ref: Stored.Ref) !void {
             const contents_maybe = self.all.get(ref);
             if (contents_maybe) |contents| {
-                for (contents.items) |item| {
+                for (contents.parts.items) |item| {
                     if (item.tag) |tag| {
                         self.bus.dispatchNoThrow(StoredTag.Event{ .action = .Remove, .tag = tag });
                         tag.remove();
@@ -702,13 +721,13 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime Parted: bo
             switch (locator) {
                 .untagged => |combined| {
                     const ptr = self.all.get(combined.ref) orelse return Error.TargetNotFound;
-                    const s = ptr.items[combined.part].stat;
+                    const s = ptr.parts.items[combined.part].stat;
                     return StatPayload{
                         .type = @intFromEnum(FileType.File),
                         .accessed = s.accessed,
                         .created = s.created,
                         .modified = s.modified,
-                        .size = if (ptr.items[combined.part].getSource()) |sr| sr.len else 0,
+                        .size = if (ptr.parts.items[combined.part].getSource()) |sr| sr.len else 0,
                     };
                 },
                 .tagged => |path| {
@@ -777,8 +796,8 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime Parted: bo
         pub fn getStoredByLocator(self: *@This(), locator: storage.Locator(Stored).Name) !*Stored {
             return switch (locator) {
                 .tagged => |path| try self.getStoredByPath(path),
-                .untagged => |combined| if (Parted) if (self.all.get(combined.ref)) |s|
-                    &s.items[combined.part]
+                .untagged => |combined| if (IsParted) if (self.all.get(combined.ref)) |s|
+                    &s.parts.items[combined.part]
                 else
                     Error.TargetNotFound else if (self.all.getPtr(combined.ref)) |s| s else Error.TargetNotFound,
             };
@@ -912,7 +931,7 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime Parted: bo
                         // Remove old / overwrite
                         const old_content = existing_file.value_ptr.target;
                         old_content.dirty();
-                        log.debug("Overwriting tag {s} from source {x} with {s}", .{ existing_file.value_ptr.name, old_content.ref, name });
+                        log.debug("Overwriting tag {s} from with {s}", .{ existing_file.value_ptr.name, name });
                         // remove existing tag
                         existing_file.value_ptr.remove();
                         // overwrite tag and content
@@ -1383,6 +1402,13 @@ pub fn Locator(comptime T: type) type {
                 };
             }
 
+            pub fn untaggedOrNull(self: @This()) ?PartRef {
+                return switch (self) {
+                    .tagged => null,
+                    .untagged => |u| u,
+                };
+            }
+
             pub fn format(self: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
                 switch (self) {
                     .tagged => |s| {
@@ -1506,7 +1532,15 @@ pub fn Locator(comptime T: type) type {
                 }
 
                 pub fn isUntagged(self: @This()) bool {
-                    return self.name == .untagged;
+                    return if (self.hasNested()) self.nested.isUntagged() else self.name == .untagged;
+                }
+
+                pub fn hasNested(self: @This()) bool {
+                    return !self.nested.isRoot();
+                }
+
+                pub fn maybeNested(self: @This()) ?Locator(U) {
+                    return if (self.hasNested()) self.nested else null;
                 }
             };
         }

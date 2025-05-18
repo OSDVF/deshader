@@ -13,5 +13,6 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
+pub const instrumentation = @import("declarations/instrumentation.zig");
+pub const types = @import("declarations/types.zig");
 pub const shaders = @import("declarations/shaders.zig");
-pub const instruments = @import("declarations/instruments.zig");

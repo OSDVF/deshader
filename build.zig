@@ -126,7 +126,12 @@ pub fn build(b: *std.Build) !void {
             "Log intercepted GL and VK procedure list and loader errors to stdout (adds several MB to library size)",
         ) orelse false,
         .log_level = b.option(opts.Level, "logLevel", "Set log level for the build") orelse .default,
-        .memory_frames = b.option(u32, "memoryFrames", "Number of frames in memory leak backtrace (default 7)") orelse 7,
+        .memory_safety = b.option(
+            u32,
+            "memory_safety",
+            "Number of frames in memory leak backtrace (default 7 for debug, no memory safety for release mode)",
+        ) orelse
+            if (optimize == .Debug) 5 else null,
         .output = otype,
         .sanitize = b.option(bool, "sanitize", "Enable sanitizers (implicit for debug mode)") orelse default_traces,
         .sdk = b.option(String, "sdk", "SDK path (macOS only, defaults to the one selected by xcode-select)"),
@@ -383,7 +388,7 @@ pub fn build(b: *std.Build) !void {
     deshader_options.addOption(String, "deshaderLibName", deshader_lib_name);
     deshader_options.addOption(opts.Level, "log_level", options.log_level);
     deshader_options.addOption(opts.OutputType, "otype", options.output);
-    deshader_options.addOption(u32, "memoryFrames", options.memory_frames);
+    deshader_options.addOption(?u32, "memory_safety", options.memory_safety);
     const version = resolve: {
         const version_result = try std.process.Child.run(
             .{ .allocator = b.allocator, .argv = &.{ "git", "describe", "--tags", "--always", "--abbrev=0", "--exact-match" } },
@@ -570,8 +575,9 @@ pub fn build(b: *std.Build) !void {
             heade_gen_opts.addOption(String, "h_dir", b.pathJoin(&.{ b.h_dir, "deshader" }));
             heade_gen_opts.addOption([]const String, "filePaths", &.{
                 long_name,
+                b.pathJoin(&.{ b.build_root.path.?, "src/declarations/types.zig" }),
+                b.pathJoin(&.{ b.build_root.path.?, "src/declarations/instrumentation.zig" }),
                 b.pathJoin(&.{ b.build_root.path.?, "src/declarations/shaders.zig" }),
-                b.pathJoin(&.{ b.build_root.path.?, "src/declarations/instruments.zig" }),
             });
             header_gen.root_module.addOptions("options", heade_gen_opts);
             header_gen.root_module.addAnonymousImport("header_gen", .{
@@ -644,7 +650,7 @@ pub fn build(b: *std.Build) !void {
 
     const launcher_options = b.addOptions();
     launcher_options.addOption(String, "deshaderLibName", deshader_lib_name);
-    launcher_options.addOption(u32, "memoryFrames", options.memory_frames);
+    launcher_options.addOption(?u32, "memory_safety", options.memory_safety);
     launcher_options.addOption(String, "deshaderRelativeRoot", if (targetTarget == .windows)
         "."
     else
@@ -1146,12 +1152,14 @@ fn linkVcpkgLibrary(compile: anytype, name: String, triplet: String, debug: bool
     b.build_root.handle.access(vcpkg_dir, .{}) catch {
         // VCPKG libraries were not installed previously so all our check would fail. We must wait for VCPKG to install them.
         log.debug("Starting VCPKG installation in configuration phase", .{});
+        if (dependencies_step.sub_steps.items.len == 0) try dependencies_step.vcpkg(triplet);
         try DependenciesStep.doAll(&dependencies_step.step, std.Build.Step.MakeOptions{
             .progress_node = std.Progress.Node{ .index = .none },
             .watch = false,
             // SAFETY: unused
             .thread_pool = undefined, // won't be used anyway
         });
+        // will wait for VCPKG to finish
     };
 
     const vcpkg_dir_real = try b.build_root.handle.realpathAlloc(b.allocator, vcpkg_dir);

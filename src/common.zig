@@ -38,8 +38,10 @@ const String = []const u8;
 const CString = [*:0]const u8;
 const ZString = [:0]const u8;
 
-pub const GPA = std.heap.GeneralPurposeAllocator(.{
-    .stack_trace_frames = options.memoryFrames,
+pub const GPA = std.heap.GeneralPurposeAllocator(if (options.memory_safety) |frames| .{
+    .stack_trace_frames = frames,
+} else .{
+    .safety = false,
 });
 
 pub var gpa = GPA.init;
@@ -399,6 +401,11 @@ pub fn indexOfSliceMember(comptime T: type, slice: []const T, needle: *const T) 
     return null;
 }
 
+/// Returns true if both arguments are null or if both are not null
+pub fn nullEq(a: anytype, b: anytype) bool {
+    return (a == null and b == null) or (a != null and b != null);
+}
+
 pub fn nullishEq(comptime T: type, maybe_a: ?T, maybe_b: ?T) bool {
     return if (maybe_a) |a| if (maybe_b) |b| switch (@typeInfo(T)) {
         .pointer => |s| std.mem.eql(s.child, a, b),
@@ -410,6 +417,7 @@ pub fn noTrailingSlash(path: String) String {
     return if (path[path.len - 1] == '/') path[0 .. path.len - 1] else path;
 }
 
+/// Resize or realloc if the resize was unsuccessful
 pub fn resize(allocat: std.mem.Allocator, array: anytype, new_size: usize) !@TypeOf(array) {
     if (allocat.resize(array, new_size)) {
         return array[0..new_size];
@@ -441,5 +449,59 @@ pub fn ArrayAddressContext(comptime T: type) type {
         pub fn eql(_: @This(), a: T, b: T, _: usize) bool {
             return @intFromPtr(a) == @intFromPtr(b);
         }
+    };
+}
+
+/// Variable length array with a maximum length.
+/// Backed by a fixed size array.
+pub fn VariableArray(comptime T: type, comptime max_length: comptime_int) type {
+    return struct {
+        /// The backing array. Has always the `MaxLength` size.
+        raw: [max_length]T,
+        len: usize,
+
+        pub fn init(data: anytype) !@This() {
+            if (data.len > max_length) {
+                return Error.LengthExceeded;
+            }
+            // SAFETY: all feilds are initialized
+            var this: @This() = undefined;
+            const info = @typeInfo(@TypeOf(data));
+            switch (info) {
+                .array => |a| {
+                    if (a.len > max_length) {
+                        @compileError(std.fmt.comptimePrint("VariableArray only supports arrays of length <= {d}", .{max_length}));
+                    }
+                    this.len = a.len;
+                    @memcpy(this.raw[0..a.len], data[0..a.len]);
+                },
+                .pointer => {
+                    @memcpy(this.raw[0..data.len], data);
+                },
+                .@"struct" => |s| { //tuple
+                    if (!s.is_tuple) {
+                        @compileError("VariableArray only supports tuples or slice initializers");
+                    }
+                    inline for (data, 0..) |entry, i| {
+                        this.raw[i] = entry;
+                    }
+                    this.len = s.fields.len;
+                },
+                else => {
+                    @compileError("VariableArray only supports tuples or slice initializers (tried to use " ++ @typeName(@TypeOf(data)) ++ ")");
+                },
+            }
+            return this;
+        }
+
+        /// Converts the variable array to a slice.
+        /// WARNING: the slice is valid only for the lifetime of the variable array.
+        pub fn slice(self: *const @This()) []const T {
+            return self.raw[0..self.len];
+        }
+
+        pub const Error = error{LengthExceeded};
+        pub const MaxLength = max_length;
+        pub const Type = T;
     };
 }

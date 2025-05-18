@@ -17,21 +17,22 @@ const std = @import("std");
 const shaders = @import("../services/shaders.zig");
 const instruments = @import("../services/instruments.zig");
 const commands = @import("../commands.zig");
-const decls = @import("../declarations/instruments.zig");
+const decls = @import("../declarations/instrumentation.zig");
 const log = @import("common").log;
 const gl = @import("gl");
-
-const uvec2 = struct { u32, u32 };
+const backend = @import("gl.zig");
 
 // TODO: maybe make the instruments stateful?
+
 /// Processes the output from the `Step` instrument - the stepping and breakpoints logic.
 pub const Step = struct {
     const id = instruments.Step.id;
 
-    pub fn onBeforeDraw(_: *shaders, instrumentation: *shaders.InstrumentationResult) anyerror!void {
+    pub fn onBeforeDraw(_: *shaders, instrumentation: decls.Result) anyerror!void {
         // Update uniforms
-        const program = instrumentation.stages.values()[0].params.context.program;
-        if (instrumentation.uniforms_invalidated) if (instruments.Step.controls(&program.channels)) |controls| {
+        const program = shaders.Shader.Program.fromOpaque(instrumentation.program);
+        const p_state = &program.state.?;
+        if (p_state.uniforms_dirty) if (instruments.Step.controls(&p_state.channels)) |controls| {
             if (controls.desired_step) |target| {
                 const step_selector_ref = gl.GetUniformLocation(program.ref.cast(gl.uint), instruments.Step.desired_step);
                 if (step_selector_ref >= 0) {
@@ -52,112 +53,116 @@ pub const Step = struct {
 
     pub fn onResult(
         service: *shaders,
-        instrumentation: *const shaders.InstrumentationResult,
-        readbacks: *const std.AutoArrayHashMapUnmanaged(decls.InstrumentId, decls.Readback),
+        instrumentation: decls.Result,
+        readbacks: *const std.AutoArrayHashMapUnmanaged(decls.ReadbackId, decls.Readback),
         _: *const decls.PlatformParamsGL,
     ) anyerror!void {
-        var it = instrumentation.stages.iterator();
-        while (it.next()) |entry| {
-            // Debug adapter Breakpoint IDs
-            var bp_hit_ids = std.AutoArrayHashMapUnmanaged(usize, void){};
-            defer bp_hit_ids.deinit(service.allocator);
+        const program = shaders.Shader.Program.fromOpaque(instrumentation.program);
+        const p_state = &program.state.?;
 
-            var selected_thread_rstep: ?usize = null;
-            const instr_state = entry.value_ptr.*;
-            const shader_ref = entry.key_ptr.*;
+        // Debug adapter Breakpoint IDs
+        var bp_hit_ids = std.AutoArrayHashMapUnmanaged(usize, void){};
+        defer bp_hit_ids.deinit(service.allocator);
 
-            const selected_thread = instr_state.globalSelectedThread();
-            // Retrieve the hit storage
-            if (readbacks.get(instruments.Step.id)) |readback|
-                if (instruments.Step.responses(&instr_state.params.context.program.channels)) |responses| {
-                    const threads_hits = std.mem.bytesAsSlice(
-                        uvec2,
-                        readback.data,
-                    );
-                    // Scan for hits
-                    var min_source: u32 = std.math.maxInt(u32);
-                    var min_global: u32 = std.math.maxInt(u32);
-                    var min_thread: usize = std.math.maxInt(u32);
-                    for (0..instr_state.channels.totalThreadsCount()) |thread| {
-                        const hit: uvec2 = threads_hits[thread];
-                        if (hit[1] > 0) { // 1-based (0 means no hit)
-                            const hit_global_i = hit[0];
-                            // The index within the source file
-                            const hit_source_i = hit[1] - 1;
-                            // find the corresponding local step for SourcePart
-                            const offset = try responses.localStepOffset(hit_global_i);
-                            const local = hit_global_i - offset.offset;
+        var selected_thread_rstep: ?usize = null;
+        var reached_stage: ?shaders.Shader.Stage.Ref = null;
 
-                            if (offset.part.breakpoints.get(local)) |bp|
-                                _ = try bp_hit_ids.getOrPut(service.allocator, bp.id);
+        // Retrieve the hit storage
+        if (readbacks.get(instruments.Step.id)) |readback| // TODO readbacks are null after re-inistrumentation
+            if (instruments.Step.responses(&p_state.channels)) |responses| {
+                const threads_hits = std.mem.bytesAsSlice(
+                    instruments.Step.Responses.ReachedStep,
+                    readback.data,
+                );
+                // Scan for hits
+                var min_id: instruments.Step.T = std.math.maxInt(instruments.Step.T);
+                var min_counter: instruments.Step.T = std.math.maxInt(instruments.Step.T);
+                var min_thread: usize = std.math.maxInt(u32);
+                var min_stage: ?shaders.Shader.Stage.Ref = null;
+                for (0.., threads_hits) |thread, hit| {
+                    if (hit.id > 0) { // 1-based (0 means no hit)
+                        const step_counter_i = hit.counter;
+                        // The index within the global step number space
+                        const step_global_i = hit.id - 1;
+                        // find the corresponding local step for SourcePart
+                        const offset = try responses.localStepOffset(step_global_i);
+                        const local = step_global_i - offset.offset;
 
-                            if (thread == selected_thread) {
-                                responses.reached_step = .{ .source = hit_source_i, .global = hit_global_i };
-                                log.debug("Selected thread reached step ID {d} index {d}", .{ hit_global_i, hit_source_i });
-                                selected_thread_rstep = local;
-                            }
-                            if (hit_source_i <= min_source) {
-                                min_source = hit_source_i;
-                                min_global = hit_global_i;
-                                min_thread = thread;
-                            }
+                        if (offset.part.step_breakpoints.get(local)) |global_bp_id|
+                            _ = try bp_hit_ids.getOrPut(service.allocator, global_bp_id);
+
+                        const selected_thread = try offset.part.stage.linearSelectedThread();
+
+                        if (thread == selected_thread) {
+                            responses.reached = .{
+                                .id = step_global_i,
+                                .counter = step_counter_i,
+                            };
+                            log.debug("Selected thread reached step counter {d} ID {d}", .{ step_counter_i, step_global_i });
+                            selected_thread_rstep = local;
+                            reached_stage = offset.part.stage.ref;
+                        }
+                        if (step_global_i <= min_id) {
+                            min_id = step_global_i;
+                            min_counter = step_counter_i;
+                            min_thread = thread;
+                            min_stage = offset.part.stage.ref;
                         }
                     }
+                }
 
-                    if (responses.reached_step == null and !shaders.single_pause_mode) {
-                        // Some step was reached in different than the selected thread
-                        // TODO should not really occur
-                        log.err("Step {d} was reached in source {d} in non-selected thread {d}", .{ min_global, min_source, min_thread });
-                        if (min_source != 0) {
-                            responses.reached_step = .{ .global = min_global, .source = min_source };
-                        }
+                if (responses.reached == null and !shaders.single_pause_mode) {
+                    // Some step was reached in different than the selected thread
+                    // TODO should not really occur
+                    log.err("Step counter {d} ID {d} was reached in non-selected thread {d}", .{ min_counter, min_id, min_thread });
+                    if (min_id != 0) {
+                        responses.reached = .{ .counter = min_counter, .id = min_id };
                     }
+                    reached_stage = min_stage;
+                }
 
-                    const running = try shaders.Running.Locator.from(service, shader_ref);
-                    if (bp_hit_ids.count() > 0) {
-                        if (commands.instance) |comm| {
-                            try comm.eventBreak(.stopOnBreakpoint, .{
-                                .ids = bp_hit_ids.keys(),
-                                .thread = running.impl,
-                            });
-                        }
-                    } else if (selected_thread_rstep) |reached_step| { // There was no breakpoint at this step, so the event is "stepping"
-                        if (commands.instance) |comm| {
-                            try comm.eventBreak(.stop, .{
-                                .step = reached_step,
-                                .thread = running.impl,
-                            });
-                        }
+                if (bp_hit_ids.count() > 0) {
+                    const running = try shaders.Running.Locator.from(service, reached_stage.?);
+                    if (commands.instance) |comm| {
+                        try comm.eventBreak(.stopOnBreakpoint, .{
+                            .ids = bp_hit_ids.keys(),
+                            .thread = running.impl,
+                        }, backend.waiterServe);
                     }
-                };
-        }
+                } else if (selected_thread_rstep) |reached_step| { // There was no breakpoint at this step, so the event is "stepping"
+                    const running = try shaders.Running.Locator.from(service, reached_stage.?);
+                    if (commands.instance) |comm| {
+                        try comm.eventBreak(.stop, .{
+                            .step = reached_step,
+                            .thread = running.impl,
+                        }, backend.waiterServe);
+                    }
+                }
+            };
     }
 };
 
-const MAX_VARIABLES_SIZE = 1024 * 1024; // 1MB
-
-pub const Variables = struct {
-    variables_buffer: [MAX_VARIABLES_SIZE]u8 = undefined,
-};
+pub const Variables = struct {};
 
 pub const StackTrace = struct {
-    // TODO dynamic buffer
-    stack_trace_buffer: [instruments.StackTrace.default_max_entries]instruments.StackTrace.StackTraceT = undefined,
+    pub fn onBeforeDraw(service: *shaders, instrumentation: decls.Result) anyerror!void {
+        const program = shaders.Shader.Program.fromOpaque(instrumentation.program);
+        if (program.state.?.uniforms_dirty) {
+            // Update uniforms
+            var stages = program.stages.iterator();
+            while (stages.next()) |entry| {
+                const shader_ref = entry.key_ptr.*;
+                const stage = entry.value_ptr.*;
 
-    pub fn onBeforeDraw(service: *shaders, instrumentation: *shaders.InstrumentationResult) anyerror!void {
-        // Update uniforms
-        if (instrumentation.uniforms_invalidated) {
-            for (instrumentation.stages.keys(), instrumentation.stages.values()) |shader_ref, state| {
-                const source_part = service.Shaders.all.get(shader_ref).?.items[0];
-                const thread_selector = try service.allocator.dupeZ(u8, instruments.StackTrace.threadSelector(source_part.stage));
+                const thread_selector = try service.allocator.dupeZ(u8, instruments.StackTrace.threadSelector(stage.stage));
                 defer service.allocator.free(thread_selector);
-                const thread_select_ref = gl.GetUniformLocation(source_part.program.?.ref.cast(gl.uint), thread_selector.ptr);
+                const thread_select_ref = gl.GetUniformLocation(stage.program.?.ref.cast(gl.uint), thread_selector.ptr);
                 if (thread_select_ref >= 0) {
-                    const selected_thread = state.globalSelectedThread();
+                    const selected_thread = try stage.linearSelectedThread();
                     gl.Uniform1ui(thread_select_ref, @intCast(selected_thread));
                     log.debug("Setting selected thread to {d}", .{selected_thread});
                 } else {
-                    log.warn("Could not find thread selector uniform in shader {x}", .{shader_ref});
+                    log.warn("Could not find thread selector uniform in stage {x}", .{shader_ref});
                 }
             }
         }

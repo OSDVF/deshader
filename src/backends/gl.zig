@@ -29,8 +29,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const gl = @import("gl");
 const options = @import("options");
-const decls = @import("../declarations/shaders.zig");
-const instr_decls = @import("../declarations/instruments.zig");
+const decls = @import("../declarations.zig");
 const shaders = @import("../services/shaders.zig");
 const Processor = @import("../services/processor.zig");
 const gl_instruments = @import("gl_instruments.zig");
@@ -62,11 +61,14 @@ const ContextState = struct {
 
     // memory for used indexed buffer binding indexed. OpenGL does not provide a standard way to query them.
     indexed_buffer_bindings: std.EnumMap(BufferType, usize) = .{},
-    search_paths: std.AutoHashMapUnmanaged(shaders.Shader.StageRef, []String) = .empty,
+    search_paths: std.AutoHashMapUnmanaged(shaders.Shader.Stage.Ref, []String) = .empty,
 
     replacement_attachment_textures: [32]gl.uint = [_]gl.uint{0} ** 32,
-    /// Readback buffers for the
-    readbacks: std.AutoHashMapUnmanaged(instr_decls.InstrumentId, instr_decls.Readback) = .empty,
+    /// Readback buffers for supplying contents defined by `OutputStorage`s to `InstrumentClient`s
+    readbacks: std.AutoArrayHashMapUnmanaged(decls.instrumentation.ReadbackId, decls.instrumentation.Readback) = .empty,
+    /// Maps the backing readback storages to the IDs of their descriptors (`instrumentation.Readback`) - used for reusing readbacks across
+    /// re-instrumentation.
+    readbacks_cache: std.AutoArrayHashMapUnmanaged(decls.types.PlatformRef, decls.instrumentation.ReadbackId) = .empty,
     /// Platform limits
     max: struct {
         attachments: gl.uint = 0,
@@ -80,6 +82,51 @@ const ContextState = struct {
             interleaved_components: gl.int = 0,
         } = .{},
     } = .{},
+
+    fn getCachedReadback(self: *@This(), key: decls.types.PlatformRef) ?*decls.instrumentation.Readback {
+        return self.readbacks.getPtr(self.readbacks_cache.get(key).?);
+    }
+
+    /// Fill with data from buffer or interface
+    fn hydrateReadback(
+        self: *@This(),
+        key: decls.instrumentation.ReadbackId,
+        storage: *Processor.OutputStorage,
+        stage: *const shaders.Shader.Stage,
+    ) !void {
+        if (!storage.lazy) {
+            const program_st = stage.program.?.state.?;
+            const readback: *decls.instrumentation.Readback = self.readbacks.getPtr(key).?;
+            switch (storage.location) {
+                .interface => |interface| {
+                    switch (stage.stage) {
+                        .gl_fragment, .vk_fragment => {
+                            // read pixels to the main memory synchronously
+                            gl.ReadBuffer(@as(gl.@"enum", @intCast(interface.location)) + gl.COLOR_ATTACHMENT0);
+                            const format = formatToPlatform(interface.format);
+
+                            try readPixels(
+                                @intCast(interface.x),
+                                @intCast(interface.y),
+                                @intCast(program_st.params.context.screen[0]),
+                                @intCast(program_st.params.context.screen[1]),
+                                format.format,
+                                format.type, // The same format as the texture
+                                @intCast(readback.data.len),
+                                readback.data.ptr,
+                            );
+                        },
+                        else => unreachable, // TODO transform feedback
+                    }
+                },
+                .buffer => |buffer| {
+                    gl.BindBuffer(gl.SHADER_STORAGE_BUFFER, @intCast(readback.ref));
+                    // TODO: use mapBuffer
+                    gl.GetBufferSubData(gl.SHADER_STORAGE_BUFFER, @intCast(buffer.offset), @intCast(readback.data.len), readback.data.ptr);
+                },
+            }
+        }
+    }
 
     fn deinit(s: *@This()) void {
         var sit = s.search_paths.valueIterator();
@@ -102,16 +149,16 @@ const ContextState = struct {
             }
         }
         {
-            var it = s.readbacks.valueIterator();
-            while (it.next()) |v| {
+            for (s.readbacks.values()) |*v| {
                 deinitReadback(v);
             }
         }
         s.readbacks.deinit(common.allocator);
+        s.readbacks_cache.deinit(common.allocator);
         gl.makeProcTableCurrent(prev_proc_table);
     }
 
-    fn deinitReadback(self: *instr_decls.Readback) void {
+    fn deinitReadback(self: *decls.instrumentation.Readback) void {
         common.allocator.free(self.data);
         var r: gl.uint = @intCast(self.ref);
         if (gl.IsBuffer(r) == gl.TRUE) {
@@ -156,14 +203,12 @@ const actions = struct {
 
     fn createNamedString(namelen: gl.int, name: CString, stringlen: gl.int, string: CString) !void {
         const result = try current.Shaders.appendUntagged(.named_strings);
-        result.stored.* = try shaders.Shader.SourcePart.init(common.allocator, decls.SourcesPayload{
-            .currentSource = namedStringSourceAlloc,
-            .free = freeNamedString,
-            .language = decls.LanguageType.GLSL,
-            .lengths = &.{@intCast(stringlen)},
-            .ref = 0,
-            .sources = &.{string},
-        }, 0);
+        if (result.new) {
+            result.container.currentSourceHost = namedStringSourceAlloc;
+            result.container.free = freeNamedString;
+            result.container.language = decls.shaders.LanguageType.GLSL;
+        }
+        result.stored.source = string[0..realLength(stringlen, string)];
         _ = try current.Shaders.assignTag(.named_strings, result.index, name[0..realLength(namelen, name)], .Error);
     }
 };
@@ -299,8 +344,8 @@ const Snapshot = struct {
         //
 
         var it = program.stages.valueIterator();
-        while (it.next()) |parts| {
-            const shader_stage = parts.*.items[0].stage;
+        while (it.next()) |stage| {
+            const shader_stage = stage.*.stage;
 
             switch (shader_stage) {
                 .gl_fragment, .vk_fragment => {
@@ -352,13 +397,12 @@ const Snapshot = struct {
 
     fn restore(snapshot: Snapshot) !void {
         log.debug("Restoring pipeline shapshot", .{});
-        var it = current.state.valueIterator();
-        while (it.next()) |value| {
-            for (value.instruments.values()) |instrument| {
-                if (instrument.onRestore) |onRestore| {
-                    onRestore(current.toOpaque()) catch |err| {
-                        log.err("Instrumentation backend onRestore failed: {} at {?}", .{ err, @errorReturnTrace() });
-                    };
+        for (current.instrument_clients.items) |*instrument| {
+            if (instrument.onRestore) |onRestore| {
+                const r = onRestore(current.toOpaque());
+
+                if (r != 0) {
+                    log.err("Instrumentation backend onRestore failed with result {d} at {?}", .{ r, @errorReturnTrace() });
                 }
             }
         }
@@ -427,7 +471,7 @@ fn dispatchDebugDraw(
             };
 
             defer context_params.deinit(common.allocator);
-            dispatchDebugImpl(program, instrument_func, i_args ++ .{context_params}, dispatch_func, d_args, true) catch |err| {
+            dispatchDebugImpl(program, instrument_func, i_args ++ .{ program, context_params }, dispatch_func, d_args, true) catch |err| {
                 log.err("Failed to process instrumentation: {}\n{}", .{ err, @errorReturnTrace() orelse &common.null_trace });
             };
             return;
@@ -457,15 +501,16 @@ fn dispatchDebugImpl(
     const snapshot = Snapshot.capture(program);
     while (true) {
         shaders.user_action = false;
-        // Instrument the currently bound program
-        var instrumentation: shaders.InstrumentationResult = try @call(.auto, instrument_func, i_args);
-        defer instrumentation.deinit(current.allocator);
 
-        const platform = try prepareStorage(&instrumentation, snapshot);
+        // Instrument the currently bound program
+        const instrumentation: decls.instrumentation.Result = try @call(.auto, instrument_func, i_args);
+
+        const platform = try prepareStorage(instrumentation, snapshot);
 
         if (xfb) {
             beginXfbQueries();
         }
+        // Run the original draw/compute function
         @call(.auto, dispatch_func, d_args);
         if (xfb) {
             endXfbQueries();
@@ -480,9 +525,13 @@ fn dispatchDebugImpl(
     try snapshot.restore();
 }
 
-fn instrumentDraw(vertices: gl.int, instances: gl.sizei, params: shaders.State.Params.Context) !shaders.InstrumentationResult {
-    return current.instrumentProgram(params.program, .{
-        .allocator = common.allocator,
+fn instrumentDraw(
+    vertices: gl.int,
+    instances: gl.sizei,
+    program: *shaders.Shader.Program,
+    params: shaders.Shader.Program.State.Params.Context,
+) !decls.instrumentation.Result {
+    return program.instrument(current, .{
         .vertices = @intCast(vertices),
         .instances = @intCast(instances),
         .compute = [_]usize{ 0, 0, 0, 0, 0, 0 },
@@ -490,12 +539,11 @@ fn instrumentDraw(vertices: gl.int, instances: gl.sizei, params: shaders.State.P
     });
 }
 
-fn instrumentCompute(sizes: [6]usize, program: *shaders.Shader.Program, general_params: GeneralParams) !shaders.InstrumentationResult {
+fn instrumentCompute(sizes: [6]usize, program: *shaders.Shader.Program, general_params: GeneralParams) !decls.instrumentation.Result {
     var empty = std.ArrayListUnmanaged(usize){};
     defer empty.deinit(common.allocator);
     const c_state = state.getPtr(current.context).?;
-    return current.instrumentProgram(program, .{
-        .allocator = common.allocator,
+    return program.instrument(current, .{
         .vertices = 0,
         .instances = 0,
         .compute = sizes,
@@ -507,7 +555,6 @@ fn instrumentCompute(sizes: [6]usize, program: *shaders.Shader.Program, general_
             .max_xfb = 0,
             .screen = [_]usize{ 0, 0 },
             .search_paths = if (state.getPtr(current.context)) |s| s.search_paths else null,
-            .program = program,
         },
     });
 }
@@ -704,10 +751,10 @@ fn formatToPlatform(format: Processor.OutputStorage.Location.Format) PlatformFor
     };
 }
 
-/// Prepare debug output buffers for instrumented shaders execution
-fn prepareStorage(instrumentation: *shaders.InstrumentationResult, snapshot: Snapshot) !instr_decls.PlatformParamsGL {
+/// Prepare debug output buffers for instrumented shaders execution and `Readbacks` for reading their contents on the CPU side.
+fn prepareStorage(instrumentation: decls.instrumentation.Result, snapshot: Snapshot) !decls.instrumentation.PlatformParamsGL {
     // TODO do not perform this when no instrumentation occured
-    if (instrumentation.invalidated) {
+    if (instrumentation.instrumented) {
         if (commands.instance) |comm| {
             try comm.sendEvent(.invalidated, debug.InvalidatedEvent{ .areas = &.{debug.InvalidatedEvent.Areas.threads} });
         }
@@ -717,25 +764,43 @@ fn prepareStorage(instrumentation: *shaders.InstrumentationResult, snapshot: Sna
     @memcpy(draw_buffers[0..snapshot.draw_buffers_len], snapshot.draw_buffers[0..snapshot.draw_buffers_len]);
     var draw_buffers_len = snapshot.draw_buffers_len;
 
+    // TODO some intelligent memory re-using alogrithm
+    // All refs that will be encountered in some stage's OutputStorage readback definition will be deleted from this map
+    var unused_readback_refs = std.AutoArrayHashMapUnmanaged(decls.types.PlatformRef, void).empty;
+    try unused_readback_refs.ensureTotalCapacity(common.allocator, c_state.readbacks_cache.count());
+    defer unused_readback_refs.deinit(common.allocator);
+    for (c_state.readbacks_cache.keys()) |k| {
+        _ = unused_readback_refs.getOrPutAssumeCapacity(k);
+    }
+
     // SAFETY: assigned in the loop (maybe)
-    var result: instr_decls.PlatformParamsGL = undefined;
-    var it = instrumentation.stages.iterator();
-    while (it.next()) |state_entry| { // for each shader stage (in the order they are executed)
-        var instr_state = state_entry.value_ptr.*;
-        const shader_ref = state_entry.key_ptr.*;
-        const shader_stage = current.Shaders.all.get(shader_ref).?.items[0].stage;
+    var result: decls.instrumentation.PlatformParamsGL = undefined;
+    const program = shaders.Shader.Program.fromOpaque(instrumentation.program);
+    const p_state = &program.state.?;
+    var it = program.stages.valueIterator();
+    while (it.next()) |stage| { // for each shader stage (in random order)
+        var instr_state = stage.*.state.?;
         //
-        // Prepare storages
+        // Prepare storages and readbacks
         //
         for (instr_state.channels.out.keys(), instr_state.channels.out.values()) |key, stor| {
             const readback = try c_state.readbacks.getOrPut(common.allocator, key);
-            if (!readback.found_existing) {
+            const create_storage = if (readback.found_existing) blk: {
+                // Reallocate stale readback buffer
+                if (c_state.getCachedReadback(readback.value_ptr.ref).?.data.len != stor.size) {
+                    readback.value_ptr.data = try common.resize(common.allocator, readback.value_ptr.data, stor.size);
+                    break :blk true;
+                }
+                break :blk false;
+            } else blk: {
+                // allocate the readback buffer
                 readback.value_ptr.data = try common.allocator.alloc(u8, stor.size);
-            }
+                break :blk true;
+            };
 
             switch (stor.location) {
                 .interface => |interface| { // `id` should be the last attachment index
-                    switch (shader_stage) {
+                    switch (stage.*.stage) {
                         .gl_fragment, .vk_fragment => {
                             // append to debug draw buffers spec
                             {
@@ -746,7 +811,7 @@ fn prepareStorage(instrumentation: *shaders.InstrumentationResult, snapshot: Sna
                                 draw_buffers_len = @intCast(interface.location + 1);
                             }
 
-                            if (!readback.found_existing) {
+                            if (create_storage) {
                                 // Create a debug attachment for the framebuffer
                                 {
                                     // SAFETY: assigned at the end of this block
@@ -760,8 +825,8 @@ fn prepareStorage(instrumentation: *shaders.InstrumentationResult, snapshot: Sna
                                     gl.TEXTURE_2D,
                                     0,
                                     format.internal_format,
-                                    @intCast(instr_state.params.context.screen[0]),
-                                    @intCast(instr_state.params.context.screen[1]),
+                                    @intCast(p_state.params.context.screen[0]),
+                                    @intCast(p_state.params.context.screen[1]),
                                     0,
                                     format.format,
                                     format.type,
@@ -785,8 +850,8 @@ fn prepareStorage(instrumentation: *shaders.InstrumentationResult, snapshot: Sna
                                 gl.RenderbufferStorage(
                                     gl.RENDERBUFFER,
                                     gl.DEPTH24_STENCIL8,
-                                    @intCast(instr_state.params.context.screen[0]),
-                                    @intCast(instr_state.params.context.screen[1]),
+                                    @intCast(p_state.params.context.screen[0]),
+                                    @intCast(p_state.params.context.screen[1]),
                                 );
                                 gl.FramebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.RENDERBUFFER, depth_stencil);
                                 for (0..interface.location) |i| {
@@ -799,8 +864,8 @@ fn prepareStorage(instrumentation: *shaders.InstrumentationResult, snapshot: Sna
                                         gl.TEXTURE_2D,
                                         0,
                                         gl.RGBA,
-                                        @intCast(instr_state.params.context.screen[0]),
-                                        @intCast(instr_state.params.context.screen[1]),
+                                        @intCast(p_state.params.context.screen[0]),
+                                        @intCast(p_state.params.context.screen[1]),
                                         0,
                                         gl.RGBA,
                                         gl.FLOAT,
@@ -819,7 +884,7 @@ fn prepareStorage(instrumentation: *shaders.InstrumentationResult, snapshot: Sna
                     }
                 },
                 .buffer => |buffer| {
-                    if (!readback.found_existing) {
+                    if (create_storage) {
                         // SAFETY: assigned at the end of this block
                         var new: gl.uint = undefined;
                         gl.GenBuffers(1, (&new)[0..1]);
@@ -829,14 +894,28 @@ fn prepareStorage(instrumentation: *shaders.InstrumentationResult, snapshot: Sna
                     }
                 },
             }
+            // now the ref must totally not be undefined
+            if (create_storage) {
+                try c_state.readbacks_cache.put(common.allocator, readback.value_ptr.ref, key);
+            }
+            // it is ok to siletly ignore that nothing was removed because the ref is new
+            _ = unused_readback_refs.swapRemove(readback.value_ptr.ref);
         }
-        for (instr_state.instruments.values()) |*instr| {
-            if (instr.onBeforeDraw) |onBeforeDraw| {
-                onBeforeDraw(current.toOpaque(), instrumentation.toOpaque()) catch |err| {
-                    log.err("Instrumentation backend onBeforeDraw failed: {} at {?}", .{ err, @errorReturnTrace() });
-                };
+    }
+    for (current.instrument_clients.items) |*instr| {
+        if (instr.onBeforeDraw) |onBeforeDraw| {
+            const r = onBeforeDraw(current.toOpaque(), instrumentation);
+            if (r != 0) {
+                log.err("Instrumentation backend onBeforeDraw failed with result {d} at {?}", .{ r, @errorReturnTrace() });
             }
         }
+    }
+    p_state.uniforms_dirty = false;
+
+    // Purge unused readback buffers
+    for (unused_readback_refs.keys()) |r| {
+        const k = c_state.readbacks_cache.fetchSwapRemove(r).?;
+        std.debug.assert(c_state.readbacks.swapRemove(k.value));
     }
     // Apply the new drawBuffers spec
     if (draw_buffers_len > snapshot.draw_buffers_len) {
@@ -887,50 +966,26 @@ fn readPixels(
     }
 }
 
-fn processOutput(instrumentation: shaders.InstrumentationResult, platform: instr_decls.PlatformParamsGL) !void {
+fn processOutput(instrumentation: decls.instrumentation.Result, platform: decls.instrumentation.PlatformParamsGL) !void {
     const c_state = state.getPtr(current.context).?;
     gl.MemoryBarrier(gl.BUFFER_UPDATE_BARRIER_BIT | gl.FRAMEBUFFER_BARRIER_BIT);
-    for (instrumentation.stages.keys(), instrumentation.stages.values()) |shader_ref, st| {
-        const stage = current.Shaders.all.get(shader_ref).?.items[0].stage;
-        for (st.channels.out.keys(), st.channels.out.values()) |key, stor| {
-            if (!stor.lazy) {
-                const readback: *instr_decls.Readback = c_state.readbacks.getPtr(key).?;
-                switch (stor.location) {
-                    .interface => |interface| {
-                        switch (stage) {
-                            .gl_fragment, .vk_fragment => {
-                                // read pixels to the main memory synchronously
-                                gl.ReadBuffer(@as(gl.@"enum", @intCast(interface.location)) + gl.COLOR_ATTACHMENT0);
-                                const format = formatToPlatform(interface.format);
 
-                                try readPixels(
-                                    @intCast(interface.x),
-                                    @intCast(interface.y),
-                                    @intCast(st.params.context.screen[0]),
-                                    @intCast(st.params.context.screen[1]),
-                                    format.format,
-                                    format.type, // The same format as the texture
-                                    @intCast(readback.data.len),
-                                    readback.data.ptr,
-                                );
-                            },
-                            else => unreachable, // TODO transform feedback
-                        }
-                    },
-                    .buffer => |buffer| {
-                        gl.BindBuffer(gl.SHADER_STORAGE_BUFFER, @intCast(readback.ref));
-                        // TODO: use mapBuffer
-                        gl.GetBufferSubData(gl.SHADER_STORAGE_BUFFER, @intCast(buffer.offset), @intCast(readback.data.len), readback.data.ptr);
-                    },
-                }
-            }
+    const program = shaders.Shader.Program.fromOpaque(instrumentation.program);
+
+    var it = program.stages.valueIterator();
+    while (it.next()) |stage| {
+        const st = stage.*.state orelse continue;
+        for (st.channels.out.keys(), st.channels.out.values()) |key, stor| {
+            try c_state.hydrateReadback(key, stor, stage.*);
         }
     }
     for (current.instrument_clients.items) |*instrument| {
         if (instrument.onResult) |onResult| {
-            onResult(current.toOpaque(), instrumentation.toOpaqueConst(), @ptrCast(&c_state.readbacks), platform.toOpaque()) catch |err| {
-                log.err("Instrumentation client onResult failed: {}", .{err});
-            };
+            const r = onResult(current.toOpaque(), instrumentation, @ptrCast(&c_state.readbacks), platform.toOpaque());
+
+            if (r != 0) {
+                log.err("Instrumentation client onResult failed with result {d} at {?}", .{ r, @errorReturnTrace() });
+            }
         }
     }
 }
@@ -1016,7 +1071,7 @@ fn getOutputInterface(program: gl.uint) !std.ArrayListUnmanaged(usize) {
     return out_interface;
 }
 
-fn getContextParams(program: *shaders.Shader.Program) !shaders.State.Params.Context {
+fn getContextParams(program: *shaders.Shader.Program) !shaders.Shader.Program.State.Params.Context {
     const c_state = state.getPtr(current.context) orelse return error.NoState;
 
     // Check if transform feedback is active -> no fragment shader will be executed
@@ -1045,7 +1100,7 @@ fn getContextParams(program: *shaders.Shader.Program) !shaders.State.Params.Cont
     var stages_it = program.stages.valueIterator();
     var has_fragment_shader = false;
     while (stages_it.next()) |stage| {
-        if (stage.*.items[0].stage.isFragment()) {
+        if (stage.*.stage.isFragment()) {
             has_fragment_shader = true;
             break;
         }
@@ -1071,14 +1126,13 @@ fn getContextParams(program: *shaders.Shader.Program) !shaders.State.Params.Cont
 
     var buffer_mode: gl.int = 0;
     gl.GetProgramiv(program.ref.cast(gl.uint), gl.TRANSFORM_FEEDBACK_BUFFER_MODE, &buffer_mode);
-    return shaders.State.Params.Context{
+    return shaders.Shader.Program.State.Params.Context{
         .max_attachments = c_state.max.attachments,
         .max_buffers = @intCast(c_state.max.buffers),
         .max_xfb = if (buffer_mode == gl.SEPARATE_ATTRIBS)
             @max(0, c_state.max.xfb.streams * c_state.max.xfb.sep_components)
         else
             @max(0, c_state.max.xfb.interleaved_components),
-        .program = program,
         .search_paths = c_state.search_paths,
         .screen = screen_u,
         .used_buffers = general_params.used_buffers,
@@ -1149,7 +1203,15 @@ fn firstOrEmpty(t: anytype) FirstOrEmptyTuple(@TypeOf(t)) {
 
 /// Returns true if the frame should be debugged
 fn beginFrame() bool {
+    waiterServe();
 
+    current.bus.processQueueNoThrow();
+    return current.checkDebuggingOrRevert();
+}
+
+inline fn endFrame() void {}
+
+pub fn waiterServe() void {
     // Bring back the stolen context
     // TODO: what if the context was stolen from different than the main drawing thread
     const c_state = state.getPtr(current.context).?;
@@ -1172,12 +1234,7 @@ fn beginFrame() bool {
             }
         },
     }
-
-    current.bus.processQueueNoThrow();
-    return current.checkDebuggingOrRevert();
 }
-
-inline fn endFrame() void {}
 
 pub export fn glDispatchComputeGroupSizeARB(
     num_groups_x: gl.uint,
@@ -1572,12 +1629,12 @@ pub export fn glShaderSource(shader: gl.uint, count: gl.sizei, sources: [*][*:0]
 
     const shader_wide: usize = @intCast(shader);
     // Create untagged shader source
-    current.sourceSource(decls.SourcesPayload{
+    current.stageSource(decls.shaders.StagePayload{
         .ref = shader_wide,
         .count = if (single_chunk) 1 else wide_count,
         .sources = if (single_chunk) (&[_]CString{merged.ptr}).ptr else sources,
         .lengths = if (single_chunk) (&[_]usize{total_length}).ptr else lengths_wide,
-        .language = decls.LanguageType.GLSL,
+        .language = decls.shaders.LanguageType.GLSL,
     }, true) catch |err| {
         log.warn("Failed to add shader source {x} cache: {any}", .{ shader, err });
     };
@@ -1591,7 +1648,7 @@ fn wrapErrorHandling(comptime function: anytype, _args: anytype) void {
     };
 }
 
-fn defaultCompileShader(source: decls.SourcesPayload, instrumented: CString, length: i32) callconv(.c) u8 {
+fn defaultCompileShader(source: decls.shaders.StagePayload, instrumented: CString, length: i32) callconv(.c) u8 {
     const shader: gl.uint = @intCast(source.ref);
     if (length > 0) {
         gl.ShaderSource(shader, 1, @ptrCast(&instrumented), @ptrCast(&length));
@@ -1652,9 +1709,9 @@ fn defaultCompileShader(source: decls.SourcesPayload, instrumented: CString, len
     return 0;
 }
 
-fn defaultGetCurrentSource(ctx: ?*anyopaque, ref: usize, _: ?CString, _: usize) callconv(.c) ?CString {
+fn defaultGetCurrentSource(ctx: ?*anyopaque, ref: u64, _: ?CString, _: usize) callconv(.c) ?CString {
     const service: *shaders = @alignCast(@ptrCast(ctx.?));
-    const c_state = state.getPtr(@ptrCast(ctx.?)) orelse return null;
+    const c_state = state.getPtr(service.context) orelse return null;
 
     if (waiter.request(.BorrowContext) != .ContextFree) {
         log.err("Could not borrow context from the drawing thead.", .{});
@@ -1684,7 +1741,7 @@ fn defaultGetCurrentSource(ctx: ?*anyopaque, ref: usize, _: ?CString, _: usize) 
 }
 
 /// If count is 0, the function will only link the program. Otherwise it will attach the shaders in the order they are stored in the payload.
-fn defaultLink(self: decls.ProgramPayload) callconv(.c) u8 {
+fn defaultLink(self: decls.shaders.ProgramPayload) callconv(.c) u8 {
     const program: gl.uint = @intCast(self.ref);
     var i: usize = 0;
     while (i < self.count) : (i += 1) {
@@ -1747,20 +1804,17 @@ pub export fn glBindBufferRange(target: gl.@"enum", index: gl.uint, buffer: gl.u
 pub export fn glCreateShader(stage: gl.@"enum") callconv(.c) gl.uint {
     const new_platform_source = gl.CreateShader(stage);
 
-    const ref: shaders.Shader.StageRef = @enumFromInt(new_platform_source);
+    const ref: shaders.Shader.Stage.Ref = @enumFromInt(new_platform_source);
     if (current.Shaders.appendUntagged(ref)) |new| {
-        new.stored.* = shaders.Shader.SourcePart.init(current.Shaders.allocator, decls.SourcesPayload{
-            .ref = ref.toInt(),
-            .stage = @enumFromInt(stage),
-            .compile = defaultCompileShader,
-            .currentSource = defaultGetCurrentSource,
-            .context = current,
-            .count = 1,
-            .language = decls.LanguageType.GLSL,
-        }, 0) catch |err| {
-            log.warn("Failed to add shader source {x} cache because of alocation: {any}", .{ new_platform_source, err });
-            return new_platform_source;
-        };
+        if (new.new) {
+            new.container.ref = ref;
+            new.container.stage = @enumFromInt(stage);
+            new.container.compileHost = defaultCompileShader;
+            new.container.currentSourceHost = defaultGetCurrentSource;
+            new.container.context = current;
+            new.container.language = decls.shaders.LanguageType.GLSL;
+        }
+        new.stored.init(new.container);
     } else |err| {
         log.warn("Failed to add shader source {x} cache: {any}", .{ new_platform_source, err });
     }
@@ -1769,7 +1823,7 @@ pub export fn glCreateShader(stage: gl.@"enum") callconv(.c) gl.uint {
 }
 
 pub export fn glCreateShaderProgramv(stage: gl.@"enum", count: gl.sizei, sources: [*][*:0]const gl.char) callconv(.c) gl.uint {
-    const source_type: decls.Stage = @enumFromInt(stage);
+    const source_type: decls.shaders.StageType = @enumFromInt(stage);
     const new_platform_program = gl.CreateShaderProgramv(stage, count, sources);
     const new_platform_sources = common.allocator.alloc(gl.uint, @intCast(count)) catch |err| {
         log.err("Failed to allocate memory for shader sources: {any}", .{err});
@@ -1787,7 +1841,7 @@ pub export fn glCreateShaderProgramv(stage: gl.@"enum", count: gl.sizei, sources
     };
     lengths[0] = std.mem.len(sources[0]);
 
-    current.sourcesCreateUntagged(decls.SourcesPayload{
+    current.stageCreateUntagged(decls.shaders.StagePayload{
         .ref = @intCast(new_platform_sources[0]),
         .stage = source_type,
         .count = @intCast(count),
@@ -1795,7 +1849,7 @@ pub export fn glCreateShaderProgramv(stage: gl.@"enum", count: gl.sizei, sources
         .lengths = lengths.ptr,
         .compile = defaultCompileShader,
         .currentSource = defaultGetCurrentSource,
-        .language = decls.LanguageType.GLSL,
+        .language = decls.shaders.LanguageType.GLSL,
     }) catch |err| {
         log.warn("Failed to add shader source {x} cache: {any}", .{ new_platform_sources[0], err });
     };
@@ -1826,7 +1880,7 @@ export fn glCompileShader(shader: gl.uint) callconv(.c) void {
 
 pub export fn glCreateProgram() callconv(.c) gl.uint {
     const new_platform_program = gl.CreateProgram();
-    current.programCreateUntagged(decls.ProgramPayload{
+    current.programCreateUntagged(decls.shaders.ProgramPayload{
         .ref = @intCast(new_platform_program),
         .link = defaultLink,
         .context = current,
@@ -1838,7 +1892,7 @@ pub export fn glCreateProgram() callconv(.c) gl.uint {
 }
 
 pub export fn glAttachShader(program: gl.uint, shader: gl.uint) callconv(.c) void {
-    current.programAttachSource(@enumFromInt(program), @enumFromInt(shader)) catch |err| {
+    current.programAttachStage(@enumFromInt(program), @enumFromInt(shader)) catch |err| {
         log.err("Failed to attach shader {x} to program {x}: {any}", .{ shader, program, err });
     };
 
@@ -1846,7 +1900,7 @@ pub export fn glAttachShader(program: gl.uint, shader: gl.uint) callconv(.c) voi
 }
 
 pub export fn glDetachShader(program: gl.uint, shader: gl.uint) callconv(.c) void {
-    current.programDetachSource(@enumFromInt(program), @enumFromInt(shader)) catch |err| {
+    current.programDetachStage(@enumFromInt(program), @enumFromInt(shader)) catch |err| {
         log.err("Failed to detach shader {x} from program {x}: {any}", .{ shader, program, err });
     };
 
@@ -1906,7 +1960,7 @@ pub export fn glObjectLabel(identifier: gl.@"enum", name: gl.uint, length: gl.si
                     while (it.next()) |current_p| {
                         var it2 = std.mem.splitScalar(u8, current_p, ':');
                         var first = it2.first();
-                        var behavior = decls.ExistsBehavior.Error;
+                        var behavior = decls.shaders.ExistsBehavior.Error;
                         switch (first[0]) {
                             'l' => {
                                 first = first[1..first.len];
@@ -2546,20 +2600,60 @@ const default_instrument_clients = blk: {
         }
         count += 1;
     }
-    var instrs: [count]instr_decls.InstrumentClient = undefined;
+    var instrs: [count]decls.instrumentation.InstrumentClient = undefined;
     for (i_decls, 0..) |decl, i| {
         const instr_def = @field(gl_instruments, decl.name);
         if ((@typeInfo(instr_def) != .@"struct")) {
             //probabaly not an instrument definition
             continue;
         }
-        const instr = instr_decls.InstrumentClient{
+
+        const wrapper = ErrorWrapper(instr_def);
+
+        const instr = decls.instrumentation.InstrumentClient{
             .deinit = if (@hasDecl(instr_def, "deinit")) @ptrCast(&instr_def.deinit) else null,
-            .onBeforeDraw = if (@hasDecl(instr_def, "onBeforeDraw")) @ptrCast(&instr_def.onBeforeDraw) else null,
-            .onResult = if (@hasDecl(instr_def, "onResult")) @ptrCast(&instr_def.onResult) else null,
-            .onRestore = if (@hasDecl(instr_def, "onRestore")) @ptrCast(&instr_def.onRestore) else null,
+            .onBeforeDraw = if (@hasDecl(instr_def, "onBeforeDraw")) @ptrCast(&wrapper.onBeforeDraw) else null,
+            .onResult = if (@hasDecl(instr_def, "onResult")) @ptrCast(&wrapper.onResult) else null,
+            .onRestore = if (@hasDecl(instr_def, "onRestore")) @ptrCast(&wrapper.onRestore) else null,
         };
         instrs[i] = instr;
     }
     break :blk instrs;
 };
+
+fn ErrorWrapper(comptime InstrumentClient: anytype) type {
+    return struct {
+        pub fn onBeforeDraw(service: *decls.instrumentation.Service, instrumentation: decls.instrumentation.Result) usize {
+            InstrumentClient.onBeforeDraw(@alignCast(@ptrCast(service)), instrumentation) catch |err| {
+                log.err("Failed onBeforeDraw callback for instrument {s}: {} at {?}", .{ @typeName(InstrumentClient), err, @errorReturnTrace() });
+                return @intFromError(err);
+            };
+            return 0;
+        }
+        /// `platform` can be `PlatformParamsGL` or `PlatformParamsVK`
+        pub fn onResult(
+            service: *decls.instrumentation.Service,
+            instrumentation: decls.instrumentation.Result,
+            readbacks: *const decls.instrumentation.Readbacks,
+            platform: *const decls.instrumentation.Platform,
+        ) usize {
+            InstrumentClient.onResult(
+                @alignCast(@ptrCast(service)),
+                instrumentation,
+                @alignCast(@ptrCast(readbacks)),
+                @alignCast(@ptrCast(platform)),
+            ) catch |err| {
+                log.err("Failed onResult callback for instrument {s}: {} at {?}", .{ @typeName(InstrumentClient), err, @errorReturnTrace() });
+                return @intFromError(err);
+            };
+            return 0;
+        }
+        pub fn onRestore(service: *decls.instrumentation.Service) usize {
+            InstrumentClient.onRestore(@alignCast(@ptrCast(service))) catch |err| {
+                log.err("Failed onRestore callback for instrument {s}: {} at {?}", .{ @typeName(InstrumentClient), err, @errorReturnTrace() });
+                return @intFromError(err);
+            };
+            return 0;
+        }
+    };
+}

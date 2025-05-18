@@ -599,6 +599,13 @@ pub const MutliListener = struct {
                 return;
             }
         }
+
+        pub fn clientClose(self: *@This(), _: []u8) !void {
+            if (self.context.ws.items.len <= 1) {
+                DeshaderLog.info("Unpausing shaders, because the last websocket connection was closed", .{});
+                self.context.do_resume = true;
+            }
+        }
     };
 
     fn stringToBool(val: ?String) bool {
@@ -654,8 +661,8 @@ pub const MutliListener = struct {
     }
 
     // TODO type checking on event payload
-    /// Suspends the thread that calls this function, but processes commands in the meantime
-    pub fn eventBreak(self: *@This(), comptime event: Event, body: anytype) !void {
+    /// Suspends the thread that calls this function, but processes commands and `meantime` in the meantime
+    pub fn eventBreak(self: *@This(), comptime event: Event, body: anytype, meantime: anytype) !void {
         self.paused = true;
         self.do_resume = false;
         var result = self.sendEvent(event, body);
@@ -668,7 +675,14 @@ pub const MutliListener = struct {
             self.resume_condition.timedWait(&self.break_mutex, 700 * 1000 * 1000) catch if (self.do_resume) {
                 self.do_resume = false;
                 break;
-            } else continue;
+            } else {
+                self.break_mutex.unlock(); // hack to allow do_resume to be set again
+                defer self.break_mutex.lock();
+                if (@TypeOf(meantime) != @TypeOf(null)) {
+                    meantime();
+                }
+                continue;
+            };
             break;
         }
         DeshaderLog.debug("Resuming after event {s}", .{@tagName(event)});
@@ -765,7 +779,7 @@ pub const MutliListener = struct {
             shaders.user_action = true;
             const in_params = try parseArgs(dap.ContinueArguments, args);
             const locator = shaders.Running.Locator.parse(in_params.value.threadId);
-            try instruments.Step.@"continue"(try locator.service(), locator.shader());
+            try instruments.Step.@"continue"(try locator.service(), locator.stage());
 
             instance.?.unPause();
         }
@@ -793,17 +807,12 @@ pub const MutliListener = struct {
                 if (sure_args.get("path")) |path| {
                     if (try shaders.ServiceLocator.parse(path)) |context| {
                         if (context.resource) |r| {
-                            switch (r) {
-                                .programs => |locator| {
-                                    const shader = try context.service.Programs.getNestedByLocator(locator.name, locator.nested.name);
-                                    return shader.clearBreakpoints();
-                                },
-                                .sources => |locator| {
-                                    const shader = try context.service.Shaders.getStoredByLocator(locator.name);
-                                    return shader.clearBreakpoints();
-                                },
-                                else => return shaders.ResourceLocator.Error.Protected,
-                            }
+                            context.service.clearBreakpoints(r) catch |err| {
+                                return switch (err) {
+                                    storage.Error.InvalidPath => shaders.ResourceLocator.Error.Protected, // Convert error to a more specific one
+                                    else => err,
+                                };
+                            };
                         }
                     }
                     return storage.Error.InvalidPath;
@@ -837,9 +846,9 @@ pub const MutliListener = struct {
 
         fn getUnsentBreakpoints(s: *const shaders, breakpoints_to_send: *std.ArrayListUnmanaged(dap.Breakpoint)) !void {
             for (s.dirty_breakpoints.items) |bp| {
-                if (s.Shaders.all.get(bp[0])) |shader| {
-                    if (shader.items.len > bp[1]) {
-                        const part = &shader.items[bp[1]];
+                if (s.Shaders.all.get(bp[0])) |stage| {
+                    if (stage.parts.items.len > bp[1]) {
+                        const part = &stage.parts.items[bp[1]];
                         const stops = try part.possibleSteps();
                         const local_stop = stops.items(.pos)[bp[2]];
                         const dap_bp = dap.Breakpoint{
@@ -932,6 +941,12 @@ pub const MutliListener = struct {
             return try result.toOwnedSlice(common.allocator);
         }
 
+        pub fn pause(args: ?ArgumentsMap) !void {
+            const in_params = try parseArgs(dap.PauseArguments, args);
+            const running = shaders.Running.Locator.parse(in_params.value.threadId);
+            try instruments.Step.pause(try running.service(), running.stage());
+        }
+
         pub fn pauseMode(args: ?ArgumentsMap) !void {
             const in_params = try parseArgs(struct { single: bool }, args);
             if (shaders.single_pause_mode != in_params.value.single) {
@@ -980,7 +995,7 @@ pub const MutliListener = struct {
             shaders.user_action = true;
             const in_params = try parseArgs(dap.NextArguments, args);
             const locator = shaders.Running.Locator.parse(in_params.value.threadId);
-            try instruments.Step.advanceStepping(try locator.service(), locator.shader(), null);
+            try instruments.Step.advanceStepping(try locator.service(), locator.stage());
             instance.?.unPause();
         }
 
@@ -1035,7 +1050,6 @@ pub const MutliListener = struct {
             }
             const target = try s.getResourcesByLocator(r);
             const shader = (target.shader orelse return error.TargetNotFound).source;
-            const i_state = s.state.getPtr(shader.ref);
 
             var remaining = std.AutoHashMapUnmanaged(usize, void){};
             defer remaining.deinit(common.allocator);
@@ -1045,34 +1059,35 @@ pub const MutliListener = struct {
                     _ = try remaining.getOrPut(common.allocator, i.*);
                 }
             }
+            const p_state = if (shader.stage.program) |p| if (p.state) |*st| st else null else null;
 
             if (in_params.value.breakpoints) |bps| {
                 for (bps) |bp| {
                     var bp_result = try shader.addBreakpoint(bp);
-                    if (bp_result.id) |id| {
-                        if (!remaining.remove(id)) { // this is a new breakpoint
-                            if (i_state) |st| {
+                    if (bp_result.verified) {
+                        if (p_state) |st| {
+                            if (!remaining.remove(bp_result.id)) { // this is a new breakpoint
                                 st.dirty = true;
-                                shader.b_dirty = true;
                             }
+                            st.uniforms_dirty = true;
                         }
                     }
                     bp_result.path = try s.fullPath(common.allocator, shader, false, target.shader.?.part);
-                    try result.append(common.allocator, bp_result);
+                    try result.append(common.allocator, bp_result.toDAP());
                 }
                 var it = remaining.keyIterator();
                 while (it.next()) |i| {
                     try shader.removeBreakpoint(i.*);
-                    if (i_state) |st| {
+                    if (p_state) |st| {
                         st.dirty = true;
-                        shader.b_dirty = true;
+                        st.uniforms_dirty = true; // TODO really need to do this when the shader will be reinstrumented anyways?
                     }
                 }
             } else {
                 shader.clearBreakpoints();
-                if (i_state) |st| {
+                if (p_state) |st| {
                     st.dirty = true;
-                    shader.b_dirty = true;
+                    st.uniforms_dirty = true;
                 }
             }
 
@@ -1111,12 +1126,14 @@ pub const MutliListener = struct {
             return try std.json.stringifyAlloc(common.allocator, trace, json_options);
         }
 
-        pub fn stepIn(_: ?ArgumentsMap) !void {
+        pub fn stepIn(args: ?ArgumentsMap) !void {
             //TODO
+            return next(args);
         }
 
-        pub fn stepOut(_: ?ArgumentsMap) !void {
+        pub fn stepOut(args: ?ArgumentsMap) !void {
             //TODO
+            return next(args);
         }
 
         /// The full state of the debugger
@@ -1213,14 +1230,13 @@ pub const MutliListener = struct {
                     return try common.joinInnerZ(common.allocator, "\n", lines);
                 } else { // listing files for this service
                     // TODO recursive
-                    const basic_virtual = shaders.ResourceLocator.programs_path ++ "\n" ++
-                        shaders.ResourceLocator.sources_path ++ "\n" ++
+                    const basic_virtual = shaders.ResourceLocator.programs_path ++ "/\n" ++
+                        shaders.ResourceLocator.sources_path ++ "/\n" ++
                         shaders.ResourceLocator.capabilities_path ++ ".md\n"; // Only the "human-readable" MD version of the capabilities file
-                    return common.allocator.dupe(u8, (if (in_params.value.meta orelse false)
-                        basic_virtual
-                    else
-                        basic_virtual ++
-                            shaders.ResourceLocator.capabilities_path ++ ".json\n")); // also the JSON version of the capabilities file
+
+                    return common.allocator.dupe(u8, if (in_params.value.meta) |m| if (m) basic_virtual ++
+                        shaders.ResourceLocator.capabilities_path ++ ".json\n" // also the JSON version of the capabilities file
+                    else basic_virtual else basic_virtual);
                 }
             } else {
                 shaders.lockServices();
@@ -1270,7 +1286,7 @@ pub const MutliListener = struct {
                         else => {
                             const shader = try context.service.getSourceByRLocator(res);
                             return if (res.isInstrumented())
-                                try shader.instrumentedSource() orelse error.NotInstrumented
+                                try shader.instrumentedSource() orelse shaders.Error.NoInstrumentation
                             else
                                 shader.getSource() orelse "";
                         },
@@ -1433,8 +1449,8 @@ pub const MutliListener = struct {
             // From all files
             for (shaders.allServices()) |s| {
                 var it = s.Shaders.all.valueIterator();
-                while (it.next()) |sh| {
-                    for (sh.*.items) |*part| {
+                while (it.next()) |stage| {
+                    for (stage.*.parts.items) |*part| {
                         var it2 = part.breakpoints.keyIterator();
                         const steps = try part.possibleSteps();
                         while (it2.next()) |bp| {

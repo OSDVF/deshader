@@ -23,6 +23,7 @@ const options = @import("options");
 const common = @import("common");
 const log = common.log;
 const commands = @import("commands.zig");
+const debug = @import("services/debug.zig");
 const backends = @import("backends.zig");
 const shaders = @import("services/shaders.zig");
 const declarations = @import("declarations.zig");
@@ -42,14 +43,86 @@ pub const std_options = common.logging.std_options;
 //#region Public API
 const err_format = "{s}: {any}";
 
-// Simplify declarations to allow generating stubs from this `main.zig` file without importing `declarations.zig`
-const SourcesPayload = declarations.shaders.SourcesPayload;
+// Simplify declarations to allow generating stubs from this `main.zig` file without importing other files
+const BreakpointResult = declarations.shaders.BreakpointResult;
+const StagePayload = declarations.shaders.StagePayload;
 const ProgramPayload = declarations.shaders.ProgramPayload;
 const ExistsBehavior = declarations.shaders.ExistsBehavior;
-const Service = declarations.instruments.Service;
+const Service = declarations.instrumentation.Service;
 
 pub export fn deshaderAcquireServiceGL() callconv(.c) ?*Service {
     return backends.gl.current.toOpaque(); // TODO locking
+}
+
+pub export fn deshaderAddSourceBreakpoint(
+    service: *Service,
+    ref: u64,
+    part: usize,
+    line: usize,
+    column: usize,
+    condition: ?[*:0]const u8,
+    hit_condition: ?[*:0]const u8,
+    log_message: ?[*:0]const u8,
+) callconv(.c) BreakpointResult {
+    if (wrapErrorHandling(addSourceBreakpoint, .{ service, ref, part, line, column, condition, hit_condition, log_message })) |result|
+        return result
+    else
+        return .{
+            .verified = false,
+            .reason = "failed",
+        };
+}
+
+fn addSourceBreakpoint(
+    service: *Service,
+    ref: u64,
+    part: usize,
+    line: usize,
+    column: usize,
+    condition: ?[*:0]const u8,
+    hit_condition: ?[*:0]const u8,
+    log_message: ?[*:0]const u8,
+) !BreakpointResult {
+    const result = try shaders.fromOpaque(service).addBreakpoint(
+        shaders.ResourceLocator.fromSourceRef(@enumFromInt(ref), part),
+        debug.SourceBreakpoint{
+            .line = line,
+            .column = if (column != 0) column else null,
+            .condition = if (condition) |c| std.mem.span(c) else null,
+            .hitCondition = if (hit_condition) |c| std.mem.span(c) else null,
+            .logMessage = if (log_message) |c| std.mem.span(c) else null,
+        },
+    );
+
+    defer if (result.message) |m| common.allocator.free(m);
+    defer if (result.reason) |r| common.allocator.free(r);
+
+    return .{
+        .id = result.id,
+        .verified = result.verified,
+        .message = if (result.message) |m| try common.allocator.dupeZ(u8, m) else null,
+        .line = result.line orelse 0,
+        .column = result.column orelse 0,
+        .end_line = result.endLine orelse 0,
+        .end_column = result.endColumn orelse 0,
+        .reason = if (result.reason) |r| try common.allocator.dupeZ(u8, r) else null,
+    };
+}
+
+pub export fn deshaderClearSourceBreakpoints(service: *Service, ref: u64, part: usize) callconv(.c) void {
+    shaders.fromOpaque(service).clearBreakpoints(shaders.ResourceLocator.fromSourceRef(@enumFromInt(ref), part)) catch |err| {
+        log.err(err_format, .{ @src().fn_name, err });
+        if (@errorReturnTrace()) |trace|
+            std.debug.dumpStackTrace(trace.*);
+    };
+}
+
+pub export fn deshaderClearStageBreakpoints(service: *Service, ref: u64) callconv(.c) void {
+    shaders.fromOpaque(service).clearStageBreakpoints(shaders.ResourceLocator.fromSourceRef(@enumFromInt(ref), 0)) catch |err| {
+        log.err(err_format, .{ @src().fn_name, err });
+        if (@errorReturnTrace()) |trace|
+            std.debug.dumpStackTrace(trace.*);
+    };
 }
 
 pub export fn deshaderFreeList(list: [*]const [*:0]const u8, count: usize) callconv(.c) void {
@@ -134,7 +207,16 @@ pub export fn deshaderListSourcesUntagged(
     return @ptrCast(result);
 }
 
-pub export fn deshaderRemovePath(path: [*:0]const u8, dir: bool) callconv(.c) usize {
+pub export fn deshaderRemoveBreakpoint(service: *Service, ref: u64, part: usize, id: usize) callconv(.c) void {
+    shaders.fromOpaque(service).removeBreakpoint(shaders.ResourceLocator.fromSourceRef(@enumFromInt(ref), part), id) catch |err| {
+        log.err(err_format, .{ @src().fn_name, err });
+        if (@errorReturnTrace()) |trace|
+            std.debug.dumpStackTrace(trace.*);
+    };
+}
+
+/// Does not delete the contents itself, just the tag
+pub export fn deshaderUntag(path: [*:0]const u8, dir: bool) callconv(.c) usize {
     backends.gl.current.Shaders.untag(std.mem.span(path), dir) catch |err| {
         log.err(err_format, .{ @src().fn_name, err });
         if (@errorReturnTrace()) |trace|
@@ -144,7 +226,7 @@ pub export fn deshaderRemovePath(path: [*:0]const u8, dir: bool) callconv(.c) us
     return 0;
 }
 
-pub export fn deshaderRemoveSource(ref: usize) callconv(.c) usize {
+pub export fn deshaderRemoveStage(ref: u64) callconv(.c) usize {
     backends.gl.current.Shaders.remove(@enumFromInt(ref)) catch |err| {
         log.err(err_format, .{ @src().fn_name, err });
         if (@errorReturnTrace()) |trace|
@@ -164,7 +246,7 @@ pub export fn deshaderReturnServiceGL() callconv(.c) void {
 /// `path` cannot contain '>'
 ///
 /// Alternatively, glNamedStringARB or glObjectLabel can be used to tag shaders.
-pub export fn deshaderTag(ref: usize, part_index: usize, path: [*:0]const u8, if_exists: ExistsBehavior) callconv(.c) usize {
+pub export fn deshaderTag(ref: u64, part_index: usize, path: [*:0]const u8, if_exists: ExistsBehavior) callconv(.c) usize {
     _ = backends.gl.current.Shaders.assignTag(@enumFromInt(ref), part_index, std.mem.span(path), if_exists) catch |err| {
         log.err(err_format, .{ @src().fn_name, err });
         if (@errorReturnTrace()) |trace|
@@ -204,10 +286,10 @@ pub export fn deshaderTaggedProgram(payload: ProgramPayload, behavior: ExistsBeh
     return 0;
 }
 
-pub export fn deshaderTaggedSource(payload: SourcesPayload, if_exists: ExistsBehavior) callconv(.c) usize {
+pub export fn deshaderTaggedSources(payload: StagePayload, if_exists: ExistsBehavior) callconv(.c) usize {
     std.debug.assert(payload.count == 1);
     std.debug.assert(payload.paths != null);
-    backends.gl.current.sourcesCreateUntagged(payload) catch |err| {
+    backends.gl.current.stageCreateUntagged(payload) catch |err| {
         log.err(err_format, .{ @src().fn_name, err });
         if (@errorReturnTrace()) |trace|
             std.debug.dumpStackTrace(trace.*);
@@ -380,4 +462,12 @@ fn configNotEqual(a: commands.MutliListener.Config, mb: ?commands.MutliListener.
         return true;
     };
     return false;
+}
+
+/// Convenience function for wrapping function calls, catching errors and logging them
+fn wrapErrorHandling(comptime function: anytype, _args: anytype) ?@typeInfo(@typeInfo(@TypeOf(function)).@"fn".return_type.?).error_union.payload {
+    return @call(.auto, function, _args) catch |err| {
+        log.err("Error in {s}({}): {} {?}", .{ @typeName(@TypeOf(function)), _args, err, @errorReturnTrace() });
+        return null;
+    };
 }

@@ -54,7 +54,7 @@ Name              | Values                                           | Descripti
 `linkage`         | `Static`, `Dynamic` (default)                    | Select type of Deshader library
 `logLevel`        | `err`, `warn`, `info`, `debug`, `default`        | Override log level
 `logInterception` | `true`, `false` (default)                        | Enable logging of intercepted GL procedure requests
-`memoryFrames`    | number (default 7)                               | Number of frames in memory analysis backtrace.
+`memory_safety`    | number (default 7)                               | Number of frames in memory analysis backtrace.
 `otype`            | `Default`, `c`, `IR`, `BC`                      | Specify output type for Zig compiler
 `sanitize`        | `true`, `false`                                  | Enable sanitizers (implicit for debug mode)
 `sdk`             |                                                  | SDK path (macOS only, defaults to the one selected by xcode-select)

@@ -2,6 +2,23 @@
     "version": "2.0.0",
     "tasks": [
         {
+            "label": "Format current file with zig fmt",
+            "command": "zig",
+            "args": [
+                "fmt",
+                "${file}"
+            ],
+            "problemMatcher": [],
+            "presentation": {
+                "echo": true,
+                "reveal": "silent",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": true,
+                "clear": false
+            },
+        },
+        {
             "label": "Create all ramdisks",
             "dependsOn": [
                 "Create build ramdisk",
@@ -73,7 +90,7 @@
             "args": [
                 "build",
                 "deshader",
-                "-DmemoryFrames=15",
+                "-Dmemory_safety=15",
                 "-freference-trace",
                 "--summary",
                 "none"
@@ -114,7 +131,7 @@
                 "build",
                 "launcher",
                 "-freference-trace",
-                "-DmemoryFrames=15"
+                "-Dmemory_safety=15"
             ],
             "problemMatcher": "$zig",
             "group": "build",
@@ -212,7 +229,7 @@
                 "examples",
                 "-freference-trace",
                 "-DlogInterception",
-                "-DmemoryFrames=15",
+                "-Dmemory_safety=15",
                 "-Ddependencies=false",
                 "--summary",
                 "none"
