@@ -385,6 +385,11 @@ const Snapshot = struct {
                     var t: gl.int = undefined;
                     gl.GetFramebufferAttachmentParameteriv(gl.DRAW_FRAMEBUFFER, db, gl.FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE, &t);
 
+                    if (t == gl.FRAMEBUFFER_DEFAULT) {
+                        // TODO store the default framebuffer?
+                        continue;
+                    }
+
                     // SAFETY: assigned right after by OpenGL
                     var name: gl.int = undefined;
                     gl.GetFramebufferAttachmentParameteriv(gl.DRAW_FRAMEBUFFER, db, gl.FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, &name);
@@ -416,17 +421,13 @@ const Snapshot = struct {
                             gl.BindRenderbuffer(gl.RENDERBUFFER, @intCast(name));
 
                             // SAFETY: assigned right below
-                            var width: gl.int = undefined;
-                            // SAFETY: assigned right below
-                            var height: gl.int = undefined;
-                            gl.GetRenderbufferParameteriv(gl.RENDERBUFFER, gl.RENDERBUFFER_WIDTH, (&width)[0..1]);
-                            gl.GetRenderbufferParameteriv(gl.RENDERBUFFER, gl.RENDERBUFFER_HEIGHT, (&height)[0..1]);
-                            // SAFETY: assigned right below
                             var internal_format: gl.int = undefined;
                             gl.GetRenderbufferParameteriv(gl.RENDERBUFFER, gl.RENDERBUFFER_INTERNAL_FORMAT, (&internal_format)[0..1]);
                             // SAFETY: assigned right below
                             var samples: gl.int = undefined;
                             gl.GetRenderbufferParameteriv(gl.RENDERBUFFER, gl.RENDERBUFFER_SAMPLES, (&samples)[0..1]);
+
+                            const size = getRenderBufferSize();
 
                             // SAFETY: assigned right below
                             var cache: gl.uint = undefined;
@@ -434,12 +435,12 @@ const Snapshot = struct {
                             gl.BindRenderbuffer(gl.RENDERBUFFER, cache);
 
                             if (samples > 0) {
-                                gl.RenderbufferStorageMultisample(gl.RENDERBUFFER, samples, @intCast(internal_format), width, height);
+                                gl.RenderbufferStorageMultisample(gl.RENDERBUFFER, samples, @intCast(internal_format), size[0], size[1]);
                             } else {
-                                gl.RenderbufferStorage(gl.RENDERBUFFER, @intCast(internal_format), width, height);
+                                gl.RenderbufferStorage(gl.RENDERBUFFER, @intCast(internal_format), size[0], size[1]);
                             }
 
-                            gl.CopyImageSubData(@intCast(name), gl.RENDERBUFFER, 0, 0, 0, 0, cache, gl.RENDERBUFFER, 0, 0, 0, 0, width, height, 1);
+                            gl.CopyImageSubData(@intCast(name), gl.RENDERBUFFER, 0, 0, 0, 0, cache, gl.RENDERBUFFER, 0, 0, 0, 0, size[0], size[1], 1);
                             try renderbuffers.put(common.allocator, @intCast(name), cache);
                         },
                         else => {},
@@ -465,6 +466,7 @@ const Snapshot = struct {
             var cache: gl.uint = 0;
             gl.GenBuffers(1, (&cache)[0..1]);
             gl.BindBuffer(gl.COPY_WRITE_BUFFER, cache);
+            gl.BufferData(gl.COPY_WRITE_BUFFER, @intCast(size), null, gl.STREAM_COPY);
 
             gl.CopyBufferSubData(gl.COPY_READ_BUFFER, gl.COPY_WRITE_BUFFER, 0, 0, @intCast(size));
             try buffers.put(common.allocator, source, cache);
@@ -479,8 +481,8 @@ const Snapshot = struct {
             level: gl.int,
             layer: ?gl.int,
         ) !void {
-            if (textures.contains(.{ .name = texture, .layer = layer })) return;
-            if (textures.contains(.{ .name = texture, .layer = null })) return;
+            if (textures.contains(.{ .name = texture, .layer = layer, .level = level })) return;
+            if (textures.contains(.{ .name = texture, .layer = null, .level = level })) return;
 
             if (target == gl.TEXTURE_BUFFER) {
                 const buffer = c_state.tex_buffers.get(texture) orelse {
@@ -496,25 +498,17 @@ const Snapshot = struct {
                     gl.GetTexParameteriv(target, gl.TEXTURE_INTERNAL_FORMAT, (&internal_format)[0..1]);
                     const format = internalFormatToFormat(@intCast(internal_format)) orelse return error.UnknownInternalFormat;
 
-                    // SAFETY: assigned right after by OpenGL
-                    var width: gl.int = undefined;
-                    gl.GetTexLevelParameteriv(target, level, gl.TEXTURE_WIDTH, (&width)[0..1]);
-                    // SAFETY: assigned right after by OpenGL
-                    var height: gl.int = undefined;
-                    gl.GetTexLevelParameteriv(target, level, gl.TEXTURE_HEIGHT, (&height)[0..1]);
-                    // SAFETY: assigned right after by OpenGL
-                    var depth: gl.int = undefined;
-                    gl.GetTexLevelParameteriv(target, level, gl.TEXTURE_DEPTH, (&depth)[0..1]);
-
                     var cache: gl.uint = 0;
                     gl.GenTextures(1, (&cache)[0..1]);
                     const real_target = proxyToTarget(target) orelse return error.InvalidTarget;
                     glBindTexture(if (layer) |_| targetToLayer(real_target) orelse return error.NoLayerForTarget else real_target, cache);
 
+                    const dim = getTextureSize(target, level);
+
                     switch (real_target) {
                         gl.TEXTURE_1D, gl.PROXY_TEXTURE_1D => {
-                            glTexImage1D(real_target, 0, internal_format, width, 0, format.format, format.t, null);
-                            gl.CopyImageSubData(texture, target, 0, 0, 0, 0, cache, real_target, 0, 0, 0, 0, width, 1, 1);
+                            glTexImage1D(real_target, 0, internal_format, dim[0], 0, format.format, format.t, null);
+                            gl.CopyImageSubData(texture, target, 0, 0, 0, 0, cache, real_target, 0, 0, 0, 0, dim[0], 1, 1);
                         },
                         gl.TEXTURE_2D,
                         gl.PROXY_TEXTURE_2D,
@@ -527,11 +521,11 @@ const Snapshot = struct {
                         => {
                             // TODO use GL_TEXTURE_CUBEMAP_* to specify the face
                             if (layer) |l| {
-                                glTexImage1D(real_target, 0, internal_format, width, 0, format.format, format.t, null);
-                                gl.CopyImageSubData(texture, target, 0, 0, l, 0, cache, real_target, 0, 0, 0, 0, width, height, 1);
+                                glTexImage1D(real_target, 0, internal_format, dim[0], 0, format.format, format.t, null);
+                                gl.CopyImageSubData(texture, target, 0, 0, l, 0, cache, real_target, 0, 0, 0, 0, dim[0], dim[1], 1);
                             } else {
-                                glTexImage2D(real_target, 0, internal_format, width, height, 0, format.format, format.t, null);
-                                gl.CopyImageSubData(texture, target, 0, 0, 0, 0, cache, real_target, 0, 0, 0, 0, width, height, 1);
+                                glTexImage2D(real_target, 0, internal_format, dim[0], dim[1], 0, format.format, format.t, null);
+                                gl.CopyImageSubData(texture, target, 0, 0, 0, 0, cache, real_target, 0, 0, 0, 0, dim[0], dim[1], 1);
                             }
                         },
                         gl.TEXTURE_3D,
@@ -543,11 +537,11 @@ const Snapshot = struct {
                         => {
                             if (layer) |l| {
                                 // copy only one layer
-                                glTexImage2D(real_target, 0, internal_format, width, height, 0, format.format, format.t, null);
-                                gl.CopyImageSubData(texture, target, level, 0, 0, l, cache, real_target, level, 0, 0, 0, width, height, 1);
+                                glTexImage2D(real_target, 0, internal_format, dim[0], dim[1], 0, format.format, format.t, null);
+                                gl.CopyImageSubData(texture, target, level, 0, 0, l, cache, real_target, level, 0, 0, 0, dim[0], dim[1], 1);
                             } else {
-                                glTexImage3D(real_target, 0, internal_format, width, height, depth, 0, format.format, format.t, null);
-                                gl.CopyImageSubData(texture, target, level, 0, 0, 0, cache, real_target, level, 0, 0, 0, width, height, depth);
+                                glTexImage3D(real_target, 0, internal_format, dim[0], dim[1], dim[2], 0, format.format, format.t, null);
+                                gl.CopyImageSubData(texture, target, level, 0, 0, 0, cache, real_target, level, 0, 0, 0, dim[0], dim[1], dim[2]);
                             }
                         },
                         else => {
@@ -558,32 +552,9 @@ const Snapshot = struct {
 
                     // TODO support copyTexImageXX
 
-                    try textures.put(common.allocator, .{ .name = texture, .layer = layer }, cache);
+                    try textures.put(common.allocator, .{ .name = texture, .layer = layer, .level = level }, cache);
                 }
             }
-        }
-
-        pub fn targetToLayer(target: gl.@"enum") ?gl.@"enum" {
-            return switch (target) {
-                gl.TEXTURE_3D, gl.TEXTURE_2D_ARRAY, gl.TEXTURE_CUBE_MAP => gl.TEXTURE_2D,
-                gl.TEXTURE_CUBE_MAP_ARRAY => gl.TEXTURE_CUBE_MAP,
-                gl.TEXTURE_2D_MULTISAMPLE_ARRAY => gl.TEXTURE_2D_MULTISAMPLE,
-                else => null,
-            };
-        }
-
-        pub fn proxyToTarget(proxy: gl.@"enum") ?gl.@"enum" {
-            return switch (proxy) {
-                gl.PROXY_TEXTURE_1D => gl.TEXTURE_1D,
-                gl.PROXY_TEXTURE_2D => gl.TEXTURE_2D,
-                gl.PROXY_TEXTURE_3D => gl.TEXTURE_3D,
-                gl.PROXY_TEXTURE_CUBE_MAP => gl.TEXTURE_CUBE_MAP,
-                gl.PROXY_TEXTURE_RECTANGLE => gl.TEXTURE_RECTANGLE,
-                gl.PROXY_TEXTURE_2D_MULTISAMPLE => gl.TEXTURE_2D_MULTISAMPLE,
-                gl.PROXY_TEXTURE_2D_MULTISAMPLE_ARRAY => gl.TEXTURE_2D_ARRAY,
-                gl.PROXY_TEXTURE_CUBE_MAP_ARRAY => gl.TEXTURE_CUBE_MAP_ARRAY,
-                else => null,
-            };
         }
 
         /// Converts image binding type to texture target
@@ -607,12 +578,156 @@ const Snapshot = struct {
             };
         }
 
+        pub fn proxyToTarget(proxy: gl.@"enum") ?gl.@"enum" {
+            return switch (proxy) {
+                gl.PROXY_TEXTURE_1D => gl.TEXTURE_1D,
+                gl.PROXY_TEXTURE_2D => gl.TEXTURE_2D,
+                gl.PROXY_TEXTURE_3D => gl.TEXTURE_3D,
+                gl.PROXY_TEXTURE_CUBE_MAP => gl.TEXTURE_CUBE_MAP,
+                gl.PROXY_TEXTURE_RECTANGLE => gl.TEXTURE_RECTANGLE,
+                gl.PROXY_TEXTURE_2D_MULTISAMPLE => gl.TEXTURE_2D_MULTISAMPLE,
+                gl.PROXY_TEXTURE_2D_MULTISAMPLE_ARRAY => gl.TEXTURE_2D_ARRAY,
+                gl.PROXY_TEXTURE_CUBE_MAP_ARRAY => gl.TEXTURE_CUBE_MAP_ARRAY,
+                else => null,
+            };
+        }
+
+        pub fn restore(self: *const @This()) !void {
+            // buffers
+            {
+                var it = self.buffers.iterator();
+                while (it.next()) |buffer| {
+                    gl.BindBuffer(gl.COPY_READ_BUFFER, buffer.value_ptr.*);
+                    gl.BindBuffer(gl.COPY_WRITE_BUFFER, buffer.key_ptr.*);
+                    // SAFETY: assigned right below by OpenGL
+                    var size: gl.int64 = 0;
+                    gl.GetBufferParameteri64v(gl.COPY_READ_BUFFER, gl.BUFFER_SIZE, &size);
+
+                    gl.CopyBufferSubData(gl.COPY_READ_BUFFER, gl.COPY_WRITE_BUFFER, 0, 0, @intCast(size));
+
+                    gl.DeleteBuffers(1, buffer.value_ptr[0..1]);
+                }
+            }
+            // textures
+            const c_state = state.getPtr(current.context) orelse return error.NoState;
+            {
+                var it = self.textures.iterator();
+                while (it.next()) |texture| {
+                    const src_target = c_state.tex_target.get(texture.value_ptr.*).?;
+                    const dst_target = c_state.tex_target.get(texture.key_ptr.name).?;
+
+                    gl.BindTexture(src_target, texture.value_ptr.*);
+                    const dim = getTextureSize(src_target, texture.key_ptr.level);
+
+                    switch (src_target) {
+                        gl.TEXTURE_1D => gl.CopyImageSubData(
+                            texture.value_ptr.*,
+                            src_target,
+                            0,
+                            0,
+                            0,
+                            0,
+                            texture.key_ptr.name,
+                            dst_target,
+                            texture.key_ptr.level,
+                            0,
+                            0,
+                            0,
+                            dim[0],
+                            1,
+                            1,
+                        ),
+                        gl.TEXTURE_2D, gl.TEXTURE_1D_ARRAY, gl.TEXTURE_2D_MULTISAMPLE => {
+                            gl.CopyImageSubData(
+                                texture.value_ptr.*,
+                                src_target,
+                                0,
+                                0,
+                                0,
+                                0,
+                                texture.key_ptr.name,
+                                dst_target,
+                                texture.key_ptr.level,
+                                0,
+                                if (texture.key_ptr.layer) |layer| layer else 0,
+                                0,
+                                dim[0],
+                                if (texture.key_ptr.layer) |_| 1 else dim[1],
+                                1,
+                            );
+                        },
+                        gl.TEXTURE_2D_ARRAY, gl.TEXTURE_2D_MULTISAMPLE_ARRAY, gl.TEXTURE_3D => {
+                            gl.CopyImageSubData(
+                                texture.value_ptr.*,
+                                src_target,
+                                0,
+                                0,
+                                0,
+                                0,
+                                texture.key_ptr.name,
+                                dst_target,
+                                texture.key_ptr.level,
+                                0,
+                                0,
+                                if (texture.key_ptr.layer) |layer| layer else 0,
+                                dim[0],
+                                dim[1],
+                                if (texture.key_ptr.layer) |_| 1 else dim[2],
+                            );
+                        },
+                        else => unreachable,
+                    }
+
+                    gl.DeleteTextures(1, texture.value_ptr[0..1]);
+                }
+            }
+
+            // renderbuffers
+            {
+                var it = self.renderbuffers.iterator();
+                while (it.next()) |renderbuffer| {
+                    gl.BindRenderbuffer(gl.RENDERBUFFER, renderbuffer.value_ptr.*);
+                    const size = getRenderBufferSize();
+
+                    gl.CopyImageSubData(
+                        renderbuffer.value_ptr.*,
+                        gl.RENDERBUFFER,
+                        0,
+                        0,
+                        0,
+                        0,
+                        renderbuffer.key_ptr.*,
+                        gl.RENDERBUFFER,
+                        0,
+                        0,
+                        0,
+                        0,
+                        size[0],
+                        size[1],
+                        1,
+                    );
+
+                    gl.DeleteRenderbuffers(1, renderbuffer.value_ptr[0..1]);
+                }
+            }
+        }
+
+        pub fn targetToLayer(target: gl.@"enum") ?gl.@"enum" {
+            return switch (target) {
+                gl.TEXTURE_3D, gl.TEXTURE_2D_ARRAY, gl.TEXTURE_CUBE_MAP => gl.TEXTURE_2D,
+                gl.TEXTURE_CUBE_MAP_ARRAY => gl.TEXTURE_CUBE_MAP,
+                gl.TEXTURE_2D_MULTISAMPLE_ARRAY => gl.TEXTURE_2D_MULTISAMPLE,
+                else => null,
+            };
+        }
+
         /// Maps object ref to its cached obejct ref
         pub const ObjectCache = std.AutoHashMapUnmanaged(gl.uint, gl.uint);
         pub const TextureCache = std.AutoHashMapUnmanaged(TextureOrLayer, gl.uint);
         pub const TextureOrLayer = struct {
             name: gl.uint,
             layer: ?gl.int,
+            level: gl.int,
         };
         pub const Texture = struct {
             binding_type: gl.@"enum",
@@ -684,6 +799,32 @@ const Snapshot = struct {
         }
         std.sort.heap(usize, out_interface.items, {}, std.sort.asc(usize));
         return out_interface;
+    }
+
+    // The renderbuffer must be bound to the target GL_RENDERBUFFER
+    pub fn getRenderBufferSize() [2]gl.int {
+        // SAFETY: assigned right below
+        var width: gl.int = undefined;
+        // SAFETY: assigned right below
+        var height: gl.int = undefined;
+        gl.GetRenderbufferParameteriv(gl.RENDERBUFFER, gl.RENDERBUFFER_WIDTH, (&width)[0..1]);
+        gl.GetRenderbufferParameteriv(gl.RENDERBUFFER, gl.RENDERBUFFER_HEIGHT, (&height)[0..1]);
+
+        return [2]gl.int{ width, height };
+    }
+
+    pub fn getTextureSize(target: gl.@"enum", level: gl.int) [3]gl.int {
+        // SAFETY: assigned right after by OpenGL
+        var width: gl.int = undefined;
+        gl.GetTexLevelParameteriv(target, level, gl.TEXTURE_WIDTH, (&width)[0..1]);
+        // SAFETY: assigned right after by OpenGL
+        var height: gl.int = undefined;
+        gl.GetTexLevelParameteriv(target, level, gl.TEXTURE_HEIGHT, (&height)[0..1]);
+        // SAFETY: assigned right after by OpenGL
+        var depth: gl.int = undefined;
+        gl.GetTexLevelParameteriv(target, level, gl.TEXTURE_DEPTH, (&depth)[0..1]);
+
+        return [3]gl.int{ width, height, depth };
     }
 
     fn restoreGlParams(comptime Schema: type, source: Schema, comptime function: String, comptime prefix: String) void {
@@ -778,7 +919,7 @@ const Snapshot = struct {
         };
     }
 
-    fn restore(snapshot: Snapshot) !void {
+    fn restore(snapshot: *const Snapshot) !void {
         log.debug("Restoring pipeline shapshot", .{});
         for (current.instrument_clients.items) |*instrument| {
             if (instrument.onRestore) |onRestore| {
@@ -789,6 +930,9 @@ const Snapshot = struct {
                 }
             }
         }
+
+        try snapshot.memory.restore();
+
         gl.DrawBuffers(@intCast(snapshot.draw_buffers_len), &snapshot.draw_buffers);
         gl.ReadBuffer(snapshot.read_fbo);
 
@@ -902,10 +1046,14 @@ fn dispatchDebugImpl(
         try processOutput(instrumentation, platform);
 
         if (!shaders.user_action) {
+            try snapshot.restore();
             break;
         }
+        // revert memory to the state as it was at the beginning of the draw call
+        try snapshot.restore();
     }
-    try snapshot.restore();
+    // Run the original draw/compute function without the instrumentation
+    @call(.auto, dispatch_func, d_args);
 }
 
 fn instrumentDraw(
