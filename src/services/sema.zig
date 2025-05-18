@@ -22,7 +22,7 @@ const decls = @import("../declarations.zig");
 
 const String = []const u8;
 
-const types = struct {
+pub const types = struct {
     pub const @"bool" = "bool";
     pub const double = "double";
     pub const float = "float";
@@ -268,6 +268,7 @@ pub const Scope = struct {
     //}
 
     pub fn fillVariable(self: *@This(), allocator: std.mem.Allocator, name: String, content: Symbol.Content) !void {
+        log.debug("fillVariable {s} {}", .{ name, content.type });
         try self.variables.put(allocator, name, Symbol{
             .name = name,
             .content = content,

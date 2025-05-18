@@ -228,7 +228,7 @@ pub fn main() !u8 {
             var deshader_path_buffer = try common.allocator.alloc(if (builtin.os.tag == .windows) u16 else u8, std.fs.MAX_NAME_BYTES);
             defer common.allocator.free(deshader_path_buffer);
             const deshader_path = switch (builtin.os.tag) {
-                .windows => try std.unicode.utf16leToUtf8Alloc(
+                .windows => try std.unicode.utf16LeToUtf8Alloc(
                     common.allocator,
                     try std.os.windows.GetModuleFileNameW(deshader_lib.inner.dll, @ptrCast(deshader_path_buffer), std.fs.max_path_bytes - 1),
                 ),
@@ -462,8 +462,8 @@ fn dlerror() if (builtin.os.tag == .windows) String else [*:0]const u8 {
     } else {
         const err = std.os.windows.kernel32.GetLastError();
         // 614 is the length of the longest windows error description
-        var buf_wstr: [614]u16 = undefined;
-        var buf_utf8: [614]u8 = undefined;
+        var buf_wstr: [614:0]u16 = undefined;
+        var buf_utf8: [614:0]u8 = undefined;
         const len = std.os.windows.kernel32.FormatMessageW(
             std.os.windows.FORMAT_MESSAGE_FROM_SYSTEM | std.os.windows.FORMAT_MESSAGE_IGNORE_INSERTS,
             null,
@@ -473,7 +473,7 @@ fn dlerror() if (builtin.os.tag == .windows) String else [*:0]const u8 {
             buf_wstr.len,
             null,
         );
-        _ = std.unicode.utf16leToUtf8(&buf_utf8, buf_wstr[0..len]) catch unreachable;
+        _ = std.unicode.utf16LeToUtf8(&buf_utf8, buf_wstr[0..len]) catch unreachable;
         log.warn("{s}", .{buf_utf8[0..len]});
         return @tagName(err);
     }

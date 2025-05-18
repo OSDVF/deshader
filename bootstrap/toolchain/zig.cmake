@@ -5,6 +5,11 @@ if(VCPKG_TARGET_IS_WINDOWS)
     set(VCPKG_TARGET_IS_MINGW ON)
 endif()
 
+if($ENV{ZIG_OPTIMIZE} MATCHES "release")
+    set(CMAKE_BUILD_TYPE Release)
+    set(CMAKE_CONFIGURATION_TYPES Release)
+endif()
+
 if(NOT DEFINED $ENV{ZIG_PATH})
     find_program(ZIG_PATH "zig${CMAKE_EXECUTABLE_SUFFIX}")
 else()
@@ -69,7 +74,7 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     set(OPENGL_GLU_INCLUDE_DIR ${DARLING_PREFIX}/System/Library/Frameworks/OpenGL.framework/Versions/A/Headers/)
 
 else()
-    set(ADDITIONAL_ARGS "-target $ENV{ZIG_TARGET}")
+    set(ADDITIONAL_ARGS "-target $ENV{ZIG_TARGET} -fno-sanitize=all -z undefs")
 endif()
     
 string (REPLACE ";" " " ADDITIONAL_ARGS_STR "${ADDITIONAL_ARGS}")

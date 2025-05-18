@@ -438,6 +438,7 @@ pub fn setup(self: *@This()) !void {
     } else {
         self.threads = try self.config.allocator.dupe(usize, self.config.group_dim);
     }
+    errdefer self.config.allocator.free(self.threads);
     for (self.threads) |thread| {
         self.threads_total *= thread;
     }
@@ -465,7 +466,8 @@ pub fn setup(self: *@This()) !void {
                         // The fields scoped inside the block
                         const var_node = variable.node;
                         const var_node_text = tree.nodeSpan(var_node).text(source);
-                        var content = try self.resolveNode(var_node, &root_ctx, false) orelse return Error.Resolution;
+                        var content = try self.resolveNode(var_node, &root_ctx, false) orelse //return Error.Resolution;
+                            sema.Symbol.Content{ .type = .{ .basic = sema.types.float } };
 
                         switch (content.type) {
                             .array => |*array| {
@@ -483,7 +485,8 @@ pub fn setup(self: *@This()) !void {
                         var it = fields.iterator();
                         while (it.next(tree)) |field| {
                             const field_spec = try self.resolveNode(try self.extractNodeForce(field, .specifier), &root_ctx, false) orelse
-                                return Error.Resolution;
+                                //return Error.Resolution;
+                                sema.Symbol.Content{ .type = .{ .basic = sema.types.float } };
 
                             const field_vars = self.extract(field, .variables) orelse return Error.InvalidTree;
                             var it2 = field_vars.iterator();
@@ -513,7 +516,9 @@ pub fn setup(self: *@This()) !void {
                         .parameters = parameter_types_list,
                     }, sema.Symbol{
                         .name = name,
-                        .content = try self.resolveNode(try self.extractNodeForce(decl, .specifier), &root_ctx, false) orelse return Error.Resolution,
+                        .content = try self.resolveNode(try self.extractNodeForce(decl, .specifier), &root_ctx, false) orelse
+                            //return Error.Resolution,
+                            sema.Symbol.Content{ .type = .{ .basic = sema.types.float } },
                     });
 
                     if (std.mem.eql(u8, name, "main")) {
@@ -866,7 +871,6 @@ pub const TraverseContext = struct {
 
     /// The returned `Context` has a standalone `inserts` field, which must be deinited using the `Context.inExpressionDeinit()` method.
     pub fn inExpression(self: @This(), allocator: std.mem.Allocator) !@This() {
-        std.debug.assert(self.statement != null); // Expression nodes must be in a statement context
         var inserts = try allocator.create(Inserts);
         inserts.* = .{}; // initialize default values
         inserts.init(allocator); // initialize node pool
@@ -989,10 +993,17 @@ fn processExpression(
     do_instruments: bool,
     only_children: bool,
 ) FnErrorSet(@TypeOf(processNode))!?CompoundResult {
+    const tree = self.parsed.tree;
+    const previous = context.statement;
+    if (context.statement != null) // Expression nodes must be in a statement context
+    {
+        log.warn("Expression node {d} is not in a statement context", .{node});
+        context.statement = tree.nodeSpan(tree.parent(node) orelse node);
+    }
+    defer context.statement = previous;
+
     var wrapped_ctx = try context.inExpression(self.config.allocator);
     defer wrapped_ctx.inExpressionDeinit(self.config.allocator, context);
-
-    const tree = self.parsed.tree;
 
     const wrapped_span = tree.nodeSpan(node);
     const wrapped_orig_str = wrapped_span.text(self.config.source);
@@ -1295,7 +1306,8 @@ fn resolveNode(self: *@This(), node: NodeId, context: *TraverseContext, do_instr
                         try self.extractNodeForce(field, .specifier),
                         context,
                         do_instruments,
-                    ) orelse return Error.Resolution;
+                    ) orelse //return Error.Resolution;
+                        sema.Symbol.Content{ .type = .{ .basic = sema.types.float } };
 
                     const field_vars = self.extract(field, .variables) orelse return Error.InvalidTree;
                     var it2 = field_vars.iterator();
@@ -1347,7 +1359,8 @@ fn resolveNode(self: *@This(), node: NodeId, context: *TraverseContext, do_instr
                 var i: usize = 0;
                 try argument_types.ensureTotalCapacity(self.config.allocator, args.items.length());
                 while (it.next(tree)) |arg| : (i += 1) {
-                    const arg_result = try self.processNode(arg.node, context, do_instruments) orelse return Error.Resolution;
+                    const arg_result = try self.processNode(arg.node, context, do_instruments) orelse //return Error.Resolution;
+                        sema.Symbol.Content{ .type = .{ .basic = sema.types.float } }; // fall back to float
                     if (i == 0) {
                         first_arg = arg_result;
                     }
@@ -1388,7 +1401,8 @@ fn resolveNode(self: *@This(), node: NodeId, context: *TraverseContext, do_instr
                 // Qualifier
                 if (self.extractNode(par, .qualifiers)) |q| _ = try self.processNode(q, context, do_instruments);
                 // Type specifier
-                const t = try self.processNode(try self.extractNodeForce(par, .specifier), context, do_instruments) orelse return Error.Resolution;
+                const t = try self.processNode(try self.extractNodeForce(par, .specifier), context, do_instruments) orelse //return Error.Resolution;
+                    sema.Symbol.Content{ .type = .{ .basic = sema.types.float } };
 
                 // Variable name
                 if (self.extractNode(par, .variable)) |var_node| {
@@ -1476,6 +1490,11 @@ fn resolveNode(self: *@This(), node: NodeId, context: *TraverseContext, do_instr
         .number => sema.resolveNumber(tree.token(node).text(source)),
         .declaration => { // TODO can be inside struct
             const declaration = analyzer.syntax.Declaration.tryExtract(tree, node) orelse return Error.InvalidTree;
+
+            const previous = context.statement;
+            context.statement = tree.nodeSpan(declaration.node);
+            defer context.statement = previous;
+
             // Qualifier
             if (self.extractNode(declaration, .qualifiers)) |qualifiers|
                 _ = try self.processNode(qualifiers, context, do_instruments);
@@ -1484,7 +1503,10 @@ fn resolveNode(self: *@This(), node: NodeId, context: *TraverseContext, do_instr
                 try self.extractNodeForce(declaration, .specifier),
                 context,
                 do_instruments,
-            ) orelse return Error.Resolution;
+            ) orelse //return Error.Resolution;
+                sema.Symbol.Content{
+                    .type = .{ .basic = sema.types.float },
+                };
 
             // Variables
             const variables = self.extract(declaration, .variables).?;

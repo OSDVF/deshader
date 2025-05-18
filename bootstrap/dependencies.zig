@@ -166,11 +166,14 @@ pub const DependenciesStep = struct {
                     std.log.info("Renaming VCPKG artifacts", .{});
                     const bin_path = step2.owner.pathJoin(&.{ "build", "vcpkg_installed", dir.?, if (debug) "debug" else "", "bin" });
                     defer step2.owner.allocator.free(bin_path);
-                    try doOnEachFileIf(step2, bin_path, hasLibPrefix, removeLibPrefix);
-                    try doOnEachFileIf(step2, bin_path, hasWrongSuffix, renameSuffix);
+                    doOnEachFileIf(step2, bin_path, hasLibPrefix, removeLibPrefix) catch |err| std.log.err(
+                        "{} at {?}",
+                        .{ err, @errorReturnTrace() },
+                    );
+                    doOnEachFileIf(step2, bin_path, hasWrongSuffix, renameSuffix) catch |err| std.log.err("{} at {?}", .{ err, @errorReturnTrace() });
                     const lib_path = step2.owner.pathJoin(&.{ "build", "vcpkg_installed", dir.?, if (debug) "debug" else "", "lib" });
                     defer step2.owner.allocator.free(lib_path);
-                    try doOnEachFileIf(step2, lib_path, hasWrongSuffix, renameSuffix);
+                    doOnEachFileIf(step2, lib_path, hasWrongSuffix, renameSuffix) catch |err| std.log.err("{} at {?}", .{ err, @errorReturnTrace() });
                 }
             }.create,
             .arg = triplet,
