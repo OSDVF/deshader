@@ -79,7 +79,7 @@ jobs:
       - name: Build for Arch
         if: ${{ !contains(github.event.head_commit.message, 'skip linux') }}
         id: build-arch
-        run: docker run -e EXPORT_PKG=true -e CHECKSUM_SRC=true -e PGPKEY="$PGP_KEY" -v "$(pwd):/pkg" ghcr.io/zaggash/arch-makepkg:latest
+        run: docker run -e EXPORT_PKG=true -e CHECKSUM_SRC=true -e PGPKEY="$PGP_KEY" -v "$(pwd):/pkg" -e CUSTOM_EXEC="sudo pacman -R --noconfirm zig &&  yay -S --noconfirm zig-bin" ghcr.io/zaggash/arch-makepkg:latest
         continue-on-error: true
 
       - name: Archive Arch package
