@@ -48,7 +48,7 @@ const BreakpointResult = declarations.shaders.BreakpointResult;
 const StagePayload = declarations.shaders.StagePayload;
 const ProgramPayload = declarations.shaders.ProgramPayload;
 const ExistsBehavior = declarations.shaders.ExistsBehavior;
-const Service = declarations.instrumentation.Service;
+const Service = declarations.types.Service;
 
 pub export fn deshaderAcquireServiceGL() callconv(.c) ?*Service {
     return backends.gl.current.toOpaque(); // TODO locking

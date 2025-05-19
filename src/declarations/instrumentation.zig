@@ -1,6 +1,7 @@
 const types = @import("types.zig");
 const PlatformRef = types.PlatformRef;
 const Stage = types.Stage;
+const Service = types.Service;
 // #STUBS START HERE
 
 pub const NodeId = u32;
@@ -12,7 +13,6 @@ pub const Platform = opaque {};
 pub const Processor = opaque {};
 pub const Program = opaque {};
 pub const Readbacks = opaque {};
-pub const Service = opaque {};
 pub const State = opaque {};
 pub const TraverseContext = opaque {};
 

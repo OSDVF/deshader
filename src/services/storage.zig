@@ -509,14 +509,16 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime Container:
                 }
             } else switch (existing.content) {
                 .Tag => |tag| if (rename_only_base) {
+                    const dir = tag.parent;
                     self.bus.dispatchNoThrow(StoredTag.Event{ .action = .Remove, .tag = tag });
                     try tag.rename(target_basename);
-                    self.bus.dispatchNoThrow(StoredTag.Event{ .action = .Assign, .tag = tag });
+                    const new_tag = dir.files.getPtr(target_basename).?;
+                    self.bus.dispatchNoThrow(StoredTag.Event{ .action = .Assign, .tag = new_tag });
                     return .{ .Tag = tag };
                 } else {
-                    const f = tag.fetchRemove();
                     self.bus.dispatchNoThrow(StoredTag.Event{ .action = .Remove, .tag = tag });
-                    return .{ .Tag = try self.assignTagTo(f, to, .Error) };
+                    const f = tag.fetchRemove();
+                    return .{ .Tag = try self.assignTagTo(f, to, .Overwrite) };
                 },
                 else => |dir| {
                     if (rename_only_base) {
@@ -935,7 +937,10 @@ pub fn Storage(comptime Stored: type, comptime Nested: type, comptime Container:
                         // remove existing tag
                         existing_file.value_ptr.remove();
                         // overwrite tag and content
-                        const name_dupe = try self.allocator.dupe(u8, name);
+                        // filter out the path separator
+                        const first_sep = if (std.mem.indexOfScalar(u8, name, std.fs.path.sep_posix)) |s| s + 1 else 0;
+                        const last_sep = if (std.mem.lastIndexOfScalar(u8, name, std.fs.path.sep_posix)) |s| s - 1 else name.len;
+                        const name_dupe = try self.allocator.dupe(u8, name[first_sep..last_sep]);
                         const new_file = try dir.files.getOrPut(dir.allocator, name_dupe);
                         std.debug.assert(new_file.found_existing == false);
                         new_file.value_ptr.* = StoredTag{
@@ -1201,13 +1206,13 @@ pub fn Dir(comptime Taggable: type) type {
         pub fn rename(self: *@This(), new_name: String) !void {
             if (self.parent) |p| {
                 const new_name_dupe = try p.allocator.dupe(u8, new_name);
-                const old_name = self.name;
+                const old_ptr = p.dirs.getKeyPtr(self.name).?;
                 const result = try p.dirs.getOrPut(p.allocator, new_name_dupe);
-                result.value_ptr.* = self.*;
                 self.allocator.free(self.name);
+                result.value_ptr.* = self.*;
                 result.value_ptr.name = new_name_dupe;
                 // TODO: all refs freed?
-                std.debug.assert(p.dirs.remove(old_name));
+                p.dirs.removeByPtr(old_ptr);
             } else {
                 return error.InvalidPath; // root cannot be renamed (root is the only dir without parent)
             }
@@ -1517,7 +1522,7 @@ pub fn Locator(comptime T: type) type {
                         @This(){
                             .name = try self.name.toTagged(name),
                             .nested = Locator(U).tagged_root,
-                            .fullPath = name,
+                            .fullPath = try allocator.dupe(u8, name),
                         }
                     else
                         @This(){

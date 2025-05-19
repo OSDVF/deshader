@@ -325,7 +325,7 @@ pub fn allContexts() []*const anyopaque {
     return services.keys();
 }
 
-pub fn fromOpaque(o: *declarations.instrumentation.Service) *@This() {
+pub fn fromOpaque(o: *declarations.types.Service) *@This() {
     return @alignCast(@ptrCast(o));
 }
 
@@ -348,7 +348,7 @@ pub fn serviceNames() @TypeOf(services_by_name).KeyIterator {
     return services_by_name.keyIterator();
 }
 
-pub fn toOpaque(self: *@This()) *declarations.instrumentation.Service {
+pub fn toOpaque(self: *@This()) *declarations.types.Service {
     return @ptrCast(self);
 }
 
@@ -1279,7 +1279,7 @@ pub const Shader = struct {
                     const payload = try self.toPayload(self.allocator);
                     defer Shader.Stage.freePayload(payload, self.allocator);
 
-                    const compile_status = compile(payload, instrumented_source, @intCast(instrumentation.length));
+                    const compile_status = compile(service.toOpaque(), payload, instrumented_source, @intCast(instrumentation.length));
                     if (compile_status != 0) {}
                     for (self.parts.items) |*sp| {
                         sp.i_stat.size = instrumentation.length;
@@ -1743,6 +1743,7 @@ pub const Shader = struct {
 
         pub fn dirty(self: *@This()) void {
             self.stat.stat.dirty();
+            self.i_stat.stat.dirty();
             if (self.tag) |t| {
                 t.parent.dirty();
             }
@@ -1765,11 +1766,15 @@ pub const Shader = struct {
         }
 
         /// Updates the 'accessed' time on the .insturmented "file"
-        pub fn instrumentedSource(self: *@This()) !?String {
+        pub fn instrumentedSource(self: *@This(), service: *Service) !?String {
             if (self.stage.currentSourceHost) |currentSource| {
                 const path = if (self.tag) |t| try t.fullPathAlloc(self.stage.allocator, true) else null;
                 defer if (path) |p| self.stage.allocator.free(p);
-                if (currentSource(self.stage.context, self.stage.ref.toInt(), if (path) |p| p.ptr else null, if (path) |p| p.len else 0)) |source| {
+                if (currentSource(service.toOpaque(), self.stage.context, self.stage.ref.toInt(), if (path) |p|
+                    p.ptr
+                else
+                    null, if (path) |p| p.len else 0)) |source|
+                {
                     self.i_stat.stat.touch();
                     return std.mem.span(source);
                 }
@@ -1827,9 +1832,11 @@ pub const Shader = struct {
         pub fn invalidate(self: *@This()) void {
             if (self.tree) |*t| {
                 t.deinit(self.stage.allocator);
+                self.tree = null;
             }
             if (self.possible_steps) |*s| {
                 s.deinit(self.stage.allocator);
+                self.possible_steps = null;
             }
             self.tree = null;
             self.i_stat = storage.StatPayload.empty_readonly;
@@ -1899,6 +1906,23 @@ pub const Shader = struct {
             }
             self.dirty();
             self.source = try self.stage.allocator.dupe(u8, source);
+        }
+
+        pub fn recompile(self: *@This(), service: *Service) !void {
+            if (self.stage.compileHost) |c| {
+                const payload = try self.stage.toPayload(service.allocator);
+                defer Shader.Stage.freePayload(payload, service.allocator);
+                const result = c(service.toOpaque(), payload, "", 0);
+                var success = true;
+                if (result != 0) {
+                    log.err("Failed to compile stage {x} (code {d})", .{ self.stage.ref, result });
+                    success = false;
+                }
+
+                if (!success) {
+                    return error.Unexpected;
+                }
+            }
         }
 
         pub fn clearBreakpoints(self: *@This()) void {
@@ -2055,7 +2079,7 @@ pub const Shader = struct {
                     const path = if (self.tag) |t| try t.fullPathAlloc(service.allocator, true) else null;
                     defer if (path) |p|
                         service.allocator.free(p);
-                    const result = link(declarations.shaders.ProgramPayload{
+                    const result = link(service.toOpaque(), declarations.shaders.ProgramPayload{
                         .ref = self.ref.toInt(),
                         .context = self.context,
                         .count = 0,
@@ -2084,6 +2108,21 @@ pub const Shader = struct {
         pub fn invalidate(self: *@This()) void {
             if (self.state) |*state| {
                 state.dirty = true;
+            }
+        }
+
+        fn relink(self: *@This(), service: *Service) !void {
+            if (self.link) |lnk| {
+                const result = lnk(service.toOpaque(), declarations.shaders.ProgramPayload{
+                    .context = self.context,
+                    .link = self.link,
+                    .ref = self.ref.toInt(),
+                    // TODO .path
+                });
+                if (result != 0) {
+                    log.err("Failed to link program {x} (code {d})", .{ self.ref, result });
+                    return error.Link;
+                }
             }
         }
 
@@ -2180,7 +2219,7 @@ pub const Shader = struct {
                         .stage = stage.*.stage,
                         .save = stage.*.saveHost,
                     };
-                    const status = compile(payload, "", 0);
+                    const status = compile(service.toOpaque(), payload, "", 0);
 
                     if (status != 0) {
                         log.err("Failed to compile program {x} shader {x} (code {d})", .{ self.ref, stage.*.ref, status });
@@ -2193,7 +2232,7 @@ pub const Shader = struct {
             if (self.link) |linkFunc| {
                 const path = if (self.tag) |t| try t.fullPathAlloc(allocator, true) else null;
                 defer if (path) |p| allocator.free(p);
-                const result = linkFunc(declarations.shaders.ProgramPayload{
+                const result = linkFunc(service.toOpaque(), declarations.shaders.ProgramPayload{
                     .context = self.context,
                     .count = 0,
                     .link = linkFunc,
@@ -2794,39 +2833,29 @@ pub fn setSourceByLocator2(service: *Service, locator: ResourceLocator, new: Str
 }
 
 pub fn setSource(service: *Service, part: *Shader.SourcePart, new: String, compile: bool, link: bool) !void {
-    if (part.source) |s| {
-        part.stage.allocator.free(s);
+    const old_source = part.source;
+
+    part.source = try part.stage.allocator.dupe(u8, new);
+    errdefer {
+        if (part.source) |s| {
+            part.stage.allocator.free(s);
+        }
+        part.source = old_source;
+        if (compile) if (part.recompile(service)) {
+            if (link) if (part.stage.program) |program| program.relink(service) catch {};
+        } else |_| {};
     }
-    part.source = new;
+
     part.invalidate();
     part.dirty();
-    if (compile)
-        if (part.stage.compileHost) |c| {
-            const payload = try part.stage.toPayload(service.allocator);
-            defer Shader.Stage.freePayload(payload, service.allocator);
-            var result = c(payload, "", 0);
-            var success = true;
-            if (result != 0) {
-                log.err("Failed to compile stage {x} (code {d})", .{ part.stage.ref, result });
-                success = false;
-            }
+    if (compile) {
+        try part.recompile(service);
+        if (link) if (part.stage.program) |program| try program.relink(service);
+    }
 
-            if (link) if (part.stage.program) |program| if (program.link) |lnk| {
-                result = lnk(declarations.shaders.ProgramPayload{
-                    .context = program.context,
-                    .link = program.link,
-                    .ref = program.ref.toInt(),
-                    // TODO .path
-                });
-                if (result != 0) {
-                    log.err("Failed to link program {x} (code {d})", .{ program.ref, result });
-                    success = false;
-                }
-            };
-            if (!success) {
-                return error.Unexpected;
-            }
-        };
+    if (old_source) |s| {
+        part.stage.allocator.free(s);
+    }
 }
 
 /// With sources

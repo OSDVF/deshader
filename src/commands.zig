@@ -257,15 +257,15 @@ pub const MutliListener = struct {
                         defer provider.allocator.free(url);
                         var args = try common.argsFromFullCommand(provider.allocator, url);
                         defer if (args) |*a| {
-                            var it = a.valueIterator();
-                            while (it.next()) |s| {
-                                provider.allocator.free(s.*);
-                            }
                             a.deinit(provider.allocator);
                         };
                         var reader = try context.request.reader();
-                        defer reader.deinit();
-                        const body = try reader.readAllAlloc(provider.allocator);
+                        const body = reader.readAllAlloc(provider.allocator, 10_000_000) catch |err| switch (err) {
+                            error.StreamTooLong => return Route.Error.OutOfMemory,
+                            error.ConnectionTimedOut => return Route.Error.InputOutput,
+                            error.SocketNotBound => return Route.Error.InputOutput,
+                            else => |e| return e,
+                        };
                         defer provider.allocator.free(body);
                         break :blk comm(args, body);
                     },
@@ -1309,7 +1309,7 @@ pub const MutliListener = struct {
                         else => {
                             const shader = try context.service.getSourceByRLocator(res);
                             return if (res.isInstrumented())
-                                try shader.instrumentedSource() orelse shaders.Error.NoInstrumentation
+                                try shader.instrumentedSource(context.service) orelse shaders.Error.NoInstrumentation
                             else
                                 shader.getSource() orelse "";
                         },
@@ -1319,33 +1319,33 @@ pub const MutliListener = struct {
             return error.TargetNotFound;
         }
 
-        const WriteArgs = struct { path: String, content: String, compile: ?bool, link: ?bool };
-        pub fn saveVirtual(args: ?ArgumentsMap) !void {
+        const WriteArgs = struct { path: String, compile: ?bool, link: ?bool };
+        pub fn saveVirtual(args: ?ArgumentsMap, content: String) !void {
             const in_params = try parseArgs(WriteArgs, args);
 
             const locator = try shaders.ServiceLocator.parse(in_params.value.path) orelse return error.InvalidPath;
             try locator.service.setSourceByLocator2(
                 locator.resource orelse return error.InvalidPath,
-                in_params.value.content,
+                content,
                 in_params.value.compile orelse true,
                 in_params.value.link orelse true,
             );
         }
 
-        pub fn savePhysical(args: ?ArgumentsMap) !void {
+        pub fn savePhysical(args: ?ArgumentsMap, content: String) !void {
             const in_params = try parseArgs(WriteArgs, args);
 
             const locator = try shaders.ServiceLocator.parse(in_params.value.path) orelse return error.InvalidPath;
             try locator.service.saveSource(
                 locator.resource orelse return error.InvalidPath,
-                in_params.value.content,
+                content,
                 in_params.value.compile orelse true,
                 in_params.value.link orelse true,
             );
         }
 
-        pub fn save(args: ?ArgumentsMap) !void {
-            return savePhysical(args) catch |err| if (err == error.NotPhysical) saveVirtual(args);
+        pub fn save(args: ?ArgumentsMap, content: String) !void {
+            return savePhysical(args, content) catch |err| if (err == error.NotPhysical) saveVirtual(args, content);
         }
 
         /// Rename a file or directory.

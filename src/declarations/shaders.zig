@@ -14,6 +14,7 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 const types = @import("types.zig");
 const PlatformRef = types.PlatformRef;
+const Service = types.Service;
 // #STUBS START HERE
 
 /// Both API specific and agnostic declarations that will be included verbatim in the exported deshader.zig header file
@@ -136,10 +137,10 @@ pub const StagePayload = extern struct {
     /// length is the length of the `instrumented` source. If it is 0, then there is no instrumented source.
     /// The instrumented source is also always null-terminated.
     /// Should return `0` when there is no error.
-    compile: ?*const fn (source: StagePayload, instrumented: CString, length: i32) callconv(.c) u8 = null,
+    compile: ?*const fn (service: *Service, source: StagePayload, instrumented: CString, length: i32) callconv(.c) u8 = null,
     /// Get the instrumented version of the source code. Deshader executes this function when requested by the frontend.
     /// TODO: if the function is not provided, store always the source code somewhere.
-    currentSource: ?*const fn (context: ?*anyopaque, ref: PlatformRef, path: ?CString, length: usize) callconv(.c) ?CString = null,
+    currentSource: ?*const fn (service: *Service, context: ?*anyopaque, ref: PlatformRef, path: ?CString, length: usize) callconv(.c) ?CString = null,
     /// Free the memory returned by `currentSource`
     free: ?*const fn (ref: PlatformRef, context: ?*anyopaque, string: CString) callconv(.c) void = null,
     /// Function to execute when user wants to save a source in the Deshader editor. Set to override the default behavior.
@@ -164,7 +165,7 @@ pub const ProgramPayload = extern struct {
     /// The function must return 0 if there is no error.
     ///
     /// If the program was already linked in the past, the function must also re-set all the uniforms and attributes to their original values.
-    link: ?*const fn (self: ProgramPayload) callconv(.c) u8 = null,
+    link: ?*const fn (service: *Service, self: ProgramPayload) callconv(.c) u8 = null,
 };
 
 pub const BreakpointResult = extern struct {

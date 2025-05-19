@@ -2253,7 +2253,20 @@ fn wrapErrorHandling(comptime function: anytype, _args: anytype) void {
     };
 }
 
-fn defaultCompileShader(source: decls.shaders.StagePayload, instrumented: CString, length: i32) callconv(.c) u8 {
+fn defaultCompileShader(s: *decls.types.Service, source: decls.shaders.StagePayload, instrumented: CString, length: i32) callconv(.c) u8 {
+    const service = shaders.fromOpaque(s);
+    const c_state = state.getPtr(service.context) orelse return 3;
+
+    if (waiter.request(.BorrowContext) != .ContextFree) {
+        log.err("Could not borrow context from the drawing thead.", .{});
+        return 3;
+    }
+    const prev_context = switchContext(c_state.gl, service.context);
+    defer {
+        setContext(c_state.gl, prev_context);
+        waiter.eatingDone();
+    }
+
     const shader: gl.uint = @intCast(source.ref);
     if (length > 0) {
         gl.ShaderSource(shader, 1, @ptrCast(&instrumented), @ptrCast(&length));
@@ -2299,8 +2312,8 @@ fn defaultCompileShader(source: decls.shaders.StagePayload, instrumented: CStrin
             log.debug("Shader {d} instrumented source: {s}", .{ shader, instrumented[0..@intCast(length)] });
         }
         for (0..source.count) |i| {
-            const s = source.sources.?[i];
-            log.debug("Shader {d} original source {d}: {s}", .{ shader, i, s[0..if (source.lengths) |l| l[i] else std.mem.len(s)] });
+            const part = source.sources.?[i];
+            log.debug("Shader {d} original source {d}: {s}", .{ shader, i, part[0..if (source.lengths) |l| l[i] else std.mem.len(part)] });
         }
 
         // SAFETY: assigned right after by OpenGL
@@ -2314,8 +2327,8 @@ fn defaultCompileShader(source: decls.shaders.StagePayload, instrumented: CStrin
     return 0;
 }
 
-fn defaultGetCurrentSource(ctx: ?*anyopaque, ref: u64, _: ?CString, _: usize) callconv(.c) ?CString {
-    const service: *shaders = @alignCast(@ptrCast(ctx.?));
+fn defaultGetCurrentSource(s: *decls.types.Service, _: ?*anyopaque, ref: u64, _: ?CString, _: usize) callconv(.c) ?CString {
+    const service = shaders.fromOpaque(s);
     const c_state = state.getPtr(service.context) orelse return null;
 
     if (waiter.request(.BorrowContext) != .ContextFree) {
@@ -2323,6 +2336,10 @@ fn defaultGetCurrentSource(ctx: ?*anyopaque, ref: u64, _: ?CString, _: usize) ca
         return null;
     }
     const prev_context = switchContext(c_state.gl, service.context);
+    defer {
+        setContext(c_state.gl, prev_context);
+        waiter.eatingDone();
+    }
 
     const shader: gl.uint = @intCast(ref);
 
@@ -2340,13 +2357,24 @@ fn defaultGetCurrentSource(ctx: ?*anyopaque, ref: u64, _: ?CString, _: usize) ca
     };
     gl.GetShaderSource(shader, length, &length, source);
 
-    setContext(c_state.gl, prev_context);
-    waiter.eatingDone();
     return source;
 }
 
 /// If count is 0, the function will only link the program. Otherwise it will attach the shaders in the order they are stored in the payload.
-fn defaultLink(self: decls.shaders.ProgramPayload) callconv(.c) u8 {
+fn defaultLink(s: *decls.types.Service, self: decls.shaders.ProgramPayload) callconv(.c) u8 {
+    const service = shaders.fromOpaque(s);
+    const c_state = state.getPtr(service.context) orelse return 3;
+
+    if (waiter.request(.BorrowContext) != .ContextFree) {
+        log.err("Could not borrow context from the drawing thead.", .{});
+        return 3;
+    }
+    const prev_context = switchContext(c_state.gl, service.context);
+    defer {
+        setContext(c_state.gl, prev_context);
+        waiter.eatingDone();
+    }
+
     const program: gl.uint = @intCast(self.ref);
     var i: usize = 0;
     while (i < self.count) : (i += 1) {
@@ -3127,7 +3155,7 @@ fn hardCast(comptime T: type, val: anytype) T {
     return @as(T, @alignCast(@ptrCast(@constCast(val))));
 }
 
-fn namedStringSourceAlloc(_: ?*anyopaque, _: usize, path: ?CString, length: usize) callconv(.c) ?CString {
+fn namedStringSourceAlloc(_: *decls.types.Service, _: ?*anyopaque, _: usize, path: ?CString, length: usize) callconv(.c) ?CString {
     if (path) |p| {
 
         // SAFETY: assigned right after by OpenGL
@@ -3734,7 +3762,7 @@ const default_instrument_clients = blk: {
 
 fn ErrorWrapper(comptime InstrumentClient: anytype) type {
     return struct {
-        pub fn onBeforeDraw(service: *decls.instrumentation.Service, instrumentation: decls.instrumentation.Result) usize {
+        pub fn onBeforeDraw(service: *decls.types.Service, instrumentation: decls.instrumentation.Result) usize {
             InstrumentClient.onBeforeDraw(@alignCast(@ptrCast(service)), instrumentation) catch |err| {
                 log.err("Failed onBeforeDraw callback for instrument {s}: {} at {?}", .{ @typeName(InstrumentClient), err, @errorReturnTrace() });
                 return @intFromError(err);
@@ -3743,7 +3771,7 @@ fn ErrorWrapper(comptime InstrumentClient: anytype) type {
         }
         /// `platform` can be `PlatformParamsGL` or `PlatformParamsVK`
         pub fn onResult(
-            service: *decls.instrumentation.Service,
+            service: *decls.types.Service,
             instrumentation: decls.instrumentation.Result,
             readbacks: *const decls.instrumentation.Readbacks,
             platform: *const decls.instrumentation.Platform,
@@ -3759,7 +3787,7 @@ fn ErrorWrapper(comptime InstrumentClient: anytype) type {
             };
             return 0;
         }
-        pub fn onRestore(service: *decls.instrumentation.Service) usize {
+        pub fn onRestore(service: *decls.types.Service) usize {
             InstrumentClient.onRestore(@alignCast(@ptrCast(service))) catch |err| {
                 log.err("Failed onRestore callback for instrument {s}: {} at {?}", .{ @typeName(InstrumentClient), err, @errorReturnTrace() });
                 return @intFromError(err);
