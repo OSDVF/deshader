@@ -31,7 +31,7 @@ pub const PragmaDebug = struct {
         const enabled = try createEnabledControl(processor);
 
         if (enabled.value_ptr.*) {
-            try processor.insertStart("#pragma debug\n", processor.after_version);
+            try processor.insertStart("#pragma debug\n", processor.after_directives);
         }
     }
 };
@@ -276,50 +276,141 @@ pub const Step = struct {
     }
 
     /// Inserts a guard to break the function `func` if a step or breakpoint was hit already. Should be inserted after a call to any user function.
-    fn guard(processor: *Processor, is_void: bool, func: Processor.Processor.TraverseContext.Function, pos: usize) !void {
-        try processor.insertEnd(try processor.print(
-            "if(" ++ local_was_hit ++ ") {{" ++
-                sync_storage ++ " = " ++ Processor.templates.linear_thread_id ++
-                \\ return {s}{s};
-                \\}}
-            ,
-            if (is_void) .{ "", "" } else .{ func.return_type, "(0)" }, //TODO in ESSL struct must be initialized
-        ), pos, 0);
+    fn guard(
+        processor: *Processor,
+        is_void: bool,
+        func: Processor.Processor.TraverseContext.Function,
+        pos: usize,
+        context: *Processor.TraverseContext,
+    ) !void {
+        if (is_void)
+            try processor.insertEnd("if(" ++ local_was_hit ++ ") {{" ++
+                sync_storage ++ " = " ++ Processor.templates.linear_thread_id ++ ";" ++
+                \\ return;
+            ++ "}}", pos, 0)
+        else {
+            const constructor = if (context.scope.visibleType(func.return_type)) |user_type|
+                try generateConstructor(processor, user_type, context)
+            else
+                "0";
+
+            try processor.insertEnd(
+                try processor.print(
+                    "if(" ++ local_was_hit ++ ") {{" ++
+                        sync_storage ++ " = " ++ Processor.templates.linear_thread_id ++ ";" ++
+                        "return {s}({s});" ++ "}}",
+                    .{ func.return_type, constructor },
+                ),
+                pos,
+                0,
+            );
+        }
+    }
+
+    fn generateConstructor(processor: *Processor, user_type: sema.Scope.Fields, context: *Processor.TraverseContext) !String {
+        var constructor = std.ArrayListUnmanaged(u8).empty;
+        errdefer constructor.deinit(processor.config.allocator);
+        var writer = constructor.writer(processor.config.allocator);
+
+        const fields = user_type.values();
+        for (fields, 0..) |field, i| {
+            // generate constructor for the struct
+            try writeConstructor(writer, field, context);
+            if (i < fields.len - 1)
+                try writer.writeByte(',');
+        }
+        return constructor.toOwnedSlice(processor.arena.allocator());
+    }
+
+    fn writeConstructor(writer: anytype, t: sema.Symbol.Type, context: *Processor.TraverseContext) !void {
+        switch (t) {
+            .basic => |basic| {
+                try writer.writeAll(basic);
+                try writer.writeByte('(');
+                if (context.scope.visibleType(basic)) |user_type| {
+                    const fields = user_type.values();
+                    for (fields, 0..) |field, i| {
+                        try writeConstructor(writer, field, context);
+                        if (i < fields.len - 1)
+                            try writer.writeByte(',');
+                    }
+                } else {
+                    try writer.writeByte('0');
+                }
+                try writer.writeByte(')');
+            },
+            .array => |array| {
+                try writer.writeAll(array.base);
+                for (array.dim) |dim| {
+                    try writer.print("[{d}]", .{dim});
+                }
+                try writer.writeByte('(');
+                for (0..array.dim[0]) |i| {
+                    try writeConstructor(writer, if (array.dim.len > 1) .{ .array = .{
+                        .base = array.base,
+                        .dim = array.dim[1..],
+                    } } else .{
+                        .basic = array.base,
+                    }, context);
+                    if (i < array.dim[0] - 1)
+                        try writer.writeByte(',');
+                }
+                try writer.writeByte(')');
+            },
+        }
     }
 
     /// Increment the virutal step counter (a simulation of instruction counter) and break if the target step is reached.
     fn advanceAndCheck(
         processor: *Processor,
         step_id: usize,
-        func: Processor.Processor.TraverseContext.Function,
         is_void: bool,
         has_bp: bool,
+        context: *Processor.TraverseContext,
     ) !String {
         const bp_cond = "(" ++ step_counter ++ ">={s})";
-        const return_init = "{s}(0)";
+        const return_init = "{s}({s})";
         return // TODO initialize the empty return type
         if (has_bp)
             if (is_void)
                 checkAndHit(processor, bp_cond, .{desired_bp}, step_id, "", .{})
             else
-                checkAndHit(processor, bp_cond, .{desired_bp}, step_id, return_init, .{func.return_type})
+                checkAndHit(
+                    processor,
+                    bp_cond,
+                    .{desired_bp},
+                    step_id,
+                    return_init,
+                    if (context.scope.visibleType(context.function.?.return_type)) |t|
+                        .{ context.function.?.return_type, try generateConstructor(processor, t, context) }
+                    else
+                        .{ context.function.?.return_type, "0" },
+                )
         else if (is_void)
             checkAndHit(processor, "", .{}, step_id, "", .{})
         else
-            checkAndHit(processor, "", .{}, step_id, return_init, .{func.return_type});
+            checkAndHit(processor, "", .{}, step_id, return_init, if (context.scope.visibleType(context.function.?.return_type)) |t|
+                .{ context.function.?.return_type, try generateConstructor(processor, t, context) }
+            else
+                .{ context.function.?.return_type, "0" });
     }
 
     /// Recursively add the functionality: break the caller function after a call to a function with the `name`
     pub fn addGuardsRecursive(
         processor: *Processor,
         func: Processor.TraverseContext.Function,
+        context: *Processor.TraverseContext,
     ) (std.mem.Allocator.Error || Error || Processor.Error)!usize {
         const tree = processor.parsed.tree;
         const source = processor.config.source;
         // find references (function calls) to this function
         const calls = processor.parsed.calls.get(func.name) orelse return 0; // skip if the function is never called
+        const g = try guarded(processor);
         var processed: usize = calls.count();
+
         for (calls.keys()) |node| { // it is a .call AST node
+            if (g.contains(node)) continue;
+            try g.put(processor.config.allocator, node, {});
             //const call = analyzer.syntax.Call.tryExtract(tree, node) orelse return Error.InvalidTree;
             var innermost_statement_span: ?analyzer.parse.Span = null;
             var in_condition_list = false;
@@ -335,16 +426,15 @@ pub const Step = struct {
                             const parent_func = try Processor.extractFunction(tree, current, source);
                             const is_parent_void = std.mem.eql(u8, parent_func.return_type, "void");
                             if (branches.items.len > 0) {
-                                const g = try guarded(processor);
                                 for (branches.items) |branch| {
                                     if (!g.contains(branch)) {
-                                        try guard(processor, is_parent_void, parent_func, branch + 1);
+                                        try guard(processor, is_parent_void, parent_func, branch + 1, context);
                                         try g.put(processor.config.allocator, branch, {});
                                     }
                                 }
-                            } else try guard(processor, is_parent_void, parent_func, statement.end);
+                            } else try guard(processor, is_parent_void, parent_func, statement.end, context);
 
-                            processed += try addGuardsRecursive(processor, parent_func);
+                            processed += try addGuardsRecursive(processor, parent_func, context);
                             return processed;
                         } else {
                             log.err("Function call to {s} node {d} has no innermost statement", .{ func.name, node });
@@ -368,6 +458,11 @@ pub const Step = struct {
                                 },
                                 else => innermost_statement_span = tree.nodeSpan(current),
                             }
+                        }
+                    },
+                    .declaration => {
+                        if (innermost_statement_span == null) {
+                            innermost_statement_span = tree.nodeSpan(current);
                         }
                     },
                     .condition_list => {
@@ -504,7 +599,7 @@ pub const Step = struct {
             , .{
                 @as(u16, if (processor.parsed.version >= 430) 430 else 140), //stdXXX
                 sync.location.buffer.binding,
-            }), processor.after_version);
+            }), processor.after_directives);
         } else if (processor.config.shader_stage.isFragment() and !warned_about_selection) {
             warned_about_selection = true;
             log.warn("Fragment shaders threads cannot be efficiently selected without storage buffer support", .{});
@@ -525,12 +620,12 @@ pub const Step = struct {
                 ++ "bool " ++ local_was_hit ++ "=false;\n", .{
                     @as(u16, if (processor.parsed.version >= 430) 430 else 140), //stdXXX
                     buffer.binding,
-                }), processor.after_version);
+                }), processor.after_directives);
             },
             .interface => |location| {
                 try processor.insertStart( //
                     "uint " ++ step_counter ++ "=0u;\n" //
-                    ++ "bool " ++ local_was_hit ++ "=false;\n", processor.after_version);
+                    ++ "bool " ++ local_was_hit ++ "=false;\n", processor.after_directives);
 
                 if (processor.parsed.version >= 130 or !processor.config.shader_stage.isFragment()) {
                     try processor.insertStart(
@@ -552,14 +647,14 @@ pub const Step = struct {
         }
 
         // step and bp selector uniforms
-        try processor.insertEnd("uniform uint " ++ desired_step ++ ";\n", processor.after_version, 0);
-        try processor.insertEnd("uniform uint " ++ desired_bp ++ ";\n", processor.after_version, 0);
+        try processor.insertEnd("uniform uint " ++ desired_step ++ ";\n", processor.after_directives, 0);
+        try processor.insertEnd("uniform uint " ++ desired_bp ++ ";\n", processor.after_directives, 0);
 
         // #define step adnvance and check macros (for better insturmented code readability)
         try processor.insertEnd(try processor.print(
             "#define {s}{s} (" ++ step_counter ++ "++)\n",
             .{ step_identifier, step_advance },
-        ), processor.after_version, 0);
+        ), processor.after_directives, 0);
 
         try processor.insertEnd(try processor.print(
             "#define {s}{s}(id, cond, ret) if((" ++ step_counter ++ ">=" ++ desired_step ++ ") || cond )" ++
@@ -575,7 +670,7 @@ pub const Step = struct {
                 bufferIndexer(processor, "1"),
                 local_was_hit,
             },
-        ), processor.after_version, 0);
+        ), processor.after_directives, 0);
 
         try processor.insertEnd(try processor.print(
             "#define {s}(id, ret) if(" ++ step_counter ++ ">=" ++ desired_step ++ ")" ++
@@ -590,7 +685,7 @@ pub const Step = struct {
                 bufferIndexer(processor, "1"),
                 local_was_hit,
             },
-        ), processor.after_version, 0);
+        ), processor.after_directives, 0);
     }
 
     pub fn finally(processor: *Processor) anyerror!void {
@@ -625,7 +720,7 @@ pub const Step = struct {
                 if (controls(processor.config.program).?.desired_step != null or has_breakpoint) {
                     // insert the step's check'n'break
                     try context.inserts.insertEnd(
-                        try advanceAndCheck(processor, step.id, context_func, parent_is_void, has_breakpoint),
+                        try advanceAndCheck(processor, step.id, parent_is_void, has_breakpoint, context),
                         span.start,
                         span.length(),
                     );
@@ -643,7 +738,7 @@ pub const Step = struct {
                 }
 
                 // generate: break the execution after returning from a function if something was hit
-                _ = try addGuardsRecursive(processor, context_func);
+                _ = try addGuardsRecursive(processor, context_func, context);
                 context.instrumented = true;
             }
         }
@@ -775,11 +870,11 @@ pub const StackTrace = struct {
             \\}};
         ++ "uint " ++ cursor_name ++ "=0u;\n", .{
             stack_trace.location.buffer.binding,
-        }), processor.after_version);
+        }), processor.after_directives);
 
         try processor.insertEnd(
             try processor.print("uniform uint {s};\n", .{threadSelector(processor.config.shader_stage)}),
-            processor.after_version,
+            processor.after_directives,
             0,
         );
     }
@@ -937,7 +1032,7 @@ pub const Log = struct {
                 \\}};
             , .{
                 stor.location.buffer.binding,
-            }), processor.after_version);
+            }), processor.after_directives);
         }
     }
 };
@@ -1393,7 +1488,7 @@ pub const Variables = struct {
                         buffer.binding,
                         storage_name,
                     }),
-                    processor.after_version,
+                    processor.after_directives,
                 );
                 r.value_ptr.storages_count = 1;
                 r.value_ptr.unused_storage = requested_size;
@@ -1453,7 +1548,7 @@ pub const Variables = struct {
                                     buffer.binding,
                                     i,
                                     i,
-                                }), processor.after_version);
+                                }), processor.after_directives);
                                 r.value_ptr.unused_storage += remainig.*;
                                 break :blk remainig.* * processor.threads_total;
                             },
@@ -1466,7 +1561,7 @@ pub const Variables = struct {
 
         try processor.insertStart(
             try processor.print("uniform uint " ++ frames_name ++ "[{d}];\n", .{c.value_ptr.max_frames}),
-            processor.after_version,
+            processor.after_directives,
         );
     }
 };

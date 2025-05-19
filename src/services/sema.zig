@@ -207,7 +207,7 @@ pub fn resolveNumber(text: String) Symbol.Content {
 
 pub const Scope = struct {
     /// Maps field name to its type
-    const Fields = std.StringArrayHashMapUnmanaged(Symbol.Type);
+    pub const Fields = std.StringArrayHashMapUnmanaged(Symbol.Type);
 
     parent: ?*Scope = null,
     /// Blocks and structures. Maps type name to its fields
@@ -320,7 +320,10 @@ pub const Scope = struct {
         target: Symbol.Content,
         field: String,
     ) !?Symbol.Content {
-        const tar_type = target.type.basic;
+        const tar_type = switch (target.type) {
+            .basic => |b| b,
+            .array => |a| a.base, // TODO resolve array indexing
+        };
         if (self.visibleType(tar_type)) |fields| {
             return Symbol.Content{ .type = fields.get(field) orelse return null };
         } else {

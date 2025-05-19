@@ -322,25 +322,40 @@ const Snapshot = struct {
                 gl.GetProgramiv(program_ref, gl.ACTIVE_UNIFORMS, &count);
                 if (count > 0) {
                     const indices = try common.allocator.alloc(gl.uint, @intCast(count));
-                    const result = try common.allocator.alloc(gl.int, @intCast(count));
+                    const lengths = try common.allocator.alloc(gl.int, @intCast(count));
                     defer common.allocator.free(indices);
-                    defer common.allocator.free(result);
+                    defer common.allocator.free(lengths);
 
                     for (0..@intCast(count), indices) |i, *index| {
                         index.* = @intCast(i);
                     }
 
-                    gl.GetActiveUniformsiv(program_ref, count, indices.ptr, gl.UNIFORM_TYPE, result.ptr);
-                    for (result, 0..@intCast(count)) |r, location| {
+                    gl.GetActiveUniformsiv(program_ref, count, indices.ptr, gl.UNIFORM_NAME_LENGTH, lengths.ptr);
+                    for (lengths, 0..@intCast(count)) |length, i| {
+                        const name = try common.allocator.allocSentinel(u8, @intCast(length - 1), 0);
+                        defer common.allocator.free(name);
+
+                        // SAFETY: assigned right after by OpenGL
+                        var r: gl.@"enum" = undefined;
+                        // SAFETY: assigned right after by OpenGL
+                        var size: gl.int = undefined;
+                        gl.GetActiveUniform(program_ref, @intCast(i), @intCast(length), null, &size, &r, name.ptr);
+
+                        // SAFETY: assigned right after by OpenGL
+                        const location = gl.GetUniformLocation(program_ref, name.ptr);
+                        if (location < 0) continue;
+
                         // SAFETY: assigned right after by OpenGL
                         var unit: gl.int = undefined;
-                        gl.GetUniformiv(program_ref, @intCast(location), (&unit)[0..1]);
+                        gl.GetUniformiv(program_ref, location, (&unit)[0..1]);
 
                         if (unit > 0) {
                             // SAFETY: assigned right after by OpenGL
                             var texture: gl.int = undefined;
                             gl.GetIntegeri_v(gl.IMAGE_BINDING_NAME, @intCast(unit), (&texture)[0..1]);
-                            if (imageToTarget(@intCast(r)) orelse c_state.tex_target.get(@intCast(texture))) |target| {
+                            // If texture > 0, this will also prove that the uniform is a image
+
+                            if (texture > 0) if (imageToTarget(@intCast(r)) orelse c_state.tex_target.get(@intCast(texture))) |target| {
                                 var level: gl.int = 0;
                                 gl.GetIntegeri_v(gl.IMAGE_BINDING_LEVEL, @intCast(unit), (&level)[0..1]);
                                 var is_layered: gl.int = 0;
@@ -357,7 +372,7 @@ const Snapshot = struct {
                                     level,
                                     if (is_layered == gl.FALSE) layer else null,
                                 ) catch continue;
-                            }
+                            };
                         }
                     }
                 }
@@ -495,7 +510,7 @@ const Snapshot = struct {
                 if (texture != 0) {
                     // SAFETY: assigned right after by OpenGL
                     var internal_format: gl.int = undefined;
-                    gl.GetTexParameteriv(target, gl.TEXTURE_INTERNAL_FORMAT, (&internal_format)[0..1]);
+                    gl.GetTexLevelParameteriv(target, level, gl.TEXTURE_INTERNAL_FORMAT, (&internal_format)[0..1]);
                     const format = internalFormatToFormat(@intCast(internal_format)) orelse return error.UnknownInternalFormat;
 
                     var cache: gl.uint = 0;
@@ -3353,6 +3368,7 @@ pub const context_procs = if (builtin.os.tag == .windows)
             @export(&wglMakeContextCurrentARB, .{ .name = "wglMakeContextCurrentEXT" });
         }
 
+        // TODO force newest OpenGL version
         pub export fn wglCreateContextAttribsARB(hdc: *const anyopaque, share: *const anyopaque, attribs: ?[*]c_int) ?*const anyopaque {
             const result = loaders.APIs.gl.wgl.create[1](hdc, share, attribs);
 

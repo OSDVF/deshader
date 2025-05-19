@@ -2,6 +2,7 @@ index.html
 node_modules/vscode-web/dist/extensions/emmet/dist/browser/emmetBrowserMain.js
 node_modules/vscode-web/dist/extensions/git-base/dist/browser/extension.js
 node_modules/vscode-web/dist/extensions/json/language-configuration.json
+node_modules/vscode-web/dist/node_modules/vscode-textmate/release/main.js
 node_modules/vscode-web/dist/extensions/json/syntaxes/JSONL.tmLanguage.json
 node_modules/vscode-web/dist/extensions/json/syntaxes/JSONC.tmLanguage.json
 node_modules/vscode-web/dist/extensions/merge-conflict/dist/browser/mergeConflictMain.js

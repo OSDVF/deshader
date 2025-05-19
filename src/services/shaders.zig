@@ -2024,6 +2024,10 @@ pub const Shader = struct {
                 log.debug("New instrumentation for program {}", .{self.ref});
                 break :blk .new;
             };
+            errdefer {
+                if (self.state) |*s| s.deinit(service.allocator);
+                self.state = null;
+            }
 
             // needs re-link?
             var any_stage_reinsturmented = false;

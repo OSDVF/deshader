@@ -55,7 +55,7 @@ pub const Parsed = struct {
     version: u16,
     /// Is this an OpenGL ES shader?
     es: bool,
-    version_span: analyzer.parse.Span,
+    last_directive_end: usize,
 
     // List of enabled extensions
     extensions: []const []const u8,
@@ -97,7 +97,7 @@ pub const Parsed = struct {
 
         var version: u16 = 0;
         var es = false;
-        var version_span = analyzer.parse.Span{ .start = 0, .end = 0 };
+        var last_directive: usize = 0;
 
         for (ignored.items) |token| {
             const line = text[token.start..token.end];
@@ -105,6 +105,10 @@ pub const Parsed = struct {
                 .extension => |extension| {
                     const name = extension.name;
                     try extensions.append(line[name.start..name.end]);
+
+                    if (token.end > last_directive) {
+                        last_directive = token.end;
+                    }
                 },
                 .version => |version_token| {
                     var version_parts = std.mem.splitAny(u8, line[version_token.number.start..version_token.number.end], " \t");
@@ -116,7 +120,9 @@ pub const Parsed = struct {
                             es = true;
                         }
                     }
-                    version_span = token;
+                    if (token.end > last_directive) {
+                        last_directive = token.end;
+                    }
                 },
                 else => continue,
             }
@@ -131,7 +137,7 @@ pub const Parsed = struct {
             .calls = calls,
             .version = version,
             .es = es,
-            .version_span = version_span,
+            .last_directive_end = last_directive,
         };
     }
 };
@@ -335,8 +341,8 @@ threads_total: usize = 1, // Product of all threads dimesions sizes
 // SAFETY: assigned in setup()
 threads: []usize = undefined,
 
-/// Offset of #version directive (if any was found)
-after_version: usize = 0,
+/// Offset of the last #extension or #version directive (if any was found)
+after_directives: usize = 0,
 // SAFETY: assigned in setup()
 arena: std.heap.ArenaAllocator = undefined,
 last_interface_decl: usize = 0,
@@ -425,8 +431,8 @@ pub fn setup(self: *@This()) !void {
             self.config.support.buffers = false; // the extension is not supported in older GLSL
         }
     }
-    self.after_version = self.parsed.version_span.end + 1; // assume there is a line break
-    self.last_interface_decl = self.after_version;
+    self.after_directives = self.parsed.last_directive_end + 1; // assume there is a line break (it really should because it is a directive)
+    self.last_interface_decl = self.after_directives;
 
     if (self.config.groups_count) |group_count| {
         std.debug.assert(group_count.len == self.config.group_dim.len);
@@ -504,12 +510,6 @@ pub fn setup(self: *@This()) !void {
                     const p = decl.get(.parameters, tree);
                     const parameter_types_list =
                         if (p) |parameters| try self.extractParameters(parameters) else &.{};
-                    defer if (p) |_| {
-                        for (parameter_types_list) |*item| {
-                            item.deinit(self.config.allocator);
-                        }
-                        self.config.allocator.free(parameter_types_list);
-                    };
 
                     try functions.put(self.config.allocator, .{
                         .name = name,
@@ -613,7 +613,7 @@ pub fn setup(self: *@This()) !void {
     }
 
     if (self.config.support.buffers and (self.parsed.version >= 310 or self.config.force_support)) {
-        try self.insertStart(" #extension GL_ARB_shader_storage_buffer_object : require\n", self.after_version);
+        try self.insertStart(" #extension GL_ARB_shader_storage_buffer_object : require\n", self.after_directives);
         // To support SSBOs as instrumentation output channels
     }
 
@@ -662,7 +662,7 @@ pub fn declareThreadId(self: *@This()) !void {
                         ".x + uint(gl_FragCoord.x);\n",
                     .{ self.threads[0], self.threads[1] },
                 ),
-                self.after_version,
+                self.after_directives,
             );
         },
         .gl_geometry => {
@@ -670,7 +670,7 @@ pub fn declareThreadId(self: *@This()) !void {
                 "const uint " ++ templates.local_thread_counts ++ "= {d};\n" ++
                     "uint " ++ templates.linear_thread_id ++ "= gl_PrimitiveIDIn * " ++ templates.local_thread_counts ++ " + gl_InvocationID;\n",
                 .{self.threads[0]},
-            ), self.after_version);
+            ), self.after_directives);
         },
         .gl_tess_evaluation => {
             try self.insertStart(try self.print(
@@ -678,14 +678,14 @@ pub fn declareThreadId(self: *@This()) !void {
                     "uint " ++ templates.linear_thread_id ++ " =" ++ templates.local_thread_counts ++ ".y * {d} + " ++
                     templates.local_thread_counts ++ ".x;\n",
                 .{ self.threads[0], self.threads[0] },
-            ), self.after_version);
+            ), self.after_directives);
         },
         .gl_mesh, .gl_task, .gl_compute => {
             try self.insertStart(
                 try self.print("uint " ++ templates.linear_thread_id ++
                     "= gl_GlobalInvocationID.z * gl_NumWorkGroups.x * gl_NumWorkGroups.y * " ++ templates.wg_size ++
                     " + gl_GlobalInvocationID.y * gl_NumWorkGroups.x * " ++ templates.wg_size ++ " + gl_GlobalInvocationID.x);\n", .{}),
-                self.after_version,
+                self.after_directives,
             );
             if (self.parsed.version < 430) {
                 try self.insertStart(
@@ -693,12 +693,12 @@ pub fn declareThreadId(self: *@This()) !void {
                         "const uvec3 " ++ templates.wg_size ++ "= uvec3({d},{d},{d});\n",
                         .{ self.config.group_dim[0], self.config.group_dim[1], self.config.group_dim[2] },
                     ),
-                    self.after_version,
+                    self.after_directives,
                 );
             } else {
                 try self.insertStart(
                     "uvec3 " ++ templates.wg_size ++ "= gl_WorkGroupSize;\n",
-                    self.after_version,
+                    self.after_directives,
                 );
             }
         },
@@ -950,16 +950,18 @@ fn extractNodeTextForce(self: *Processor, extractor: anytype, comptime field: @T
 }
 
 pub fn extractParameters(
-    self: *const Processor,
+    self: *Processor,
     parameters: analyzer.syntax.ParameterList,
 ) ![]sema.Symbol.Type {
     const tree = self.parsed.tree;
     const source = self.config.source;
+    // Allocated in arena because it must be live as long as the functions hashmap
+    const allocator = self.arena.allocator();
 
     const parameters_count = parameters.items.length();
     var params = std.ArrayListUnmanaged(sema.Symbol.Type).empty;
-    errdefer params.deinit(self.config.allocator);
-    try params.ensureTotalCapacity(self.config.allocator, parameters_count);
+    errdefer params.deinit(allocator);
+    try params.ensureTotalCapacity(allocator, parameters_count);
 
     var it: analyzer.syntax.ListIterator(analyzer.syntax.Parameter) = parameters.iterator();
     var i: usize = 0;
@@ -967,10 +969,10 @@ pub fn extractParameters(
         const specifier = param.get(.specifier, tree).?;
         const s_slice = tree.nodeSpan(specifier.getNode()).text(source);
         if (!std.mem.eql(u8, s_slice, "void")) {
-            try params.append(self.config.allocator, try sema.Symbol.Type.parse(self.config.allocator, s_slice));
+            params.appendAssumeCapacity(try sema.Symbol.Type.parse(allocator, s_slice));
         }
     }
-    return params.toOwnedSlice(self.config.allocator);
+    return params.toOwnedSlice(allocator);
 }
 
 pub fn extractFunction(tree: analyzer.parse.Tree, node: Processor.NodeId, source: String) Error!TraverseContext.Function {
@@ -1185,44 +1187,14 @@ fn resolveNode(self: *@This(), node: NodeId, context: *TraverseContext, do_instr
     return switch (tree.tag(node)) { // TODO serialize the recursive traversal
         .array, .parenthized => { // array indexing and parenthized expression has three children: open, value, close
             const children = tree.children(node);
-            std.debug.assert(children.length() == 3);
-            _ = try self.processNode(children.start, context, do_instruments);
-            // return the thing inside
-            const result = try self.processNode(children.start + 1, context, do_instruments);
-            _ = try self.processNode(children.start + 2, context, do_instruments);
+            if (children.length() == 3) {
+                _ = try self.processNode(children.start, context, do_instruments);
+                // return the thing inside
+                const result = try self.processNode(children.start + 1, context, do_instruments);
+                _ = try self.processNode(children.start + 2, context, do_instruments);
 
-            return result;
-        },
-        .if_branch => {
-            // if(a(ahoj) == 1) {
-            //
-            // } else if(a(ahoj) == 2) {
-            //  // we must wrap the elseif
-            // }
-
-            const cond = tree.nodeSpan(node);
-            const siblings = tree.children(tree.parent(node).?);
-            var close_pos = cond.end;
-            for (node..siblings.end) |sibling| {
-                const s_tag = tree.tag(sibling);
-                if (s_tag == .if_branch or s_tag == .else_branch) {
-                    close_pos = tree.nodeSpanExtreme(@intCast(sibling), .end);
-                }
-            }
-            const is_else_if = tree.tag(tree.children(node).start) == .keyword_else;
-            const after_else_kw: u32 = cond.start + @as(u32, if (is_else_if) 4 else 0); // e l s e
-            try self.insertStart("{\n", after_else_kw); //TODO wraps the whole i-else-.. block instead of just the else branch
-            try self.insertEnd("\n}\n", close_pos, 0);
-            const previous = context.statement;
-            context.statement = .{ // now we are in a new statement context
-                .start = after_else_kw,
-                .end = close_pos,
-            };
-
-            _ = try self.processAllChildren(node, context, do_instruments);
-
-            context.statement = previous;
-            return null;
+                return result;
+            } else return null;
         },
         .selection => {
             const selection = analyzer.syntax.Selection.tryExtract(tree, node) orelse return Error.InvalidTree;
@@ -1347,7 +1319,7 @@ fn resolveNode(self: *@This(), node: NodeId, context: *TraverseContext, do_instr
         },
         .call => {
             const call = analyzer.syntax.Call.tryExtract(tree, node) orelse return Error.InvalidTree;
-            const name = call.get(.identifier, tree).?.text(source, tree);
+
             const arguments = call.get(.arguments, tree);
 
             var first_arg: ?sema.Symbol.Content = null;
@@ -1370,16 +1342,19 @@ fn resolveNode(self: *@This(), node: NodeId, context: *TraverseContext, do_instr
                 _ = try self.processInstruments(args.node, null, context);
             }
 
-            var result: ?CompoundResult = null;
-            if (try context.scope.resolveFunction(
-                self.config.allocator,
-                .{ .name = name, .parameters = argument_types.items },
-                &self.config.spec,
-                first_arg,
-            )) |e_result| {
-                result = e_result;
-            }
-            return result;
+            if (call.get(.identifier, tree)) |identifier| {
+                const name = identifier.text(source, tree);
+
+                return try context.scope.resolveFunction(
+                    self.config.allocator,
+                    .{ .name = name, .parameters = argument_types.items },
+                    &self.config.spec,
+                    first_arg,
+                );
+            } else
+            // the call does not have a simple identifier, so it is probably an array.length() call
+            // so fall back to uint
+            return sema.Symbol.Content{ .type = .{ .basic = sema.types.uint } };
         },
         .block => { // every code block (including function body) is a scope different than its parent (parameters are also different scope)
             var nested = try context.nested(self.config.allocator);
@@ -1492,7 +1467,7 @@ fn resolveNode(self: *@This(), node: NodeId, context: *TraverseContext, do_instr
             const declaration = analyzer.syntax.Declaration.tryExtract(tree, node) orelse return Error.InvalidTree;
 
             const previous = context.statement;
-            context.statement = tree.nodeSpan(declaration.node);
+            context.statement = tree.nodeSpan(node);
             defer context.statement = previous;
 
             // Qualifier
@@ -1509,23 +1484,24 @@ fn resolveNode(self: *@This(), node: NodeId, context: *TraverseContext, do_instr
                 };
 
             // Variables
-            const variables = self.extract(declaration, .variables).?;
-            var it: analyzer.syntax.Variables.Iterator = variables.iterator();
-            while (it.next(tree)) |variable| {
-                const var_node = variable.node;
-                const var_node_text = tree.nodeSpan(var_node).text(source);
-                if (try self.resolveNode(var_node, context, false)) |var_result| {
-                    if (var_result.constant) |cons| {
-                        t.constant = cons;
+            if (self.extract(declaration, .variables)) |variables| {
+                var it: analyzer.syntax.Variables.Iterator = variables.iterator();
+                while (it.next(tree)) |variable| {
+                    const var_node = variable.node;
+                    const var_node_text = tree.nodeSpan(var_node).text(source);
+                    if (try self.resolveNode(var_node, context, false)) |var_result| {
+                        if (var_result.constant) |cons| {
+                            t.constant = cons;
+                        }
                     }
-                }
 
-                try context.scope.fillVariable(self.config.allocator, var_node_text, t);
+                    try context.scope.fillVariable(self.config.allocator, var_node_text, t);
+                    if (do_instruments)
+                        try self.processInstruments(var_node, t, context);
+                }
                 if (do_instruments)
-                    try self.processInstruments(var_node, t, context);
+                    try self.processInstruments(variables.getNode(), t, context);
             }
-            if (do_instruments)
-                try self.processInstruments(variables.getNode(), t, context);
 
             if (self.extractNode(declaration, .semi)) |semi| {
                 _ = try self.processNode(semi, context, do_instruments);
