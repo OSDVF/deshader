@@ -144,7 +144,7 @@ fn decompress(provider: *positron.Provider, comptime file: String, dll_path: Str
 }
 
 fn addCacheHeaders(_: *positron.Provider, _: ?*positron.Provider.Route, c: *serve.http.Context) positron.Provider.Route.Error!void {
-    if (builtin.mode == .Debug and std.ascii.indexOfIgnoreCase(c.request.url, "deshader-vscode/dist") != null) {
+    if (std.ascii.indexOfIgnoreCase(c.request.url, "deshader-vscode/dist") != null) {
         try c.response.setHeader("Cache-Control", "max-age=0, public");
     } else try c.response.setHeader("Cache-Control", "max-age=1800, public");
 }

@@ -21,7 +21,7 @@
 	url = https://github.com/compor/llvm-ir-cmake-utils.git
 [submodule "editor/glsl-language-support"]
 	path = editor/glsl-language-support
-	url = https://github.com/filippofracascia/glsl-language-support.git
+	url = https://github.com/OSDVF/glsl-language-support-deshader.git
 [submodule "bootstrap/install_name_tool"]
 	path = bootstrap/install_name_tool
 	url = https://github.com/dmikushin/install_name_tool.git
