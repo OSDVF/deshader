@@ -2807,6 +2807,7 @@ pub fn saveSource(service: *Service, locator: ResourceLocator, new: String, comp
     const shader = try service.getSourceByRLocator(locator);
 
     const newZ = try shader.stage.allocator.dupeZ(u8, new);
+    defer shader.stage.allocator.free(newZ);
     // TODO more effective than getting it twice
     const index = common.indexOfSliceMember(Shader.SourcePart, shader.stage.parts.items, shader).?;
     const physical = try service.resolvePhysicalByVirtual(locator) orelse return error.NotPhysical;

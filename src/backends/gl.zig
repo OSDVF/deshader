@@ -180,9 +180,11 @@ const Response = enum { ContextFree };
 /// API-backend wide state of instrumentation for all contexts. Indexed by the GL context address.
 var state: std.HashMapUnmanaged(*const shaders.BackendContext, ContextState, common.AddressContext(*const shaders.BackendContext), 80) = .empty;
 var waiter = common.Waiter(Request, Response){};
-/// The globalservice instance which belongs to currently selected context.
-// SAFETY: assigned after a context is selected
-pub threadlocal var current: *shaders = undefined;
+/// The initial value is usefor for comparing agains a different thread's service/context
+const no_service: *shaders = @constCast(@alignCast(@ptrCast(&null)));
+/// The global service instance which belongs to currently selected context.
+// SAFETY: assigned after a context is selected.
+pub threadlocal var current: *shaders = no_service;
 
 // Functions to be wrapped by error handling
 const actions = struct {
@@ -572,6 +574,32 @@ const Snapshot = struct {
             }
         }
 
+        pub fn deinit(self: *Memory) void {
+            {
+                var it = self.buffers.valueIterator();
+                while (it.next()) |buffer| {
+                    gl.DeleteBuffers(1, buffer[0..1]);
+                }
+            }
+            self.buffers.deinit(common.allocator);
+
+            {
+                var it = self.renderbuffers.valueIterator();
+                while (it.next()) |renderbuffer| {
+                    gl.DeleteRenderbuffers(1, renderbuffer[0..1]);
+                }
+            }
+            self.renderbuffers.deinit(common.allocator);
+
+            {
+                var it = self.textures.valueIterator();
+                while (it.next()) |texture| {
+                    gl.DeleteTextures(1, texture[0..1]);
+                }
+            }
+            self.textures.deinit(common.allocator);
+        }
+
         /// Converts image binding type to texture target
         pub fn imageToTarget(image: gl.@"enum") ?gl.@"enum" {
             return switch (image) {
@@ -619,8 +647,6 @@ const Snapshot = struct {
                     gl.GetBufferParameteri64v(gl.COPY_READ_BUFFER, gl.BUFFER_SIZE, &size);
 
                     gl.CopyBufferSubData(gl.COPY_READ_BUFFER, gl.COPY_WRITE_BUFFER, 0, 0, @intCast(size));
-
-                    gl.DeleteBuffers(1, buffer.value_ptr[0..1]);
                 }
             }
             // textures
@@ -692,8 +718,6 @@ const Snapshot = struct {
                         },
                         else => unreachable,
                     }
-
-                    gl.DeleteTextures(1, texture.value_ptr[0..1]);
                 }
             }
 
@@ -721,8 +745,6 @@ const Snapshot = struct {
                         size[1],
                         1,
                     );
-
-                    gl.DeleteRenderbuffers(1, renderbuffer.value_ptr[0..1]);
                 }
             }
         }
@@ -934,6 +956,10 @@ const Snapshot = struct {
         };
     }
 
+    fn deinit(self: *Snapshot) void {
+        self.memory.deinit();
+    }
+
     fn restore(snapshot: *const Snapshot) !void {
         log.debug("Restoring pipeline shapshot", .{});
         for (current.instrument_clients.items) |*instrument| {
@@ -1040,7 +1066,8 @@ fn dispatchDebugImpl(
     // - Dispatch debugging draw calls and read the outputs while a breakpoint or a step is reached
     // Call the original draw call...
 
-    const snapshot = try Snapshot.capture(program);
+    var snapshot = try Snapshot.capture(program);
+    defer snapshot.deinit();
     while (true) {
         shaders.user_action = false;
 
@@ -2257,8 +2284,8 @@ fn defaultCompileShader(s: *decls.types.Service, source: decls.shaders.StagePayl
     const service = shaders.fromOpaque(s);
     const c_state = state.getPtr(service.context) orelse return 3;
 
-    if (waiter.request(.BorrowContext) != .ContextFree) {
-        log.err("Could not borrow context from the drawing thead.", .{});
+    if (current != service and waiter.request(.BorrowContext) != .ContextFree) {
+        log.err("Could not request borrowing context from the drawing thead.", .{});
         return 3;
     }
     const prev_context = switchContext(c_state.gl, service.context);
@@ -2308,6 +2335,9 @@ fn defaultCompileShader(s: *decls.types.Service, source: decls.shaders.StagePayl
             }
         }
         log.info("Shader {d} at path '{?s}' info:\n{s}", .{ shader, paths, info_log });
+        if (paths) |p| {
+            common.allocator.free(p);
+        }
         if (length > 0) {
             log.debug("Shader {d} instrumented source: {s}", .{ shader, instrumented[0..@intCast(length)] });
         }
@@ -2331,8 +2361,8 @@ fn defaultGetCurrentSource(s: *decls.types.Service, _: ?*anyopaque, ref: u64, _:
     const service = shaders.fromOpaque(s);
     const c_state = state.getPtr(service.context) orelse return null;
 
-    if (waiter.request(.BorrowContext) != .ContextFree) {
-        log.err("Could not borrow context from the drawing thead.", .{});
+    if (current != service and waiter.request(.BorrowContext) != .ContextFree) {
+        log.err("Could not request borrowing context from the drawing thead.", .{});
         return null;
     }
     const prev_context = switchContext(c_state.gl, service.context);
@@ -2365,8 +2395,8 @@ fn defaultLink(s: *decls.types.Service, self: decls.shaders.ProgramPayload) call
     const service = shaders.fromOpaque(s);
     const c_state = state.getPtr(service.context) orelse return 3;
 
-    if (waiter.request(.BorrowContext) != .ContextFree) {
-        log.err("Could not borrow context from the drawing thead.", .{});
+    if (current != service and waiter.request(.BorrowContext) != .ContextFree) {
+        log.err("Could not request borrowing context from the drawing thead.", .{});
         return 3;
     }
     const prev_context = switchContext(c_state.gl, service.context);
@@ -3693,6 +3723,7 @@ pub fn makeCurrent(comptime api: anytype, params: anytype, c: ?*const anyopaque)
             }
         }
     } else {
+        current = no_service;
         gl.makeProcTableCurrent(null);
     }
 }
