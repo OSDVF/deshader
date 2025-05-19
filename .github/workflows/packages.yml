@@ -118,7 +118,7 @@ jobs:
       - name: Install Wine
         id: install-wine
         if: ${{ !contains(github.event.head_commit.message, 'skip windows') }}
-        run: sudo dpkg --add-architecture i386 && sudo apt-get update && sudo apt-get install -y wine32 wine64 wine-binfmt
+        run: sudo dpkg --add-architecture i386 && sudo apt-get update && sudo apt-get install -y wine32 wine64 wine-binfmt xvfb
         continue-on-error: true
 
       - name: Uninstall Mono
@@ -126,10 +126,15 @@ jobs:
         run: sudo apt-get remove -y mono-devel mono-complete mono-runtime
         continue-on-error: true
 
-
       - name: Alias wine64 to wine
         if: steps.install-wine.conclusion == 'success'
         run: sudo ln -s /usr/bin/wine /usr/bin/wine64
+        continue-on-error: true
+
+      - name: Install Vcredist
+        id: install-vcredist
+        if: steps.install-wine.conclusion == 'success'
+        run: wget https://aka.ms/vs/17/release/vc_redist.x64.exe && (Xvfb :1 &) && DISPLAY=:1 WINEDLLOVERRIDES="mscoree,mshtml=" wine64 vc_redist.x64.exe /q
         continue-on-error: true
 
       - name: Fix permissions
@@ -142,7 +147,7 @@ jobs:
 
       - name: Cross-compile for Windows
         id: win-compile
-        if: steps.install-wine.conclusion == 'success'
+        if: steps.install-vcredist.conclusion == 'success'
         run: for a in 1 2; do zig build deshader launcher -fwine -Dtarget=x86_64-windows-gnu --release=safe; done || bash fix_c_import.sh && zig build deshader launcher -fwine -Dtarget=x86_64-windows-gnu --release=safe
         shell: bash
         working-directory: src/deshader
