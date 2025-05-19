@@ -155,7 +155,7 @@ jobs:
       - name: Test windows build
         id: win-test
         if: steps.win-compile.conclusion == 'success'
-        run: wine deshader-run.exe -version
+        run: (Xvfb :2 &) && DISPLAY=:2 WINEDLLOVERRIDES="mscoree,mshtml=" wine deshader-run.exe --version
         working-directory: src/deshader/zig-out/bin
 
       - name: Compress windows executables
