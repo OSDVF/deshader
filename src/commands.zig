@@ -893,7 +893,7 @@ pub const MutliListener = struct {
         }
 
         pub fn noDebug() !void {
-            shaders.user_action = true;
+            shaders.user_action = false;
             shaders.debugging = false;
             for (shaders.allServices()) |s| {
                 s.revert_requested = true;

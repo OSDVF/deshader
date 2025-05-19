@@ -111,6 +111,7 @@ pub var debugging = false;
 pub var single_pause_mode = true; // TODO more modes (breakpoint only, free run)
 /// Indicator of a user action which has been taken since the last frame (continue, step...).
 /// When no user action was taken, the debugging dispatch loop for the current shader can be exited.
+/// When a user action is taken, the dispatch loop is surely continued.
 pub var user_action: bool = false;
 
 /// IDs of shader, indexes of part, IDs of stops that were not yet sent to the debug adapter.
