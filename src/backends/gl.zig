@@ -333,50 +333,51 @@ const Snapshot = struct {
                     }
 
                     gl.GetActiveUniformsiv(program_ref, count, indices.ptr, gl.UNIFORM_NAME_LENGTH, lengths.ptr);
-                    for (lengths, 0..@intCast(count)) |length, i| {
-                        const name = try common.allocator.allocSentinel(u8, @intCast(length - 1), 0);
-                        defer common.allocator.free(name);
+                    if (gl.GetError() == gl.NO_ERROR)
+                        for (lengths, 0..@intCast(count)) |length, i| {
+                            const name = try common.allocator.allocSentinel(u8, @intCast(length), 0);
+                            defer common.allocator.free(name);
 
-                        // SAFETY: assigned right after by OpenGL
-                        var r: gl.@"enum" = undefined;
-                        // SAFETY: assigned right after by OpenGL
-                        var size: gl.int = undefined;
-                        gl.GetActiveUniform(program_ref, @intCast(i), @intCast(length), null, &size, &r, name.ptr);
-
-                        // SAFETY: assigned right after by OpenGL
-                        const location = gl.GetUniformLocation(program_ref, name.ptr);
-                        if (location < 0) continue;
-
-                        // SAFETY: assigned right after by OpenGL
-                        var unit: gl.int = undefined;
-                        gl.GetUniformiv(program_ref, location, (&unit)[0..1]);
-
-                        if (unit > 0) {
                             // SAFETY: assigned right after by OpenGL
-                            var texture: gl.int = undefined;
-                            gl.GetIntegeri_v(gl.IMAGE_BINDING_NAME, @intCast(unit), (&texture)[0..1]);
-                            // If texture > 0, this will also prove that the uniform is a image
+                            var r: gl.@"enum" = undefined;
+                            // SAFETY: assigned right after by OpenGL
+                            var size: gl.int = undefined;
+                            gl.GetActiveUniform(program_ref, @intCast(i), @intCast(length), null, &size, &r, name.ptr);
 
-                            if (texture > 0) if (imageToTarget(@intCast(r)) orelse c_state.tex_target.get(@intCast(texture))) |target| {
-                                var level: gl.int = 0;
-                                gl.GetIntegeri_v(gl.IMAGE_BINDING_LEVEL, @intCast(unit), (&level)[0..1]);
-                                var is_layered: gl.int = 0;
-                                gl.GetIntegeri_v(gl.IMAGE_BINDING_LAYERED, @intCast(unit), (&is_layered)[0..1]);
-                                var layer: gl.int = 0;
-                                gl.GetIntegeri_v(gl.IMAGE_BINDING_LAYER, @intCast(unit), (&layer)[0..1]);
+                            // SAFETY: assigned right after by OpenGL
+                            const location = gl.GetUniformLocation(program_ref, name.ptr);
+                            if (location < 0) continue;
 
-                                copyTexture(
-                                    &textures,
-                                    &buffers,
-                                    target,
-                                    c_state,
-                                    @intCast(texture),
-                                    level,
-                                    if (is_layered == gl.FALSE) layer else null,
-                                ) catch continue;
-                            };
-                        }
-                    }
+                            // SAFETY: assigned right after by OpenGL
+                            var unit: gl.int = undefined;
+                            gl.GetUniformiv(program_ref, location, (&unit)[0..1]);
+
+                            if (unit > 0) {
+                                // SAFETY: assigned right after by OpenGL
+                                var texture: gl.int = undefined;
+                                gl.GetIntegeri_v(gl.IMAGE_BINDING_NAME, @intCast(unit), (&texture)[0..1]);
+                                // If texture > 0, this will also prove that the uniform is a image
+
+                                if (texture > 0) if (imageToTarget(@intCast(r)) orelse c_state.tex_target.get(@intCast(texture))) |target| {
+                                    var level: gl.int = 0;
+                                    gl.GetIntegeri_v(gl.IMAGE_BINDING_LEVEL, @intCast(unit), (&level)[0..1]);
+                                    var is_layered: gl.int = 0;
+                                    gl.GetIntegeri_v(gl.IMAGE_BINDING_LAYERED, @intCast(unit), (&is_layered)[0..1]);
+                                    var layer: gl.int = 0;
+                                    gl.GetIntegeri_v(gl.IMAGE_BINDING_LAYER, @intCast(unit), (&layer)[0..1]);
+
+                                    copyTexture(
+                                        &textures,
+                                        &buffers,
+                                        target,
+                                        c_state,
+                                        @intCast(texture),
+                                        level,
+                                        if (is_layered == gl.FALSE) layer else null,
+                                    ) catch continue;
+                                };
+                            }
+                        };
                 }
             }
             {
@@ -1876,6 +1877,11 @@ pub export fn glDispatchComputeGroupSizeARB(
     group_size_y: gl.uint,
     group_size_z: gl.uint,
 ) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     defer endFrame();
     if (beginFrame()) {
         dispatchDebugCompute(
@@ -1894,6 +1900,11 @@ pub export fn glDispatchComputeGroupSizeARB(
 }
 
 pub export fn glDispatchCompute(num_groups_x: gl.uint, num_groups_y: gl.uint, num_groups_z: gl.uint) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     defer endFrame();
     if (beginFrame()) {
         const group_sizes = Snapshot.getGroupSizes();
@@ -1915,6 +1926,11 @@ const IndirectComputeCommand = extern struct {
     num_groups_z: gl.uint,
 };
 pub export fn glDispatchComputeIndirect(address: gl.intptr) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     defer endFrame();
     if (beginFrame()) {
         var command = IndirectComputeCommand{ .num_groups_x = 1, .num_groups_y = 1, .num_groups_z = 1 };
@@ -1938,6 +1954,11 @@ pub export fn glDispatchComputeIndirect(address: gl.intptr) callconv(.c) void {
 }
 
 pub export fn glDrawArrays(mode: gl.@"enum", first: gl.int, count: gl.sizei) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     defer endFrame();
     if (beginFrame()) {
         dispatchDebugDraw(instrumentDraw, .{ count, 1 }, gl.DrawArrays, .{ mode, first, count });
@@ -1945,6 +1966,11 @@ pub export fn glDrawArrays(mode: gl.@"enum", first: gl.int, count: gl.sizei) cal
 }
 
 pub export fn glDrawArraysInstanced(mode: gl.@"enum", first: gl.int, count: gl.sizei, instanceCount: gl.sizei) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     defer endFrame();
     if (beginFrame()) {
         dispatchDebugDraw(instrumentDraw, .{ count, instanceCount }, gl.DrawArraysInstanced, .{ mode, first, count, instanceCount });
@@ -1952,6 +1978,11 @@ pub export fn glDrawArraysInstanced(mode: gl.@"enum", first: gl.int, count: gl.s
 }
 
 pub export fn glDrawElements(mode: gl.@"enum", count: gl.sizei, _type: gl.@"enum", indices: usize) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     defer endFrame();
     if (beginFrame()) {
         dispatchDebugDraw(instrumentDraw, .{ count, 1 }, gl.DrawElements, .{ mode, count, _type, indices });
@@ -1965,6 +1996,11 @@ pub export fn glDrawElementsInstanced(
     indices: ?*const anyopaque,
     instanceCount: gl.sizei,
 ) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     defer endFrame();
     if (beginFrame()) {
         dispatchDebugDraw(instrumentDraw, .{ count, instanceCount }, gl.DrawElementsInstanced, .{ mode, count, _type, indices, instanceCount });
@@ -1978,6 +2014,11 @@ pub export fn glDrawElementsBaseVertex(
     indices: ?*const anyopaque,
     basevertex: gl.int,
 ) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     defer endFrame();
     if (beginFrame()) {
         dispatchDebugDraw(instrumentDraw, .{ count, 1 }, gl.DrawElementsBaseVertex, .{ mode, count, _type, indices, basevertex });
@@ -1992,6 +2033,11 @@ pub export fn glDrawElementsInstancedBaseVertex(
     instanceCount: gl.sizei,
     basevertex: gl.int,
 ) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     defer endFrame();
     if (beginFrame()) {
         dispatchDebugDraw(
@@ -2011,6 +2057,11 @@ pub export fn glDrawRangeElements(
     _type: gl.@"enum",
     indices: ?*const anyopaque,
 ) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     defer endFrame();
     if (beginFrame()) {
         dispatchDebugDraw(instrumentDraw, .{ count, 1 }, gl.DrawRangeElements, .{ mode, start, end, count, _type, indices });
@@ -2026,6 +2077,11 @@ pub export fn glDrawRangeElementsBaseVertex(
     indices: ?*const anyopaque,
     basevertex: gl.int,
 ) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     defer endFrame();
     if (beginFrame()) {
         dispatchDebugDraw(instrumentDraw, .{ count, 1 }, gl.DrawRangeElementsBaseVertex, .{ mode, start, end, count, _type, indices, basevertex });
@@ -2041,6 +2097,11 @@ pub export fn glDrawElementsInstancedBaseVertexBaseInstance(
     basevertex: gl.int,
     baseInstance: gl.uint,
 ) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     defer endFrame();
     if (beginFrame()) {
         dispatchDebugDraw(
@@ -2060,6 +2121,11 @@ pub export fn glDrawElementsInstancedBaseInstance(
     instanceCount: gl.sizei,
     baseInstance: gl.uint,
 ) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     defer endFrame();
     if (beginFrame()) {
         dispatchDebugDraw(
@@ -2094,6 +2160,11 @@ pub fn parseIndirect(indirect: ?*const IndirectCommand) IndirectCommand {
 }
 
 pub export fn glDrawArraysIndirect(mode: gl.@"enum", indirect: ?*const IndirectCommand) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     defer endFrame();
     if (beginFrame()) {
         const i = parseIndirect(indirect);
@@ -2107,6 +2178,11 @@ pub export fn glDrawArraysIndirect(mode: gl.@"enum", indirect: ?*const IndirectC
 }
 
 pub export fn glDrawElementsIndirect(mode: gl.@"enum", _type: gl.@"enum", indirect: ?*const IndirectCommand) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     defer endFrame();
     if (beginFrame()) {
         const i = parseIndirect(indirect);
@@ -2126,6 +2202,11 @@ pub export fn glDrawArraysInstancedBaseInstance(
     instanceCount: gl.sizei,
     baseInstance: gl.uint,
 ) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     defer endFrame();
     if (beginFrame()) {
         dispatchDebugDraw(
@@ -2138,6 +2219,11 @@ pub export fn glDrawArraysInstancedBaseInstance(
 }
 
 pub export fn glDrawTransformFeedback(mode: gl.@"enum", id: gl.uint) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     defer endFrame();
     if (beginFrame()) {
         const query = state.getPtr(current.context).?.primitives_written_queries.items[0];
@@ -2150,6 +2236,11 @@ pub export fn glDrawTransformFeedback(mode: gl.@"enum", id: gl.uint) callconv(.c
 }
 
 pub export fn glDrawTransformFeedbackInstanced(mode: gl.@"enum", id: gl.uint, instanceCount: gl.sizei) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     defer endFrame();
     if (beginFrame()) {
         const query = state.getPtr(current.context).?.primitives_written_queries.items[0];
@@ -2162,6 +2253,11 @@ pub export fn glDrawTransformFeedbackInstanced(mode: gl.@"enum", id: gl.uint, in
 }
 
 pub export fn glDrawTransformFeedbackStream(mode: gl.@"enum", id: gl.uint, stream: gl.uint) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     defer endFrame();
     if (beginFrame()) {
         const query = state.getPtr(current.context).?.primitives_written_queries.items[stream];
@@ -2174,6 +2270,11 @@ pub export fn glDrawTransformFeedbackStream(mode: gl.@"enum", id: gl.uint, strea
 }
 
 pub export fn glDrawTransformFeedbackStreamInstanced(mode: gl.@"enum", id: gl.uint, stream: gl.uint, instanceCount: gl.sizei) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     defer endFrame();
     if (beginFrame()) {
         const query = state.getPtr(current.context).?.primitives_written_queries.items[stream];
@@ -2213,6 +2314,11 @@ pub export fn glDrawTransformFeedbackStreamInstanced(mode: gl.@"enum", id: gl.ui
 /// Does not support multiline pragmas with \ at the end of line
 // TODO mutliple shaders for the same stage (OpenGL treats them as if concatenated)
 pub export fn glShaderSource(shader: gl.uint, count: gl.sizei, sources: [*][*:0]const gl.char, lengths: ?[*]gl.int) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     std.debug.assert(count != 0);
     const single_chunk = commands.setting_vars.singleChunkShader;
 
@@ -2451,6 +2557,11 @@ fn updateBufferIndexInfo(buffer: gl.uint, index: gl.uint, buffer_type: BufferTyp
 }
 
 pub export fn glBindBufferBase(target: gl.@"enum", index: gl.uint, buffer: gl.uint) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     gl.BindBufferBase(target, index, buffer);
     if (gl.GetError() == gl.NO_ERROR) {
         updateBufferIndexInfo(buffer, index, @enumFromInt(target));
@@ -2458,6 +2569,11 @@ pub export fn glBindBufferBase(target: gl.@"enum", index: gl.uint, buffer: gl.ui
 }
 
 pub export fn glBindBufferRange(target: gl.@"enum", index: gl.uint, buffer: gl.uint, offset: gl.intptr, size: gl.sizeiptr) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     gl.BindBufferRange(target, index, buffer, offset, size);
     if (gl.GetError() == gl.NO_ERROR) {
         updateBufferIndexInfo(buffer, index, @enumFromInt(target));
@@ -2465,6 +2581,11 @@ pub export fn glBindBufferRange(target: gl.@"enum", index: gl.uint, buffer: gl.u
 }
 
 pub export fn glCreateShader(stage: gl.@"enum") callconv(.c) gl.uint {
+    if (current == no_service) {
+        noContextError(@src());
+        return 0;
+    }
+
     const new_platform_source = gl.CreateShader(stage);
 
     const ref: shaders.Shader.Stage.Ref = @enumFromInt(new_platform_source);
@@ -2486,6 +2607,11 @@ pub export fn glCreateShader(stage: gl.@"enum") callconv(.c) gl.uint {
 }
 
 pub export fn glCreateShaderProgramv(stage: gl.@"enum", count: gl.sizei, sources: [*][*:0]const gl.char) callconv(.c) gl.uint {
+    if (current == no_service) {
+        noContextError(@src());
+        return 0;
+    }
+
     const source_type: decls.shaders.StageType = @enumFromInt(stage);
     const new_platform_program = gl.CreateShaderProgramv(stage, count, sources);
     const new_platform_sources = common.allocator.alloc(gl.uint, @intCast(count)) catch |err| {
@@ -2542,6 +2668,11 @@ export fn glCompileShader(shader: gl.uint) callconv(.c) void {
 }
 
 pub export fn glCreateProgram() callconv(.c) gl.uint {
+    if (current == no_service) {
+        noContextError(@src());
+        return 0;
+    }
+
     const new_platform_program = gl.CreateProgram();
     current.programCreateUntagged(decls.shaders.ProgramPayload{
         .ref = @intCast(new_platform_program),
@@ -2555,6 +2686,11 @@ pub export fn glCreateProgram() callconv(.c) gl.uint {
 }
 
 pub export fn glAttachShader(program: gl.uint, shader: gl.uint) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     current.programAttachStage(@enumFromInt(program), @enumFromInt(shader)) catch |err| {
         log.err("Failed to attach shader {x} to program {x}: {any}", .{ shader, program, err });
     };
@@ -2563,6 +2699,11 @@ pub export fn glAttachShader(program: gl.uint, shader: gl.uint) callconv(.c) voi
 }
 
 pub export fn glBindTexture(target: gl.@"enum", texture: gl.uint) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     gl.BindTexture(target, texture);
     if (gl.GetError() == gl.NO_ERROR) {
         const c_state = state.getPtr(current.context) orelse return;
@@ -2571,6 +2712,11 @@ pub export fn glBindTexture(target: gl.@"enum", texture: gl.uint) callconv(.c) v
 }
 
 pub export fn glDetachShader(program: gl.uint, shader: gl.uint) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     current.programDetachStage(@enumFromInt(program), @enumFromInt(shader)) catch |err| {
         log.err("Failed to detach shader {x} from program {x}: {any}", .{ shader, program, err });
     };
@@ -2583,15 +2729,26 @@ pub export fn glDetachShader(program: gl.uint, shader: gl.uint) callconv(.c) voi
 //
 
 pub export fn glDeleteTextures(n: gl.sizei, textures: [*]gl.uint) callconv(.c) void {
-    const c_state = state.getPtr(current.context) orelse return;
-    for (textures[0..@intCast(n)]) |texture| {
-        _ = c_state.tex_buffers.remove(@intCast(texture));
-        _ = c_state.tex_target.remove(@intCast(texture));
+    if (current == no_service) {
+        noContextError(@src());
+        return;
     }
+
     gl.DeleteTextures(n, textures);
+    const c_state = state.getPtr(current.context) orelse return;
+    if (n > 0)
+        for (textures[0..@intCast(n)]) |texture| {
+            _ = c_state.tex_buffers.remove(@intCast(texture));
+            _ = c_state.tex_target.remove(@intCast(texture));
+        };
 }
 
 pub export fn glTexBuffer(target: gl.@"enum", internal_format: gl.@"enum", buffer: gl.uint) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     gl.TexBuffer(target, internal_format, buffer);
     if (gl.GetError() == gl.NO_ERROR) {
         // SAFETY: assigned right after
@@ -2615,6 +2772,11 @@ pub export fn glTexImage2D(
     _type: gl.@"enum",
     pixels: ?*const anyopaque,
 ) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     gl.TexImage2D(target, level, internal_format, width, height, border, format, _type, pixels);
     if (gl.GetError() == gl.NO_ERROR) {
         const c_state = state.getPtr(current.context) orelse return;
@@ -2637,6 +2799,11 @@ pub export fn glTexImage3D(
     _type: gl.@"enum",
     pixels: ?*const anyopaque,
 ) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     gl.TexImage3D(target, level, internal_format, width, height, depth, border, format, _type, pixels);
     if (gl.GetError() == gl.NO_ERROR) {
         const c_state = state.getPtr(current.context) orelse return;
@@ -2658,6 +2825,11 @@ pub export fn glTexSubImage2D(
     _type: gl.@"enum",
     pixels: ?*const anyopaque,
 ) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     gl.TexSubImage2D(target, level, xoffset, yoffset, width, height, format, _type, pixels);
     if (gl.GetError() == gl.NO_ERROR) {
         const c_state = state.getPtr(current.context) orelse return;
@@ -2681,6 +2853,11 @@ pub export fn glTexSubImage3D(
     _type: gl.@"enum",
     pixels: ?*const anyopaque,
 ) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     gl.TexSubImage3D(target, level, xoffset, yoffset, zoffset, width, height, depth, format, _type, pixels);
     if (gl.GetError() == gl.NO_ERROR) {
         const c_state = state.getPtr(current.context) orelse return;
@@ -2701,6 +2878,11 @@ pub export fn glTexImage1D(
     _type: gl.@"enum",
     pixels: ?*const anyopaque,
 ) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     gl.TexImage1D(target, level, internal_format, width, border, format, _type, pixels);
     if (gl.GetError() == gl.NO_ERROR) {
         const c_state = state.getPtr(current.context) orelse return;
@@ -2719,6 +2901,11 @@ pub export fn glTexImage2DMultisample(
     height: gl.sizei,
     fixed_sample_locations: gl.boolean,
 ) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     gl.TexImage2DMultisample(target, samples, internal_format, width, height, fixed_sample_locations);
     if (gl.GetError() == gl.NO_ERROR) {
         const c_state = state.getPtr(current.context) orelse return;
@@ -2738,6 +2925,11 @@ pub export fn glTexImage3DMultisample(
     depth: gl.sizei,
     fixed_sample_locations: gl.boolean,
 ) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     gl.TexImage3DMultisample(target, samples, internal_format, width, height, depth, fixed_sample_locations);
     if (gl.GetError() == gl.NO_ERROR) {
         const c_state = state.getPtr(current.context) orelse return;
@@ -2758,6 +2950,11 @@ pub export fn glCompressedTexImage2D(
     image_size: gl.sizei,
     data: ?*const anyopaque,
 ) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     gl.CompressedTexImage2D(target, level, internal_format, width, height, border, image_size, data);
     if (gl.GetError() == gl.NO_ERROR) {
         const c_state = state.getPtr(current.context) orelse return;
@@ -2779,6 +2976,11 @@ pub export fn glCompressedTexImage3D(
     image_size: gl.sizei,
     data: ?*const anyopaque,
 ) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     gl.CompressedTexImage3D(target, level, internal_format, width, height, depth, border, image_size, data);
     if (gl.GetError() == gl.NO_ERROR) {
         const c_state = state.getPtr(current.context) orelse return;
@@ -2800,6 +3002,11 @@ pub export fn glCompressedTexSubImage2D(
     image_size: gl.sizei,
     data: ?*const anyopaque,
 ) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     gl.CompressedTexSubImage2D(target, level, xoffset, yoffset, width, height, format, image_size, data);
     if (gl.GetError() == gl.NO_ERROR) {
         const c_state = state.getPtr(current.context) orelse return;
@@ -2823,6 +3030,11 @@ pub export fn glCompressedTexSubImage3D(
     image_size: gl.sizei,
     data: ?*const anyopaque,
 ) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     gl.CompressedTexSubImage3D(target, level, xoffset, yoffset, zoffset, width, height, depth, format, image_size, data);
     if (gl.GetError() == gl.NO_ERROR) {
         const c_state = state.getPtr(current.context) orelse return;
@@ -2844,6 +3056,11 @@ pub export fn glTextureSubImage2D(
     _type: gl.@"enum",
     pixels: ?*const anyopaque,
 ) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     gl.TextureSubImage2D(texture, level, xoffset, yoffset, width, height, format, _type, pixels);
     if (gl.GetError() == gl.NO_ERROR) {
         const c_state = state.getPtr(current.context) orelse return;
@@ -2864,6 +3081,11 @@ pub export fn glTextureSubImage3D(
     _type: gl.@"enum",
     pixels: ?*const anyopaque,
 ) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     gl.TextureSubImage3D(texture, level, xoffset, yoffset, zoffset, width, height, depth, format, _type, pixels);
     if (gl.GetError() == gl.NO_ERROR) {
         const c_state = state.getPtr(current.context) orelse return;
@@ -2877,6 +3099,11 @@ pub export fn glTexStorage1D(
     internal_format: gl.uint,
     width: gl.sizei,
 ) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     gl.TexStorage1D(target, levels, internal_format, width);
     if (gl.GetError() == gl.NO_ERROR) {
         const c_state = state.getPtr(current.context) orelse return;
@@ -2894,6 +3121,11 @@ pub export fn glTexStorage2D(
     width: gl.sizei,
     height: gl.sizei,
 ) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     gl.TexStorage2D(target, levels, internal_format, width, height);
     if (gl.GetError() == gl.NO_ERROR) {
         const c_state = state.getPtr(current.context) orelse return;
@@ -2912,6 +3144,11 @@ pub export fn glTexStorage3D(
     height: gl.sizei,
     depth: gl.sizei,
 ) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     gl.TexStorage3D(target, levels, internal_format, width, height, depth);
     if (gl.GetError() == gl.NO_ERROR) {
         const c_state = state.getPtr(current.context) orelse return;
@@ -2930,6 +3167,11 @@ pub export fn glTexStorage2DMultisample(
     height: gl.sizei,
     fixed_sample_locations: gl.boolean,
 ) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     gl.TexStorage2DMultisample(target, samples, internal_format, width, height, fixed_sample_locations);
     if (gl.GetError() == gl.NO_ERROR) {
         const c_state = state.getPtr(current.context) orelse return;
@@ -2949,6 +3191,11 @@ pub export fn glTexStorage3DMultisample(
     depth: gl.sizei,
     fixed_sample_locations: gl.boolean,
 ) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     gl.TexStorage3DMultisample(target, samples, internal_format, width, height, depth, fixed_sample_locations);
     if (gl.GetError() == gl.NO_ERROR) {
         const c_state = state.getPtr(current.context) orelse return;
@@ -2966,6 +3213,11 @@ pub export fn glTextureStorage2D(
     width: gl.sizei,
     height: gl.sizei,
 ) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     gl.TextureStorage2D(texture, levels, internal_format, width, height);
     if (gl.GetError() == gl.NO_ERROR) {
         const c_state = state.getPtr(current.context) orelse return;
@@ -2981,6 +3233,11 @@ pub export fn glTextureStorage3D(
     height: gl.sizei,
     depth: gl.sizei,
 ) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     gl.TextureStorage3D(texture, levels, internal_format, width, height, depth);
     if (gl.GetError() == gl.NO_ERROR) {
         const c_state = state.getPtr(current.context) orelse return;
@@ -2996,6 +3253,11 @@ pub export fn glTextureStorage2DMultisample(
     height: gl.sizei,
     fixed_sample_locations: gl.boolean,
 ) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     gl.TextureStorage2DMultisample(texture, samples, internal_format, width, height, fixed_sample_locations);
     if (gl.GetError() == gl.NO_ERROR) {
         const c_state = state.getPtr(current.context) orelse return;
@@ -3012,6 +3274,11 @@ pub export fn glTextureStorage3DMultisample(
     depth: gl.sizei,
     fixed_sample_locations: gl.boolean,
 ) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     gl.TextureStorage3DMultisample(texture, samples, internal_format, width, height, depth, fixed_sample_locations);
     if (gl.GetError() == gl.NO_ERROR) {
         const c_state = state.getPtr(current.context) orelse return;
@@ -3028,6 +3295,11 @@ pub export fn glCompressedTextureSubImage1D(
     image_size: gl.sizei,
     data: ?*const anyopaque,
 ) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     gl.CompressedTextureSubImage1D(texture, level, xoffset, width, format, image_size, data);
     if (gl.GetError() == gl.NO_ERROR) {
         const c_state = state.getPtr(current.context) orelse return;
@@ -3046,6 +3318,11 @@ pub export fn glCompressedTextureSubImage2D(
     image_size: gl.sizei,
     data: ?*const anyopaque,
 ) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     gl.CompressedTextureSubImage2D(texture, level, xoffset, yoffset, width, height, format, image_size, data);
     if (gl.GetError() == gl.NO_ERROR) {
         const c_state = state.getPtr(current.context) orelse return;
@@ -3066,6 +3343,11 @@ pub export fn glCompressedTextureSubImage3D(
     image_size: gl.sizei,
     data: ?*const anyopaque,
 ) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     gl.CompressedTextureSubImage3D(texture, level, xoffset, yoffset, zoffset, width, height, depth, format, image_size, data);
     if (gl.GetError() == gl.NO_ERROR) {
         const c_state = state.getPtr(current.context) orelse return;
@@ -3108,6 +3390,11 @@ fn realLength(length: gl.sizei, label: ?CString) usize {
 /// To link with a physical file, use virtual path relative to some workspace root. Use `glDebugMessageInsert`, `glGetObjectLabel` ,
 /// `deshaderPhysicalWorkspace` or `#pragma deshader workspace` to set workspace roots.
 pub export fn glObjectLabel(identifier: gl.@"enum", name: gl.uint, length: gl.sizei, label: ?CString) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     if (label == null) {
         // Then the tag is meant to be removed.
         switch (identifier) {
@@ -3167,6 +3454,11 @@ pub export fn glObjectLabel(identifier: gl.@"enum", name: gl.uint, length: gl.si
 ///
 /// **NOTE**: the original signature is `glGetObjectLabel(identifier: @"enum", name: uint, bufSize: sizei, length: [*c]sizei, label: [*c]char)`
 pub export fn glGetObjectLabel(_identifier: gl.@"enum", _name: gl.uint, _size: gl.sizei, virtual: CString, physical: CString) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     if (_identifier == 0 and _name == 0 and _size == 0) {
         if (@intFromPtr(virtual) != 0) {
             if (@intFromPtr(virtual) != 0) {
@@ -3212,6 +3504,11 @@ fn freeNamedString(_: usize, _: ?*anyopaque, string: CString) callconv(.c) void 
 
 /// Named strings from ARB_shading_language_include can be used for labeling shader source files ("parts" in Deshader)
 pub export fn glNamedStringARB(_type: gl.@"enum", _namelen: gl.int, _name: ?CString, _stringlen: gl.int, _string: ?CString) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     if (_string) |s| if (_name) |n|
         wrapErrorHandling(actions.createNamedString, .{ _namelen, n, _stringlen, s });
 
@@ -3234,6 +3531,11 @@ pub export fn glDebugMessageInsert(
     length: gl.sizei,
     buf: ?[*:0]const gl.char,
 ) callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     if (source == gl.DEBUG_SOURCE_APPLICATION and _type == gl.DEBUG_TYPE_OTHER and severity == gl.DEBUG_SEVERITY_HIGH) {
         switch (id) {
             ids.COMMAND_WORKSPACE_ADD => {
@@ -3338,6 +3640,11 @@ const ids_array = blk: {
 /// Fallback for compatibility with OpenGL < 4.3
 /// Used from C when DESHADER_COMPATIBILITY is set
 pub export fn glBufferData(_target: gl.@"enum", _size: gl.sizeiptr, _data: ?*const anyopaque, _usage: gl.@"enum") callconv(.c) void {
+    if (current == no_service) {
+        noContextError(@src());
+        return;
+    }
+
     if (_target == 0) {
         @setEvalBranchQuota(5000);
         // Could be potentially a deshader command
@@ -3726,6 +4033,10 @@ pub fn makeCurrent(comptime api: anytype, params: anytype, c: ?*const anyopaque)
         current = no_service;
         gl.makeProcTableCurrent(null);
     }
+}
+
+fn noContextError(location: std.builtin.SourceLocation) void {
+    log.err("NO CONTEXT SET WHEN CALLING {s}", .{location.fn_name});
 }
 
 fn contextInvalidatedEvent() !void {
