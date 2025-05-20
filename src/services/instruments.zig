@@ -565,13 +565,16 @@ pub const Step = struct {
 
     pub fn renewProgram(program: *decls.instrumentation.Program) anyerror!void {
         const p = shaders.Shader.Program.fromOpaque(program);
+        if (p.state) |*state| {
+            if (responses(&state.channels)) |r| {
+                r.offsets.clearRetainingCapacity();
+                r.reached = null;
+            }
 
-        const r = responses(&p.state.?.channels).?;
-        r.offsets.clearRetainingCapacity();
-        r.reached = null;
-
-        const c = controls(&p.state.?.channels).?;
-        c.breakpoints.clearRetainingCapacity();
+            if (controls(&state.channels)) |c| {
+                c.breakpoints.clearRetainingCapacity();
+            }
+        }
     }
 
     /// Creates a buffer for outputting the index of breakpoint which each thread has hit

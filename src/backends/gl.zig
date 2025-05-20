@@ -314,57 +314,55 @@ const Snapshot = struct {
                     if (buffers.contains(source)) continue;
 
                     if (source != 0) {
-                        try copyBuffer(&buffers, source);
+                        copyBuffer(&buffers, source) catch continue;
                     }
                 }
             }
             {
                 // Images
-                var count: gl.int = 0;
+                // SAFETY: assigned right after by OpenGL
+                var count: gl.int = undefined;
                 gl.GetProgramiv(program_ref, gl.ACTIVE_UNIFORMS, &count);
-                if (count > 0) {
-                    const indices = try common.allocator.alloc(gl.uint, @intCast(count));
-                    const lengths = try common.allocator.alloc(gl.int, @intCast(count));
-                    defer common.allocator.free(indices);
-                    defer common.allocator.free(lengths);
-
-                    for (0..@intCast(count), indices) |i, *index| {
-                        index.* = @intCast(i);
+                // SAFETY: assigned rght after by OpenGL
+                var max_length: gl.int = undefined;
+                gl.GetProgramiv(program_ref, gl.ACTIVE_UNIFORM_MAX_LENGTH, &max_length);
+                if (count > 0 and gl.GetError() == gl.NO_ERROR) {
+                    var name = try common.allocator.allocSentinel(gl.char, @intCast(max_length - 1), 0);
+                    defer {
+                        name.len = @intCast(max_length - 1);
+                        common.allocator.free(name);
                     }
+                    for (0..@intCast(count)) |i| {
+                        // SAFETY: assigned right after by OpenGL
+                        var r: gl.@"enum" = undefined;
+                        // SAFETY: assigned right after by OpenGL
+                        var size: gl.int = undefined;
+                        gl.GetActiveUniform(program_ref, @intCast(i), max_length, @ptrCast(&name.len), &size, &r, name.ptr);
+                        if (gl.GetError() != gl.NO_ERROR) continue;
+                        if (size != 1) continue; // image uniforms have size 1
 
-                    gl.GetActiveUniformsiv(program_ref, count, indices.ptr, gl.UNIFORM_NAME_LENGTH, lengths.ptr);
-                    if (gl.GetError() == gl.NO_ERROR)
-                        for (lengths, 0..@intCast(count)) |length, i| {
-                            const name = try common.allocator.allocSentinel(u8, @intCast(length), 0);
-                            defer common.allocator.free(name);
+                        // SAFETY: assigned right after by OpenGL
+                        const location = gl.GetUniformLocation(program_ref, name.ptr);
+                        if (location < 0) continue;
 
-                            // SAFETY: assigned right after by OpenGL
-                            var r: gl.@"enum" = undefined;
-                            // SAFETY: assigned right after by OpenGL
-                            var size: gl.int = undefined;
-                            gl.GetActiveUniform(program_ref, @intCast(i), @intCast(length), null, &size, &r, name.ptr);
-
-                            // SAFETY: assigned right after by OpenGL
-                            const location = gl.GetUniformLocation(program_ref, name.ptr);
-                            if (location < 0) continue;
-
+                        if (imageToTarget(@intCast(r))) |from_image| {
                             // SAFETY: assigned right after by OpenGL
                             var unit: gl.int = undefined;
                             gl.GetUniformiv(program_ref, location, (&unit)[0..1]);
-
                             if (unit > 0) {
                                 // SAFETY: assigned right after by OpenGL
                                 var texture: gl.int = undefined;
-                                gl.GetIntegeri_v(gl.IMAGE_BINDING_NAME, @intCast(unit), (&texture)[0..1]);
+                                gl.GetIntegeri_v(gl.IMAGE_BINDING_NAME, @intCast(unit), @ptrCast(&texture));
                                 // If texture > 0, this will also prove that the uniform is a image
 
-                                if (texture > 0) if (imageToTarget(@intCast(r)) orelse c_state.tex_target.get(@intCast(texture))) |target| {
+                                if (texture > 0) {
+                                    const target = c_state.tex_target.get(@intCast(texture)) orelse from_image;
                                     var level: gl.int = 0;
-                                    gl.GetIntegeri_v(gl.IMAGE_BINDING_LEVEL, @intCast(unit), (&level)[0..1]);
+                                    gl.GetIntegeri_v(gl.IMAGE_BINDING_LEVEL, @intCast(unit), @ptrCast(&level));
                                     var is_layered: gl.int = 0;
-                                    gl.GetIntegeri_v(gl.IMAGE_BINDING_LAYERED, @intCast(unit), (&is_layered)[0..1]);
+                                    gl.GetIntegeri_v(gl.IMAGE_BINDING_LAYERED, @intCast(unit), @ptrCast(&is_layered));
                                     var layer: gl.int = 0;
-                                    gl.GetIntegeri_v(gl.IMAGE_BINDING_LAYER, @intCast(unit), (&layer)[0..1]);
+                                    gl.GetIntegeri_v(gl.IMAGE_BINDING_LAYER, @intCast(unit), @ptrCast(&layer));
 
                                     copyTexture(
                                         &textures,
@@ -375,9 +373,10 @@ const Snapshot = struct {
                                         level,
                                         if (is_layered == gl.FALSE) layer else null,
                                     ) catch continue;
-                                };
+                                }
                             }
-                        };
+                        }
+                    }
                 }
             }
             {
@@ -478,6 +477,7 @@ const Snapshot = struct {
 
             var size: gl.int64 = 0;
             gl.GetBufferParameteri64v(gl.COPY_READ_BUFFER, gl.BUFFER_SIZE, &size);
+            if (size <= 0) return error.Size;
 
             // create a new buffer as a cache
             // TODO: do this only for writable buffers
@@ -818,16 +818,23 @@ const Snapshot = struct {
     pub fn getOutputInterface(program: gl.uint) !std.ArrayListUnmanaged(usize) {
         var out_interface = std.ArrayListUnmanaged(usize){};
         // SAFETY: assigned right after by OpenGL
-        var count: gl.uint = undefined;
+        var count: gl.int = undefined;
         gl.GetProgramInterfaceiv(program, gl.PROGRAM_OUTPUT, gl.ACTIVE_RESOURCES, @ptrCast(&count));
+        // SAFETY: assigned right after by OpenGL
+        var max_length: gl.int = undefined;
+        gl.GetProgramInterfaceiv(program, gl.PROGRAM_OUTPUT, gl.MAX_NAME_LENGTH, @ptrCast(&max_length));
         // filter out used outputs
         {
             var i: gl.uint = 0;
-            var name: [64:0]gl.char = undefined;
+            var name = try common.allocator.allocSentinel(gl.char, @intCast(max_length - 1), 0);
+            defer {
+                name.len = @intCast(max_length - 1);
+                common.allocator.free(name);
+            }
             while (i < count) : (i += 1) {
-                gl.GetProgramResourceName(program, gl.PROGRAM_OUTPUT, i, 64, null, &name);
-                if (!std.mem.startsWith(u8, &name, Processor.templates.prefix)) {
-                    const location: gl.int = gl.GetProgramResourceLocation(program, gl.PROGRAM_OUTPUT, &name);
+                gl.GetProgramResourceName(program, gl.PROGRAM_OUTPUT, i, max_length, @ptrCast(&name.len), name.ptr);
+                if (gl.GetError() == gl.NO_ERROR and !std.mem.startsWith(u8, name, Processor.templates.prefix)) {
+                    const location: gl.int = gl.GetProgramResourceLocation(program, gl.PROGRAM_OUTPUT, name.ptr);
                     // is negative on error (program has compile errors...)
                     if (location >= 0) {
                         try out_interface.append(common.allocator, @intCast(location));
@@ -1661,14 +1668,14 @@ fn getGeneralParams(program_ref: gl.uint) !GeneralParams {
     var used_buffers = std.ArrayListUnmanaged(usize){};
     // used indexes
     // SAFETY: assigned right after by OpenGL
-    var used_buffers_count: gl.uint = undefined;
+    var used_buffers_count: gl.int = undefined;
     gl.GetProgramInterfaceiv(program_ref, gl.SHADER_STORAGE_BLOCK, gl.ACTIVE_RESOURCES, @ptrCast(&used_buffers_count));
-    var i: gl.uint = 0;
+    var i: gl.int = 0;
     while (i < used_buffers_count) : (i += 1) { // for each buffer index
         const param: gl.@"enum" = gl.BUFFER_BINDING;
         // SAFETY: assigned right after by OpenGL
         var binding: gl.uint = undefined; // get the binding number
-        gl.GetProgramResourceiv(program_ref, gl.SHADER_STORAGE_BLOCK, i, 1, &param, 1, null, @ptrCast(&binding));
+        gl.GetProgramResourceiv(program_ref, gl.SHADER_STORAGE_BLOCK, @intCast(i), 1, &param, 1, null, @ptrCast(&binding));
         try used_buffers.append(common.allocator, binding);
     }
 
@@ -1853,16 +1860,24 @@ pub fn waiterServe() void {
         inline else => |params, backend| {
             const gl_backend = @field(loaders.APIs.gl, @tagName(backend));
             if (gl_backend.get_current) |get_current| {
-                const prev_context = get_current();
+                var prev_context: ?*const anyopaque = null;
+                var context_released = false;
                 while (waiter.requests()) |req| {
                     switch (req) {
                         .BorrowContext => {
-                            _ = callRestNull(gl_backend.make_current[0], firstOrEmpty(params));
+                            if (!context_released) {
+                                prev_context = get_current();
+                                context_released = true;
+                                _ = callRestNull(gl_backend.make_current[0], firstOrEmpty(params));
+                            }
                             waiter.respondWaitEaten(.ContextFree);
                         },
                     }
                 }
-                _ = callConcatArgs(gl_backend.make_current[0], params, .{prev_context});
+
+                if (context_released) {
+                    _ = callConcatArgs(gl_backend.make_current[0], params, .{prev_context});
+                }
                 // makeCurrent(gl_backend, params, current.context);
             }
         },
@@ -2388,12 +2403,12 @@ fn wrapErrorHandling(comptime function: anytype, _args: anytype) void {
 
 fn defaultCompileShader(s: *decls.types.Service, source: decls.shaders.StagePayload, instrumented: CString, length: i32) callconv(.c) u8 {
     const service = shaders.fromOpaque(s);
-    const c_state = state.getPtr(service.context) orelse return 3;
-
     if (current != service and waiter.request(.BorrowContext) != .ContextFree) {
         log.err("Could not request borrowing context from the drawing thead.", .{});
         return 3;
     }
+
+    const c_state = state.getPtr(service.context) orelse return 3;
     const prev_context = switchContext(c_state.gl, service.context);
     defer {
         setContext(c_state.gl, prev_context);
