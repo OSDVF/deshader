@@ -1286,12 +1286,12 @@ pub const MutliListener = struct {
             switch (locator.resource orelse return shaders.ResourceLocator.Error.Protected) {
                 .programs => |p| {
                     if (!p.nested.isRoot()) { // Nested should be "root" >= no nested
-                        return error.InvalidPath;
+                        return storage.Error.InvalidPath;
                     }
-                    _ = try locator.service.Programs.mkdir(p.name.tagged);
+                    _ = try locator.service.Programs.mkdir(p.name.taggedOrNull() orelse return shaders.ResourceLocator.Error.Protected);
                 },
                 .sources => |s| {
-                    _ = try locator.service.Shaders.mkdir(s.name.tagged);
+                    _ = try locator.service.Shaders.mkdir(s.name.taggedOrNull() orelse return shaders.ResourceLocator.Error.Protected);
                 },
                 else => return shaders.ResourceLocator.Error.Protected,
             }
@@ -1323,9 +1323,9 @@ pub const MutliListener = struct {
         pub fn saveVirtual(args: ?ArgumentsMap, content: String) !void {
             const in_params = try parseArgs(WriteArgs, args);
 
-            const locator = try shaders.ServiceLocator.parse(in_params.value.path) orelse return error.InvalidPath;
+            const locator = try shaders.ServiceLocator.parse(in_params.value.path) orelse return storage.Error.InvalidPath;
             try locator.service.setSourceByLocator2(
-                locator.resource orelse return error.InvalidPath,
+                locator.resource orelse return shaders.ResourceLocator.Error.Protected,
                 content,
                 in_params.value.compile orelse true,
                 in_params.value.link orelse true,
@@ -1335,9 +1335,9 @@ pub const MutliListener = struct {
         pub fn savePhysical(args: ?ArgumentsMap, content: String) !void {
             const in_params = try parseArgs(WriteArgs, args);
 
-            const locator = try shaders.ServiceLocator.parse(in_params.value.path) orelse return error.InvalidPath;
+            const locator = try shaders.ServiceLocator.parse(in_params.value.path) orelse return storage.Error.InvalidPath;
             try locator.service.saveSource(
-                locator.resource orelse return error.InvalidPath,
+                locator.resource orelse return shaders.ResourceLocator.Error.Protected,
                 content,
                 in_params.value.compile orelse true,
                 in_params.value.link orelse true,
@@ -1345,7 +1345,12 @@ pub const MutliListener = struct {
         }
 
         pub fn save(args: ?ArgumentsMap, content: String) !void {
-            return savePhysical(args, content) catch |err| if (err == error.NotPhysical) saveVirtual(args, content);
+            return savePhysical(args, content) catch |err| {
+                if (err != error.NotPhysical)
+                    DeshaderLog.err("Encountered {} when saving to physical storage. Trying to save to virtual storage.", .{err});
+
+                try saveVirtual(args, content);
+            };
         }
 
         /// Rename a file or directory.
@@ -1383,21 +1388,20 @@ pub const MutliListener = struct {
             } else if (@intFromEnum(from_res) != @intFromEnum(to_res)) { //Compare tags
                 return error.TypeMismatch;
             }
-            if (!to_res.isTagged()) {
-                return shaders.ResourceLocator.Error.Protected;
-            }
             switch (from_res) {
                 .sources => |source| {
-                    _ = try from.service.Shaders.renameByLocator(source.name, to_res.sources.name.tagged);
+                    _ = try from.service.Shaders.renameByLocator(source.name, to_res.sources.name.taggedOrNull() orelse
+                        return shaders.ResourceLocator.Error.Protected);
                 },
                 .programs => |program| {
                     const p = program.name.file() orelse return shaders.ResourceLocator.Error.Protected;
                     if (program.nested.isRoot()) {
-                        _ = try from.service.Programs.renameByLocator(p, to_res.programs.name.tagged);
+                        _ = try from.service.Programs.renameByLocator(p, to_res.programs.name.taggedOrNull() orelse
+                            return shaders.ResourceLocator.Error.Protected);
                     } else {
                         if (basename_only) {
                             const s = try from.service.Programs.getNestedByLocator(p, program.nested.name);
-                            const name = to_res.programs.nested.name.tagged;
+                            const name = to_res.programs.nested.name.taggedOrNull() orelse return shaders.ResourceLocator.Error.Protected;
                             if (s.tag) |t| {
                                 try t.rename(name);
                             } else {

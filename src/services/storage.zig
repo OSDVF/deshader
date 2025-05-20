@@ -1396,6 +1396,13 @@ pub fn Locator(comptime T: type) type {
                 }
             }
 
+            pub fn taggedOrNull(self: @This()) ?String {
+                return switch (self) {
+                    .tagged => |name| name,
+                    else => null,
+                };
+            }
+
             pub fn toTagged(self: @This(), name: String) !@This() {
                 return switch (self) {
                     .tagged => |_| Error.AlreadyTagged,

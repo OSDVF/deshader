@@ -537,8 +537,8 @@ pub const ResourceLocator = union(enum) {
 
 pub fn getDirByLocator(service: *@This(), locator: ResourceLocator) !VirtualDir {
     return switch (locator) {
-        .sources => |s| .{ .Shader = try service.Shaders.getDirByPath(s.name.tagged) },
-        .programs => |p| .{ .Program = try service.Programs.getDirByPath(p.name.tagged) },
+        .sources => |s| .{ .Shader = try service.Shaders.getDirByPath(s.name.taggedOrNull() orelse return storage.Error.InvalidPath) },
+        .programs => |p| .{ .Program = try service.Programs.getDirByPath(p.name.taggedOrNull() orelse return storage.Error.InvalidPath) },
         else => return storage.Error.InvalidPath,
     };
 }
@@ -2905,14 +2905,14 @@ pub fn untag(service: *Service, path: ResourceLocator) !void {
     switch (path) {
         .programs => |p| {
             if (p.nested.isRoot()) {
-                try service.Programs.untag(p.name.tagged, true);
+                try service.Programs.untag(p.name.taggedOrNull() orelse return ResourceLocator.Error.Protected, true);
             } else {
                 const nested = try service.Programs.getNestedByLocator(p.name, p.nested.name);
-                nested.tag.?.remove();
+                (nested.tag orelse return ResourceLocator.Error.Protected).remove();
             }
         },
         .sources => |s| {
-            try service.Shaders.untag(s.name.tagged, true);
+            try service.Shaders.untag(s.name.taggedOrNull() orelse return ResourceLocator.Error.Protected, true);
         },
         else => return ResourceLocator.Error.Protected,
     }
