@@ -6,14 +6,14 @@ Now you can, and in your favorite code editor[^1]!
 Deshader intercepts OpenGL calls and adds instrumentation code to your shaders (so you don't need to write your own visualizations to debug shader execution process anymore).
 
 [^1]: VSCode derivatives and the standalone Deshader Editor is supported for now.
-You can also:
-# Features
-- Step through the shader execution (...breakpoints, logging, conditional bps...)
-- Arrange shaders in a virtual filesystem (`#include` friendly!)
-- Track variable values for different output primitives and pixels
-- Incrementally visualise primitive and pixel output (so you can fix that weird vertex!)
-- Open the integrated editor (VSCode in a separate window or in your browser - at `localhost:8080/index.html` by default)
-- Runs on Linux, Windows and macOS
+
+# (Un)Implemented Features
+- [x] Step through the shader execution (...breakpoints, logging, conditional bps...)
+- [x] Arrange shaders in a virtual filesystem
+- [x] Support for named strings / `#include` header files
+- [x] Open the integrated editor (VSCode in a separate window or in your browser - at `localhost:8080/index.html` by default)
+- [ ] Track variable values for different output primitives and pixels
+- [x] Runs on Linux, Windows and MacOS
 
 # Goals
 - Compatibility between OpenGL vendor implementations (ICDs)
@@ -46,13 +46,14 @@ Feel free to fork and add your own goals or even better, break the non-goals!
 [Packages for macOS, Debian-like, Arch Linux and Windows are in the releases section.](https://github.com/OSDVF/deshader/releases)
 
 ### Arch Linux (AUR)
-Download and install using an AUR helper. For example, Yay:.
+Download and install using an AUR helper. 
+Zig 0.14 is not currently available in the Arch Linux repositories, so it must be also installed from the AUR before. For example:
 ```bash
-yay -S deshader-git
+yay -S zig-bin deshader-git
 ```
 or
 ```bash
-pamac build deshader-git
+pamac build zig-bin deshader-git
 ```
 ### Build and packaging scripts
 [Build scripts for Debian-like and Arch Linux reside in a separate repository](https://github.com/OSDVF/deshader-build).

@@ -159,6 +159,7 @@ pub const Result = struct {
 pub const Instrument = struct {
     pub const ID = u64;
     id: ID,
+    // named nodeType in the thesis
     tag: ?analyzer.parse.Tag,
     /// An array of IDs of instruments that should have their `instrument` method called before this one
     dependencies: ?[]const ID,
